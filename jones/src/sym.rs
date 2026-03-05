@@ -511,17 +511,16 @@ pub fn find_callers_with_debug_info(
                     let mut line = func.line.or(func_line);
 
                     // For functions in the crate source, find the actual line where the call originates
-                    if let (Some(f), Some(crate_path)) = (&file, crate_src_path) {
-                        if f.contains(crate_path) {
-                            if let Ok(Some(crate_line)) = get_crate_line_at_address(
-                                &dwarf,
-                                func.start_address,
-                                instruction.address(),
-                                crate_path,
-                            ) {
-                                line = Some(crate_line);
-                            }
-                        }
+                    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
+                        && f.contains(crate_path)
+                        && let Ok(Some(crate_line)) = get_crate_line_at_address(
+                            &dwarf,
+                            func.start_address,
+                            instruction.address(),
+                            crate_path,
+                        )
+                    {
+                        line = Some(crate_line);
                     }
 
                     callers.push(CallerInfo {
@@ -612,37 +611,36 @@ fn get_crate_line_at_address<R: Reader>(
                 let addr = row.address();
 
                 // Look for entries between function start and call site
-                if addr >= func_start && addr <= call_site_addr {
-                    if let Some(file_entry) = row.file(header) {
-                        let file_name = dwarf
-                            .attr_string(&unit, file_entry.path_name())?
+                if addr >= func_start
+                    && addr <= call_site_addr
+                    && let Some(file_entry) = row.file(header)
+                {
+                    let file_name = dwarf
+                        .attr_string(&unit, file_entry.path_name())?
+                        .to_string_lossy()?
+                        .into_owned();
+
+                    let full_path = if let Some(dir) = file_entry.directory(header) {
+                        let dir_str = dwarf
+                            .attr_string(&unit, dir)?
                             .to_string_lossy()?
                             .into_owned();
-
-                        let full_path = if let Some(dir) = file_entry.directory(header) {
-                            let dir_str = dwarf
-                                .attr_string(&unit, dir)?
-                                .to_string_lossy()?
-                                .into_owned();
-                            if dir_str.is_empty() {
-                                file_name
-                            } else {
-                                format!("{}/{}", dir_str, file_name)
-                            }
-                        } else {
+                        if dir_str.is_empty() {
                             file_name
-                        };
-
-                        // Check if this line is in the crate source
-                        if full_path.contains(crate_src_path) {
-                            if let Some(line) = row.line() {
-                                // Keep the entry closest to the call site
-                                if addr >= best_addr {
-                                    best_addr = addr;
-                                    best_line = Some(line.get() as u32);
-                                }
-                            }
+                        } else {
+                            format!("{}/{}", dir_str, file_name)
                         }
+                    } else {
+                        file_name
+                    };
+
+                    // Check if this line is in the crate source
+                    if full_path.contains(crate_src_path)
+                        && let Some(line) = row.line()
+                        && addr >= best_addr
+                    {
+                        best_addr = addr;
+                        best_line = Some(line.get() as u32);
                     }
                 }
             }

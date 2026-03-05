@@ -9,7 +9,7 @@ members = [
 ]
 
 [profile.panic]
-inherits = "release"
-debug = "line-tables-only"
+inherits = "dev"
+debug = true
 # split-debuginfo - for macos
 # overflow-checks = false ?

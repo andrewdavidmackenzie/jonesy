@@ -291,10 +291,10 @@ fn collect_crate_code_points(
     points: &mut Vec<(String, String, u32)>,
 ) {
     // Add this node if it's in the crate source
-    if let (Some(file), Some(line)) = (&node.file, &node.line) {
-        if file.contains(crate_src_path) {
-            points.push((node.name.clone(), file.clone(), *line));
-        }
+    if let (Some(file), Some(line)) = (&node.file, &node.line)
+        && file.contains(crate_src_path)
+    {
+        points.push((node.name.clone(), file.clone(), *line));
     }
     // Recurse to children
     for caller in &node.callers {
