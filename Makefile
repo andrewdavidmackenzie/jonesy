@@ -13,6 +13,7 @@ examples:
 	dsymutil ./target/debug/oom -o ./target/debug/oom.dSYM 2>&1
 
 run: examples
+	cd examples/panic && cargo run -p jones || true
 	cargo run -p jones -- --bin target/debug/panic || true
 	cargo run -p jones -- --bin target/debug/oom || true
 	cargo run -p jones -- --bin target/debug/perfect
