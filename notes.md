@@ -73,3 +73,67 @@ underscores (e.g., __text)
 # DWARF
 
 https://dwarfstd.org/doc/Debugging%20using%20DWARF-2012.pdf
+
+# Rust Panic Breakpoints
+
+How IDEs and debuggers identify and set breakpoints on Rust panic symbols.
+
+## Primary Symbols
+
+| Symbol | Description |
+|--------|-------------|
+| `rust_panic` | Main panic entry point (now mangled in recent Rust) |
+| `rust_begin_unwind` | Called early in panic unwinding |
+| `std::panicking::rust_panic_with_hook` | Internal panic handler |
+| `__rustc::rust_panic` | Mangled form of rust_panic |
+
+## Implementation by Debugger
+
+### GDB
+```gdb
+set breakpoint pending on
+break rust_panic
+# or
+break rust_begin_unwind
+```
+
+### LLDB
+```lldb
+breakpoint set -n rust_panic
+# or with regex for mangled symbols:
+breakpoint set -r "rust_panic$"
+```
+
+### CodeLLDB (VS Code)
+Sets a function breakpoint on `rust_panic`. Recent Rust versions mangle this symbol, so regex breakpoints are needed:
+```
+br s -r "rust_panic$"
+```
+Resolves to symbols like `__rustc::rust_panic`.
+
+### RustRover / JetBrains IDEs
+- "Break on panic" enabled by default
+- Uses underlying LLDB debugger
+- Setting: Preferences -> Build, Execution, Deployment -> Debugger -> Break on panic
+
+## Symbol Mangling Issue
+
+Recent Rust changes (rust-lang/rust#140821) mangle `rust_panic`, so it appears as:
+- `rust_panic.llvm.5A8AA348` (varies by build)
+- `__rustc::rust_panic`
+
+Discover actual symbol name with:
+```bash
+# LLDB
+image lookup -r -n rust_panic
+
+# nm
+nm target/debug/your_binary | grep rust_panic
+```
+
+## References
+
+- https://github.com/rust-lang/rust/issues/21102
+- https://github.com/vadimcn/codelldb/issues/1336
+- https://github.com/rust-lang/rust/issues/49013
+- https://github.com/intellij-rust/intellij-rust/issues/4763

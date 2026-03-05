@@ -27,9 +27,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
-                // Find symbols with panic in them
-                let target_symbol = "panic";
-                if let Some((panic_symbol, demangled)) =
+                // Find symbols with panic in them (regex pattern)
+                let target_symbol = "rust_panic$";
+                if let Ok(Some((panic_symbol, demangled))) =
                     find_symbol_containing(&macho, target_symbol)
                 {
                     // Find the target symbol's address

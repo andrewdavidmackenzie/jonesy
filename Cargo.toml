@@ -1,20 +1,15 @@
-[package]
-name = "jones"
-description = "Jones is here to help you not panic!"
-version = "0.1.0"
-edition = "2024"
-authors = [" Andrew Mackenzie andrew@mackenzie-serres.net"]
-repository = "https://github.com/andrewdavidmackenzie/jones"
-readme = "README.md"
-license = "Apache-2.0"
+[workspace]
+resolver = "3"
+members = [
+    "jones",
+    "examples/array_access",
+    "examples/oom",
+    "examples/panic",
+    "examples/perfect",
+]
 
-[dependencies]
-goblin = "0.10.4"
-gimli = "0.32.3"
-iced-x86 = "1.21"
-rustc-demangle = "0.1"
-capstone = "0.12"
-ouroboros = "0.18"
-
-[dev-dependencies]
-rand = "0.10.0-rc.7"
+[profile.panic]
+inherits = "release"
+debug = "line-tables-only"
+# split-debuginfo - for macos
+# overflow-checks = false ?

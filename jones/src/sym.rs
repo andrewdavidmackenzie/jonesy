@@ -14,6 +14,7 @@ use goblin::mach::segment::SectionData;
 use goblin::mach::segment::{Section, Segment};
 use goblin::mach::{Mach, MachO};
 use ouroboros::self_referencing;
+use regex::Regex;
 use rustc_demangle::demangle;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -66,7 +67,7 @@ pub enum DebugInfo {
     /// Debug info is embedded in the binary
     Embedded,
     /// Debug info is in a separate dSYM bundle
-    DSym(DSymInfo),
+    DSym(Box<DSymInfo>),
     /// No debug info available
     None,
 }
@@ -119,17 +120,26 @@ pub(crate) fn has_dwarf_info(macho: &MachO) -> bool {
     false
 }
 
-/// Returns the first symbol found whose name contains `substring`
-pub(crate) fn find_symbol_containing(macho: &MachO, substring: &str) -> Option<(String, String)> {
-    let symbols = macho.symbols.as_ref()?;
+/// Returns the first symbol found whose name matches the given regex pattern.
+/// The pattern is matched against the demangled symbol name.
+/// Example: "rust_panic$" matches symbols ending in "rust_panic"
+pub(crate) fn find_symbol_containing(
+    macho: &MachO,
+    pattern: &str,
+) -> Result<Option<(String, String)>, regex::Error> {
+    let regex = Regex::new(pattern)?;
+    let symbols = match macho.symbols.as_ref() {
+        Some(s) => s,
+        None => return Ok(None),
+    };
     for (sym_name, _) in symbols.iter().flatten() {
         let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
         let demangled = format!("{:#}", demangle(stripped));
-        if demangled.contains(substring) {
-            return Some((sym_name.to_string(), demangled));
+        if regex.is_match(&demangled) {
+            return Ok(Some((sym_name.to_string(), demangled)));
         }
     }
-    None
+    Ok(None)
 }
 
 // TODO Restrict this to text segments?
@@ -600,7 +610,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
             debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
         }
         .build();
-        return DebugInfo::DSym(dsym_info);
+        return DebugInfo::DSym(Box::new(dsym_info));
     }
 
     if !get_dwarf_sections(macho).is_empty() {
@@ -608,6 +618,6 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
         return DebugInfo::Embedded;
     }
 
-    println!("No debug info found");
+    println!("No Embedded or dSYM bundle DWARF info found");
     DebugInfo::None
 }

@@ -1,0 +1,18 @@
+[package]
+name = "jones"
+description = "Jones is here to help you not panic!"
+version = "0.1.0"
+edition = "2024"
+authors = [" Andrew Mackenzie andrew@mackenzie-serres.net"]
+repository = "https://github.com/andrewdavidmackenzie/jones"
+readme = "../README.md"
+license = "Apache-2.0"
+
+[dependencies]
+goblin = "0.10.4"
+gimli = "0.32.3"
+iced-x86 = "1.21"
+rustc-demangle = "0.1"
+capstone = "0.12"
+ouroboros = "0.18"
+regex = "1"

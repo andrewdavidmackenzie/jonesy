@@ -1,21 +1,18 @@
-all: clippy examples run
+all: clippy debug_info panic run
 
 clippy:
-	cargo clippy --tests --no-deps --all-features --all-targets
+	cargo clippy -p jones --tests --no-deps --all-features --all-targets
 
-.PHONY: examples
-examples:
-	cargo build --example array_access
-	dsymutil ./target/debug/examples/array_access -o ./target/debug/examples/array_access.dSYM 2>&1
-	cargo build --example perfect
-	cargo build --example panic
-	cargo build --example oom
-	dsymutil ./target/debug/examples/oom -o ./target/debug/examples/oom.dSYM 2>&1
-	cargo build --release --example array_access
-	cargo build --release --example perfect
-	cargo build --release --example panic
-	cargo build --release --example oom
+build:
+	cargo build -p jones
 
-run: examples
-	cargo run -- --examples --debug
-	cargo run -- --examples --release
+panic:
+	cargo build --profile=panic
+
+debug_info:
+	dsymutil ./target/panic/array_access -o ./target/panic/array_access.dSYM 2>&1
+	dsymutil ./target/panic/oom -o ./target/panic/oom.dSYM 2>&1
+	dsymutil ./target/panic/panic -o ./target/panic/panic.dSYM 2>&1
+
+run:
+	cargo run -p jones -- --bin target/panic/panic
