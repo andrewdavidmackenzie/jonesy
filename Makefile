@@ -15,8 +15,8 @@ examples:
 	dsymutil ./target/debug/libdylib_example.dylib -o ./target/debug/libdylib_example.dSYM 2>&1
 
 run: examples
-	cd examples/panic && cargo run -p jones -- || true
-	cd examples/oom && cargo run -p jones -- || true
-	cd examples/perfect && cargo run -p jones -- # perfect should exit with status = 0
-	cd examples/cdylib && cargo run -p jones -- || true
-	cd examples/dylib && cargo run -p jones -- || true
+	cd examples/panic && cargo run -p jones || true
+	cd examples/oom && cargo run -p jones || true
+	cd examples/perfect && cargo run -p jones # perfect should exit with status = 0
+	cd examples/cdylib && cargo run -p jones || true
+	cd examples/dylib && cargo run -p jones || true
