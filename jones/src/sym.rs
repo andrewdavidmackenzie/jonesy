@@ -465,12 +465,14 @@ pub fn build_function_lookup(functions: &[FunctionInfo]) -> HashMap<u64, &Functi
 /// * `debug_macho` - Parsed MachO containing DWARF info (can be same as binary_macho, or from dSYM)
 /// * `debug_buffer` - Raw bytes containing DWARF info (can be same as binary_buffer, or from dSYM)
 /// * `target_addr` - Address of the function to find callers for
+/// * `crate_src_path` - Optional crate source path for precise line numbers in user code
 pub fn find_callers_with_debug_info(
     binary_macho: &MachO,
     binary_buffer: &[u8],
     debug_macho: &MachO,
     debug_buffer: &[u8],
     target_addr: u64,
+    crate_src_path: Option<&str>,
 ) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
     let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
@@ -506,7 +508,21 @@ pub fn find_callers_with_debug_info(
 
                     // Prefer function's declaration file/line if available, then function start's line info
                     let file = func.file.clone().or(func_file);
-                    let line = func.line.or(func_line);
+                    let mut line = func.line.or(func_line);
+
+                    // For functions in the crate source, find the actual line where the call originates
+                    if let (Some(f), Some(crate_path)) = (&file, crate_src_path) {
+                        if f.contains(crate_path) {
+                            if let Ok(Some(crate_line)) = get_crate_line_at_address(
+                                &dwarf,
+                                func.start_address,
+                                instruction.address(),
+                                crate_path,
+                            ) {
+                                line = Some(crate_line);
+                            }
+                        }
+                    }
 
                     callers.push(CallerInfo {
                         caller: func.clone(),
@@ -572,6 +588,68 @@ fn get_source_location<R: Reader>(
     }
 
     Ok((None, None))
+}
+
+/// Find the user code line closest to a specific address within a function.
+/// This finds the last line entry in user code before the given call site address.
+fn get_crate_line_at_address<R: Reader>(
+    dwarf: &Dwarf<R>,
+    func_start: u64,
+    call_site_addr: u64,
+    crate_src_path: &str,
+) -> Result<Option<u32>, gimli::Error> {
+    let mut units = dwarf.units();
+    let mut best_line: Option<u32> = None;
+    let mut best_addr: u64 = 0;
+
+    while let Some(header) = units.next()? {
+        let unit = dwarf.unit(header)?;
+
+        if let Some(program) = &unit.line_program {
+            let mut rows = program.clone().rows();
+
+            while let Some((header, row)) = rows.next_row()? {
+                let addr = row.address();
+
+                // Look for entries between function start and call site
+                if addr >= func_start && addr <= call_site_addr {
+                    if let Some(file_entry) = row.file(header) {
+                        let file_name = dwarf
+                            .attr_string(&unit, file_entry.path_name())?
+                            .to_string_lossy()?
+                            .into_owned();
+
+                        let full_path = if let Some(dir) = file_entry.directory(header) {
+                            let dir_str = dwarf
+                                .attr_string(&unit, dir)?
+                                .to_string_lossy()?
+                                .into_owned();
+                            if dir_str.is_empty() {
+                                file_name
+                            } else {
+                                format!("{}/{}", dir_str, file_name)
+                            }
+                        } else {
+                            file_name
+                        };
+
+                        // Check if this line is in the crate source
+                        if full_path.contains(crate_src_path) {
+                            if let Some(line) = row.line() {
+                                // Keep the entry closest to the call site
+                                if addr >= best_addr {
+                                    best_addr = addr;
+                                    best_line = Some(line.get() as u32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(best_line)
 }
 
 pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {

@@ -110,27 +110,45 @@ struct CallerInfo {
 
 ## Example Output
 
-For a simple panic example:
+For an example with multiple panic paths:
 
 ```rust
+// main.rs
+mod module;
+
 fn main() {
-    panic!("panic");
+    if std::env::args().len() > 1 {
+        panic!("direct panic");      // line 8
+    }
+    module::cause_a_panic();         // line 10
+}
+
+// module/mod.rs
+pub fn cause_a_panic() {
+    panic!("panic");                 // line 2
 }
 ```
 
-Jones produces:
+Jones produces (simplified):
 
 ```
 __rustc::rust_panic
 Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
     Called from: '{closure#0}' (source: library/std/src/panicking.rs:698)
-        Called from: '__rust_end_short_backtrace<...>' (source: library/std/src/sys/backtrace.rs:170)
-            Called from: 'panic_handler' (source: library/std/src/panicking.rs:631)
-                Called from: 'panic_fmt' (source: library/core/src/panicking.rs:55)
-                    Called from: 'main' (source: examples/panic/src/main.rs:4)
+        ...
+            Called from: 'panic_fmt' (source: library/core/src/panicking.rs:55)
+                Called from: 'cause_a_panic' (source: examples/panic/src/module/mod.rs:2)
+                    Called from: 'main' (source: examples/panic/src/main.rs:10)
+                Called from: 'panic_display<&str>' (source: .../panicking.rs:258)
+                    Called from: 'main' (source: examples/panic/src/main.rs:8)
 ```
 
-The line numbers now correctly reference the function declaration lines, not inlined code locations.
+Key findings:
+- `main.rs:8` - the direct `panic!` call
+- `main.rs:10` - the call to `cause_a_panic()`
+- `module/mod.rs:2` - the panic inside `cause_a_panic`
+
+Line numbers reference the actual source lines where the panic-inducing code is located, not just function declarations.
 
 Without pruning, this tree would include hundreds of branches for:
 - Signal handlers

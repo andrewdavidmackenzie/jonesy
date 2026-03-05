@@ -134,6 +134,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             let mut visited = HashSet::new();
                             visited.insert(target_addr);
 
+                            // Derive the crate source path for filtering and precise line numbers
+                            let crate_src_path = derive_crate_src_path(&binary_path);
+
                             build_call_tree(
                                 &macho,
                                 &binary_buffer,
@@ -141,12 +144,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 target_addr,
                                 &mut root,
                                 &mut visited,
+                                crate_src_path.as_deref(),
                             );
 
-                            // Try to derive the crate source path from the binary path
-                            if let Some(crate_src_path) = derive_crate_src_path(&binary_path) {
-                                println!("Filtering to crate source: {}", crate_src_path);
-                                prune_call_tree(&mut root, &crate_src_path);
+                            // Prune to only show paths leading to user code
+                            if let Some(ref crate_path) = crate_src_path {
+                                println!("Filtering to crate source: {}", crate_path);
+                                prune_call_tree(&mut root, crate_path);
                             } else {
                                 println!("Could not determine crate source path, showing full tree");
                             }
@@ -180,6 +184,7 @@ fn build_call_tree(
     target_addr: u64,
     node: &mut CallTreeNode,
     visited: &mut HashSet<u64>,
+    crate_src_path: Option<&str>,
 ) {
     let callers = match debug_source {
         DebugInfo::Embedded => {
@@ -190,6 +195,7 @@ fn build_call_tree(
                 binary_macho,
                 binary_buffer,
                 target_addr,
+                crate_src_path,
             )
             .unwrap()
         }
@@ -203,6 +209,7 @@ fn build_call_tree(
                         macho,
                         dsym_info.borrow_debug_buffer(),
                         target_addr,
+                        crate_src_path,
                     )
                     .unwrap()
                 } else {
@@ -240,6 +247,7 @@ fn build_call_tree(
                 caller_addr,
                 &mut caller_node,
                 visited,
+                crate_src_path,
             );
         }
 
