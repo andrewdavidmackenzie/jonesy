@@ -40,11 +40,54 @@ Use `--bin` to analyze a specific binary file:
 jones --bin target/debug/my-binary
 ```
 
-Or use `--lib` for library objects:
+### Analyzing Libraries
+
+Jones can analyze Rust libraries built as dynamic libraries (`.dylib`):
 
 ```bash
 jones --lib target/debug/libmy_lib.dylib
 ```
+
+**Library Setup Requirements:**
+
+For jones to analyze a library, it must be built as a `cdylib` with exported symbols:
+
+1. Add `cdylib` to your crate types in `Cargo.toml`:
+   ```toml
+   [lib]
+   crate-type = ["rlib", "cdylib"]
+   ```
+
+2. Mark functions to export with `#[no_mangle]`:
+   ```rust
+   #[unsafe(no_mangle)]
+   pub fn my_library_function() {
+       // ...
+   }
+   ```
+
+3. Build and create dSYM:
+   ```bash
+   cargo build
+   dsymutil target/debug/libmy_lib.dylib -o target/debug/libmy_lib.dSYM
+   ```
+
+**Why `cdylib` + `#[no_mangle]`?**
+
+There are two ways to build a Rust dynamic library:
+
+| Type | Size | `pub fn` exported? | Analysis speed |
+|------|------|-------------------|----------------|
+| `cdylib` | ~16KB | No (needs `#[no_mangle]`) | Fast |
+| `dylib` | ~1.4MB | Yes (automatic) | Very slow |
+
+- **`cdylib`** creates a minimal C-compatible library. Only explicitly marked functions are exported; others are removed by dead code elimination. Analysis is fast because only your code is included.
+
+- **`dylib`** creates a full Rust dynamic library including the standard library runtime. All `pub fn` are exported automatically, but the ~90x larger binary makes analysis impractical (minutes vs seconds).
+
+**Other notes:**
+- `.rlib` files (Rust static library archives) have limited support because panic symbols are unlinked references in object files
+- The dSYM bundle provides debug symbols for source location information
 
 ## Command Line Options
 

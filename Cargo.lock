@@ -65,6 +65,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdylib_example"
+version = "0.1.0"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,6 +93,10 @@ checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "dylib_example"
+version = "0.1.0"
 
 [[package]]
 name = "equivalent"
@@ -199,10 +207,6 @@ name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
-
-[[package]]
-name = "library"
-version = "0.1.0"
 
 [[package]]
 name = "log"

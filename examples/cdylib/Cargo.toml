@@ -1,0 +1,9 @@
+[package]
+name = "cdylib_example"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "cdylib_example"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]

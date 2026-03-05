@@ -24,6 +24,7 @@ use std::{fs, io};
 
 type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 
+#[allow(clippy::large_enum_variant)]
 pub enum SymbolTable<'a> {
     MachO(Mach<'a>),
     Archive(Archive<'a>),

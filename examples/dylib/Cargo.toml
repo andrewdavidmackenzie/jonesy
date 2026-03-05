@@ -1,9 +1,9 @@
 [package]
-name = "library"
+name = "dylib_example"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "library"
+name = "dylib_example"
 path = "src/lib.rs"
-crate-type = ["rlib", "dylib"]
+crate-type = ["dylib"]
