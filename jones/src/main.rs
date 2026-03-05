@@ -4,6 +4,7 @@ use crate::sym::{
     read_symbols, DebugInfo, SymbolTable,
 };
 use goblin::mach::Mach::{Binary, Fat};
+use goblin::mach::MachO;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
@@ -71,9 +72,13 @@ fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, show_drops: bo
 
 /// Try to derive the crate source path from the binary path.
 /// For a binary at "target/panic/panic", looks for the source in common locations.
+/// For libraries like "liblibrary.rlib", strips the "lib" prefix.
 fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
     // Get the binary name (e.g. "panic" from "target/panic/panic")
-    let binary_name = binary_path.file_stem()?.to_str()?;
+    let file_stem = binary_path.file_stem()?.to_str()?;
+
+    // For libraries, strip "lib" prefix (e.g., "liblibrary" -> "library")
+    let binary_name = file_stem.strip_prefix("lib").unwrap_or(file_stem);
 
     // Common patterns:
     // 1. examples/<name>/src/ for crates in examples
@@ -127,72 +132,46 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
-                // Find symbols with panic in them (regex pattern)
-                let target_symbol = "rust_panic$";
-                if let Ok(Some((panic_symbol, demangled))) =
-                    find_symbol_containing(&macho, target_symbol)
-                {
-                    // Find the target symbol's address
-                    match find_symbol_address(&macho, &panic_symbol) {
-                        Some((_sym_name, target_addr)) => {
-                            let debug_info = load_debug_info(&macho, &binary_path);
-
-                            // Create the root node for the call tree
-                            let mut root = CallTreeNode {
-                                name: demangled.clone(),
-                                file: None,
-                                line: None,
-                                callers: Vec::new(),
-                            };
-
-                            // Track visited addresses to avoid infinite recursion
-                            let mut visited = HashSet::new();
-                            visited.insert(target_addr);
-
-                            // Derive the crate source path for filtering and precise line numbers
-                            let crate_src_path = derive_crate_src_path(&binary_path);
-
-                            build_call_tree(
-                                &macho,
-                                &binary_buffer,
-                                &debug_info,
-                                target_addr,
-                                &mut root,
-                                &mut visited,
-                                crate_src_path.as_deref(),
-                            );
-
-                            // Prune to only show paths leading to user code
-                            if let Some(ref crate_path) = crate_src_path {
-                                prune_call_tree(&mut root, crate_path, parsed_args.show_drops);
-                            }
-
-                            // Print output based on --tree flag
-                            if parsed_args.show_tree {
-                                println!("Full call tree:");
-                                print_call_tree(&root, 0);
-                                // Still count for exit status
-                                if let Some(ref crate_path) = crate_src_path {
-                                    total_panic_points +=
-                                        count_crate_code_points(&root, crate_path);
-                                }
-                            } else if let Some(ref crate_path) = crate_src_path {
-                                total_panic_points += print_crate_code_points(&root, crate_path);
-                            } else {
-                                println!(
-                                    "Could not determine crate source path, showing full tree"
-                                );
-                                print_call_tree(&root, 0);
-                            }
-                        }
-                        None => println!("Couldn't find '{}' address", panic_symbol),
-                    }
-                } else {
-                    println!("No references to '{}' found", target_symbol);
-                }
+                let crate_src_path = derive_crate_src_path(&binary_path);
+                total_panic_points += analyze_macho(
+                    &macho,
+                    &binary_buffer,
+                    &binary_path,
+                    crate_src_path.as_deref(),
+                    parsed_args.show_tree,
+                    parsed_args.show_drops,
+                );
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+            }
+            SymbolTable::Archive(archive) => {
+                // Process each object file in the archive
+                let crate_src_path = derive_crate_src_path(&binary_path);
+
+                for member_name in archive.members() {
+                    // Skip non-object files (like .rmeta)
+                    if !member_name.ends_with(".o") {
+                        continue;
+                    }
+
+                    // Extract the member data
+                    let Ok(member_data) = archive.extract(member_name, &binary_buffer) else {
+                        continue;
+                    };
+
+                    // Parse the object file as Mach-O
+                    if let Ok(obj_macho) = MachO::parse(member_data, 0) {
+                        total_panic_points += analyze_macho(
+                            &obj_macho,
+                            member_data,
+                            &binary_path,
+                            crate_src_path.as_deref(),
+                            parsed_args.show_tree,
+                            parsed_args.show_drops,
+                        );
+                    }
+                }
             }
         }
 
@@ -202,6 +181,89 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
     std::process::exit(total_panic_points as i32);
+}
+
+/// Panic symbol patterns to search for, in order of preference.
+/// For binaries, rust_panic$ is the root. For libraries, we look for
+/// the functions that call into the panic runtime.
+const PANIC_SYMBOL_PATTERNS: &[&str] = &[
+    "rust_panic$",      // Main panic entry point (binaries)
+    "panic_fmt$",       // Core panic formatting (libraries)
+    "panic_display",    // Panic display helper
+];
+
+/// Analyze a single MachO binary/object for panic points.
+/// Returns the number of panic code points found.
+fn analyze_macho(
+    macho: &MachO,
+    buffer: &[u8],
+    binary_path: &Path,
+    crate_src_path: Option<&str>,
+    show_tree: bool,
+    show_drops: bool,
+) -> usize {
+    // Try each panic symbol pattern until we find one
+    let mut panic_symbol = None;
+    let mut demangled = String::new();
+    let mut target_addr = 0u64;
+
+    for pattern in PANIC_SYMBOL_PATTERNS {
+        if let Ok(Some((sym, dem))) = find_symbol_containing(macho, pattern)
+            && let Some((_name, addr)) = find_symbol_address(macho, &sym)
+        {
+            panic_symbol = Some(sym);
+            demangled = dem;
+            target_addr = addr;
+            break;
+        }
+    }
+
+    let Some(_) = panic_symbol else {
+        // No panic symbols found in this object
+        return 0;
+    };
+
+    let debug_info = load_debug_info(macho, binary_path);
+
+    // Create the root node for the call tree
+    let mut root = CallTreeNode {
+        name: demangled.clone(),
+        file: None,
+        line: None,
+        callers: Vec::new(),
+    };
+
+    // Track visited addresses to avoid infinite recursion
+    let mut visited = HashSet::new();
+    visited.insert(target_addr);
+
+    build_call_tree(
+        macho,
+        buffer,
+        &debug_info,
+        target_addr,
+        &mut root,
+        &mut visited,
+        crate_src_path,
+    );
+
+    // Prune to only show paths leading to user code
+    if let Some(crate_path) = crate_src_path {
+        prune_call_tree(&mut root, crate_path, show_drops);
+    }
+
+    // Print output based on --tree flag
+    if show_tree {
+        println!("Full call tree:");
+        print_call_tree(&root, 0);
+        crate_src_path.map_or(0, |cp| count_crate_code_points(&root, cp))
+    } else if let Some(crate_path) = crate_src_path {
+        print_crate_code_points(&root, crate_path)
+    } else {
+        println!("Could not determine crate source path, showing full tree");
+        print_call_tree(&root, 0);
+        0
+    }
 }
 
 /// Build a call tree by recursively finding callers of the target address.

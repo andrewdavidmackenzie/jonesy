@@ -10,9 +10,11 @@ use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian,
     SectionId, Unit,
 };
+use goblin::archive::Archive;
 use goblin::mach::segment::SectionData;
 use goblin::mach::segment::{Section, Segment};
 use goblin::mach::{Mach, MachO};
+use goblin::Object;
 use ouroboros::self_referencing;
 use regex::Regex;
 use rustc_demangle::demangle;
@@ -24,6 +26,7 @@ type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 
 pub enum SymbolTable<'a> {
     MachO(Mach<'a>),
+    Archive(Archive<'a>),
 }
 
 /// Function info extracted from DWARF of the calling function
@@ -91,9 +94,27 @@ impl DebugInfo {
 }
 
 pub(crate) fn read_symbols(buffer: &'_ [u8]) -> io::Result<SymbolTable<'_>> {
-    Ok(SymbolTable::MachO(Mach::parse(buffer).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, e)
-    })?))
+    // Use goblin's Object::parse to auto-detect the file type
+    match Object::parse(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
+        Object::Mach(mach) => Ok(SymbolTable::MachO(mach)),
+        Object::Archive(archive) => Ok(SymbolTable::Archive(archive)),
+        Object::Elf(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ELF format not supported (macOS only)",
+        )),
+        Object::PE(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "PE format not supported (macOS only)",
+        )),
+        Object::COFF(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "COFF format not supported (macOS only)",
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unknown binary format",
+        )),
+    }
 }
 
 /// Return true if `macho` has a `__DWARF` segment or a section names `__debug_*` in any segment
@@ -693,20 +714,41 @@ pub fn get_dwarf_sections(macho: &MachO) -> Vec<String> {
 // 4) Embedded debug info, dSYM
 pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
     // Look for dSYM symbol directory
-    let binary_name = binary_path.file_stem().unwrap().to_str().unwrap();
-    let dsym_dir_path = binary_path
-        .with_extension("dSYM")
-        .join("Contents/Resources/DWARF")
-        .join(binary_name);
-    if dsym_dir_path.exists() {
-        println!("Using .dSYM bundle for debug info");
-        let debug_buffer = fs::read(dsym_dir_path).unwrap();
-        let dsym_info = DSymInfoBuilder {
-            debug_buffer,
-            debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+    // Try both with and without extension since dsymutil behavior varies
+    let file_name = binary_path.file_name().unwrap().to_str().unwrap();
+    let file_stem = binary_path.file_stem().unwrap().to_str().unwrap();
+
+    // Try .dSYM bundle with full filename first
+    let dsym_base = binary_path.parent().unwrap_or(Path::new("."));
+    let dsym_paths = [
+        // Pattern: binary.dSYM/Contents/Resources/DWARF/binary
+        dsym_base
+            .join(format!("{}.dSYM", file_stem))
+            .join("Contents/Resources/DWARF")
+            .join(file_name),
+        // Pattern: binary.dSYM/Contents/Resources/DWARF/binary (without extension)
+        dsym_base
+            .join(format!("{}.dSYM", file_stem))
+            .join("Contents/Resources/DWARF")
+            .join(file_stem),
+        // Pattern: binary.ext.dSYM/Contents/Resources/DWARF/binary.ext
+        binary_path
+            .with_extension("dSYM")
+            .join("Contents/Resources/DWARF")
+            .join(file_name),
+    ];
+
+    for dsym_path in &dsym_paths {
+        if dsym_path.exists() {
+            println!("Using .dSYM bundle for debug info");
+            let debug_buffer = fs::read(dsym_path).unwrap();
+            let dsym_info = DSymInfoBuilder {
+                debug_buffer,
+                debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+            }
+            .build();
+            return DebugInfo::DSym(Box::new(dsym_info));
         }
-        .build();
-        return DebugInfo::DSym(Box::new(dsym_info));
     }
 
     if !get_dwarf_sections(macho).is_empty() {

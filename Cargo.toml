@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "jones",
     "examples/array_access",
+    "examples/library",
     "examples/oom",
     "examples/panic",
     "examples/perfect",

@@ -1,8 +1,9 @@
 [package]
-name = "panic"
+name = "library"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "panic_lib"
+name = "library"
 path = "src/lib.rs"
+crate-type = ["rlib", "dylib"]
