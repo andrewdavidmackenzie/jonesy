@@ -48,13 +48,14 @@ fn is_cleanup_panic_path(node: &CallTreeNode) -> bool {
 /// show_drops is true.
 /// Returns true if this node should be kept.
 fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, show_drops: bool) -> bool {
-    // Remove cleanup panic paths unless --drops is specified
+    // Remove cleanup panic paths unless the --drops option is specified
     if !show_drops && is_cleanup_panic_path(node) {
         return false;
     }
 
     // Recursively prune children first
-    node.callers.retain_mut(|caller| prune_call_tree(caller, crate_src_path, show_drops));
+    node.callers
+        .retain_mut(|caller| prune_call_tree(caller, crate_src_path, show_drops));
 
     // Keep this node if:
     // 1. It's a leaf AND in the crate source, OR
@@ -69,13 +70,13 @@ fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, show_drops: bo
 }
 
 /// Try to derive the crate source path from the binary path.
-/// For a binary at "target/panic/panic", looks for source in common locations.
+/// For a binary at "target/panic/panic", looks for the source in common locations.
 fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
-    // Get the binary name (e.g., "panic" from "target/panic/panic")
+    // Get the binary name (e.g. "panic" from "target/panic/panic")
     let binary_name = binary_path.file_stem()?.to_str()?;
 
     // Common patterns:
-    // 1. examples/<name>/src/ for example crates
+    // 1. examples/<name>/src/ for crates in examples
     // 2. <name>/src/ for workspace members
     // 3. src/ for the main crate
 
@@ -113,8 +114,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let parsed_args = parse_args(&args).unwrap_or_else(|e| {
         eprintln!("Error: {}", e);
-        std::process::exit(1);
+        std::process::exit(255);
     });
+
+    let mut total_panic_points: usize = 0;
 
     for binary_path in parsed_args.binaries {
         println!("Processing {}", binary_path.display());
@@ -132,7 +135,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // Find the target symbol's address
                     match find_symbol_address(&macho, &panic_symbol) {
                         Some((_sym_name, target_addr)) => {
-                            println!("Symbol {demangled}");
                             let debug_info = load_debug_info(&macho, &binary_path);
 
                             // Create the root node for the call tree
@@ -169,10 +171,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                             if parsed_args.show_tree {
                                 println!("Full call tree:");
                                 print_call_tree(&root, 0);
+                                // Still count for exit status
+                                if let Some(ref crate_path) = crate_src_path {
+                                    total_panic_points +=
+                                        count_crate_code_points(&root, crate_path);
+                                }
                             } else if let Some(ref crate_path) = crate_src_path {
-                                print_crate_code_points(&root, crate_path);
+                                total_panic_points += print_crate_code_points(&root, crate_path);
                             } else {
-                                println!("Could not determine crate source path, showing full tree");
+                                println!(
+                                    "Could not determine crate source path, showing full tree"
+                                );
                                 print_call_tree(&root, 0);
                             }
                         }
@@ -190,7 +199,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!();
     }
 
-    Ok(())
+    // Exit with the number of panic points found (0 = passed, >0 = found panics)
+    // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
+    std::process::exit(total_panic_points as i32);
 }
 
 /// Build a call tree by recursively finding callers of the target address.
@@ -291,8 +302,18 @@ fn collect_crate_code_points(
     }
 }
 
-/// Print only the crate code points without the full tree
-fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) {
+/// Count unique crate code points without printing
+fn count_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usize {
+    let mut points = Vec::new();
+    collect_crate_code_points(node, crate_src_path, &mut points);
+    points.sort_by(|a, b| (&a.1, a.2).cmp(&(&b.1, b.2)));
+    points.dedup();
+    points.len()
+}
+
+/// Print only the crate code points without the full tree.
+/// Returns the number of unique panic code points found.
+fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usize {
     let mut points = Vec::new();
     collect_crate_code_points(node, crate_src_path, &mut points);
 
@@ -302,10 +323,16 @@ fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) {
     // Remove duplicates
     points.dedup();
 
-    println!("\nPanic code points in crate:");
-    for (name, file, line) in &points {
-        println!("  {}:{} in '{}'", file, line, name);
+    let count = points.len();
+    if count == 0 {
+        println!("\nNo panics in crate");
+    } else {
+        println!("\nPanic code points in crate:");
+        for (name, file, line) in &points {
+            println!("  {}:{} in '{}'", file, line, name);
+        }
     }
+    count
 }
 
 /// Print the call tree with indentation

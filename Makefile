@@ -15,4 +15,5 @@ debug_info:
 	dsymutil ./target/panic/panic -o ./target/panic/panic.dSYM 2>&1
 
 run:
-	cargo run -p jones -- --bin target/panic/panic
+	cargo run -p jones -- --bin target/panic/panic || true
+	cargo run -p jones -- --bin target/panic/perfect
