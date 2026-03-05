@@ -1,5 +1,15 @@
 use std::path::PathBuf;
 
+/// Parsed command line arguments
+pub(crate) struct Args {
+    /// Paths to binaries to analyze
+    pub binaries: Vec<PathBuf>,
+    /// Whether to show the full call tree (--tree flag)
+    pub show_tree: bool,
+    /// Whether to show drop/cleanup panic paths (--drops flag)
+    pub show_drops: bool,
+}
+
 /// parse the command line arguments into the three cases accepted:
 /// 1) --example
 ///    Verify there is an example with that name and then find the compiled binary in ./target
@@ -9,32 +19,46 @@ use std::path::PathBuf;
 ///    --release switch
 /// 3) --bin $path
 ///    Check that the binary file specified by the --bin option exists and is readable
-pub(crate) fn parse_args(args: &[String]) -> Result<Vec<PathBuf>, String> {
-    if args.len() != 3 {
+///
+/// Optional flags:
+/// --tree  Show the full call tree instead of just crate code points
+pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
+    // Check for flags
+    let show_tree = args.iter().any(|a| a == "--tree");
+    let show_drops = args.iter().any(|a| a == "--drops");
+
+    // Filter out flags from args for path parsing
+    let filtered_args: Vec<&String> = args
+        .iter()
+        .filter(|a| *a != "--tree" && *a != "--drops")
+        .collect();
+
+    if filtered_args.len() != 3 {
         return Err(usage());
     }
 
-    match args[1].as_str() {
-        "--bin" => parse_bin_args(args),
-        "--lib" => parse_lib_args(args),
-        _ => Err(usage()),
-    }
+    let binaries = match filtered_args[1].as_str() {
+        "--bin" => parse_bin_args(&filtered_args)?,
+        "--lib" => parse_lib_args(&filtered_args)?,
+        _ => return Err(usage()),
+    };
+
+    Ok(Args { binaries, show_tree, show_drops })
 }
 
 fn usage() -> String {
     "Usage:\n  \
-     jones --bin <path_to_binary>
-     jones --lib <path_to_lib_object>"
+     jones [--tree] [--drops] --bin <path_to_binary>\n  \
+     jones [--tree] [--drops] --lib <path_to_lib_object>\n\n\
+     Options:\n  \
+     --tree   Show full call tree instead of just crate code points\n  \
+     --drops  Include panic paths from drop/cleanup operations"
         .to_string()
 }
 
 /// Parse --bin path_to_binary
-fn parse_bin_args(args: &[String]) -> Result<Vec<PathBuf>, String> {
-    if args.len() != 3 {
-        return Err("--bin requires a path to a binary".to_string());
-    }
-
-    let binary_path = PathBuf::from(&args[2]);
+fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    let binary_path = PathBuf::from(args[2].as_str());
 
     // Check that the file exists
     if !binary_path.exists() {
@@ -48,13 +72,9 @@ fn parse_bin_args(args: &[String]) -> Result<Vec<PathBuf>, String> {
     Ok(vec![binary_path])
 }
 
-/// Parse --bin path_to_library_object
-fn parse_lib_args(args: &[String]) -> Result<Vec<PathBuf>, String> {
-    if args.len() != 3 {
-        return Err("--lib requires a path to a library object file".to_string());
-    }
-
-    let binary_path = PathBuf::from(&args[2]);
+/// Parse --lib path_to_library_object
+fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    let binary_path = PathBuf::from(args[2].as_str());
 
     // Check that the file exists
     if !binary_path.exists() {

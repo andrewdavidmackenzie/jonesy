@@ -1,6 +1,7 @@
 # Jones - Panic Call Tree Analyzer
 
-Jones analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics can originate in their code.
+Jones analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
+can originate in their code.
 
 ## How It Works
 
@@ -12,7 +13,8 @@ Jones starts by finding the `rust_panic` symbol in the binary using a regex patt
 rust_panic$
 ```
 
-This matches the core panic function that all Rust panics eventually call. Due to recent Rust ABI changes, this symbol may be mangled (e.g., `__rustc::rust_panic`), so regex matching is used instead of exact name matching.
+This matches the core panic function that all Rust panics eventually call. Due to recent Rust ABI changes, this symbol
+may be mangled (e.g., `__rustc::rust_panic`), so regex matching is used instead of exact name matching.
 
 ### 2. Call Tree Construction
 
@@ -24,13 +26,15 @@ Starting from `rust_panic`, Jones builds a reverse call tree by:
 4. **Recursively repeating** for each caller function
 
 The result is a tree where:
+
 - The root is `rust_panic`
 - Each node represents a function that eventually leads to a panic
 - Leaf nodes are functions with no further callers in the binary
 
 ### 3. Cycle Detection
 
-A `HashSet<u64>` tracks visited function addresses to prevent infinite recursion when there are cycles in the call graph (e.g., recursive functions, mutual recursion).
+A `HashSet<u64>` tracks visited function addresses to prevent infinite recursion when there are cycles in the call
+graph (e.g., recursive functions, mutual recursion).
 
 ### 4. Source File Resolution
 
@@ -39,7 +43,8 @@ For each caller, Jones extracts the source file and line from DWARF debug info:
 1. **Function declaration file/line** (`DW_AT_decl_file`, `DW_AT_decl_line`) - preferred but not always present
 2. **Line info at function start address** - fallback using DWARF line program
 
-Both file AND line are resolved from the function's start address to ensure we get the outer function's location, not inlined code. This is important because:
+Both file AND line are resolved from the function's start address to ensure we get the outer function's location, not
+inlined code. This is important because:
 
 - The `panic!` macro expands to multiple inlined functions
 - The actual call instruction may be inside inlined code with different source attribution
@@ -66,6 +71,7 @@ fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str) -> bool {
 ```
 
 The algorithm:
+
 1. Recursively prunes all children first (depth-first)
 2. For leaf nodes: keeps only those whose source file contains the crate path
 3. For non-leaf nodes: keeps them if they still have children after pruning
@@ -80,6 +86,7 @@ target/panic/panic → examples/panic/src/
 ```
 
 Jones looks for:
+
 - `examples/<name>/src/` for example crates
 - `<name>/src/` for workspace members
 - `src/` for the main crate
@@ -113,7 +120,7 @@ struct CallerInfo {
 For an example with multiple panic paths:
 
 ```rust
-// main.rs
+// lib
 mod module;
 
 fn main() {
@@ -144,6 +151,7 @@ Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
 ```
 
 Key findings:
+
 - `main.rs:8` - the direct `panic!` call
 - `main.rs:10` - the call to `cause_a_panic()`
 - `module/mod.rs:2` - the panic inside `cause_a_panic`
@@ -151,6 +159,7 @@ Key findings:
 Line numbers reference the actual source lines where the panic-inducing code is located, not just function declarations.
 
 Without pruning, this tree would include hundreds of branches for:
+
 - Signal handlers
 - Runtime initialization
 - I/O operations that can panic
@@ -161,11 +170,13 @@ Without pruning, this tree would include hundreds of branches for:
 
 1. **ARM64 only**: Currently only supports ARM64 binaries (uses `bl` instruction detection)
 
-2. **Direct calls only**: Only detects direct function calls via `bl` instructions, not indirect calls through function pointers
+2. **Direct calls only**: Only detects direct function calls via `bl` instructions, not indirect calls through function
+   pointers
 
 3. **macOS/Mach-O**: Currently only supports Mach-O binaries with dSYM or embedded DWARF
 
-4. **Function declaration lines**: Line numbers reference where functions are declared, not the specific panic call site within the function
+4. **Function declaration lines**: Line numbers reference where functions are declared, not the specific panic call site
+   within the function
 
 ## Key Files
 

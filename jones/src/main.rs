@@ -35,13 +35,26 @@ fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
     }
 }
 
+/// Returns true if the node is in a panic cleanup path (not a user-initiated panic)
+fn is_cleanup_panic_path(node: &CallTreeNode) -> bool {
+    // These are internal panic paths, not user panic! calls
+    node.name.contains("panic_nounwind")
+        || node.name.contains("panic_in_cleanup")
+        || node.name.contains("panic_cannot_unwind")
+}
+
 /// Prune branches that don't lead to a leaf node in the target crate's source.
-/// Removes leaf nodes not in the crate, then recursively removes parents
-/// that no longer have children leading to crate code.
+/// Also removes panic cleanup paths (panic_nounwind, panic_in_cleanup) unless
+/// show_drops is true.
 /// Returns true if this node should be kept.
-fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str) -> bool {
+fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, show_drops: bool) -> bool {
+    // Remove cleanup panic paths unless --drops is specified
+    if !show_drops && is_cleanup_panic_path(node) {
+        return false;
+    }
+
     // Recursively prune children first
-    node.callers.retain_mut(|caller| prune_call_tree(caller, crate_src_path));
+    node.callers.retain_mut(|caller| prune_call_tree(caller, crate_src_path, show_drops));
 
     // Keep this node if:
     // 1. It's a leaf AND in the crate source, OR
@@ -98,12 +111,12 @@ fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
 
-    let binaries = parse_args(&args).unwrap_or_else(|e| {
+    let parsed_args = parse_args(&args).unwrap_or_else(|e| {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     });
 
-    for binary_path in binaries {
+    for binary_path in parsed_args.binaries {
         println!("Processing {}", binary_path.display());
 
         let binary_buffer = fs::read(&binary_path)?;
@@ -149,14 +162,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                             // Prune to only show paths leading to user code
                             if let Some(ref crate_path) = crate_src_path {
-                                println!("Filtering to crate source: {}", crate_path);
-                                prune_call_tree(&mut root, crate_path);
-                            } else {
-                                println!("Could not determine crate source path, showing full tree");
+                                prune_call_tree(&mut root, crate_path, parsed_args.show_drops);
                             }
 
-                            // Print the tree
-                            print_call_tree(&root, 0);
+                            // Print output based on --tree flag
+                            if parsed_args.show_tree {
+                                println!("Full call tree:");
+                                print_call_tree(&root, 0);
+                            } else if let Some(ref crate_path) = crate_src_path {
+                                print_crate_code_points(&root, crate_path);
+                            } else {
+                                println!("Could not determine crate source path, showing full tree");
+                                print_call_tree(&root, 0);
+                            }
                         }
                         None => println!("Couldn't find '{}' address", panic_symbol),
                     }
@@ -252,6 +270,41 @@ fn build_call_tree(
         }
 
         node.callers.push(caller_node);
+    }
+}
+
+/// Collect all crate code points from the tree (nodes whose source is in the crate)
+fn collect_crate_code_points(
+    node: &CallTreeNode,
+    crate_src_path: &str,
+    points: &mut Vec<(String, String, u32)>,
+) {
+    // Add this node if it's in the crate source
+    if let (Some(file), Some(line)) = (&node.file, &node.line) {
+        if file.contains(crate_src_path) {
+            points.push((node.name.clone(), file.clone(), *line));
+        }
+    }
+    // Recurse to children
+    for caller in &node.callers {
+        collect_crate_code_points(caller, crate_src_path, points);
+    }
+}
+
+/// Print only the crate code points without the full tree
+fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) {
+    let mut points = Vec::new();
+    collect_crate_code_points(node, crate_src_path, &mut points);
+
+    // Sort by file then line number for readable output
+    points.sort_by(|a, b| (&a.1, a.2).cmp(&(&b.1, b.2)));
+
+    // Remove duplicates
+    points.dedup();
+
+    println!("\nPanic code points in crate:");
+    for (name, file, line) in &points {
+        println!("  {}:{} in '{}'", file, line, name);
     }
 }
 
