@@ -501,8 +501,12 @@ pub fn find_callers_with_debug_info(
             {
                 // Find the function containing this call using DWARF info
                 if let Some(func) = find_function_at_address(&functions, instruction.address()) {
-                    // Get source line info for this specific address
-                    let (file, line) = get_source_location(&dwarf, instruction.address())?;
+                    // Get source info from function's start address to avoid inlined code locations
+                    let (func_file, func_line) = get_source_location(&dwarf, func.start_address)?;
+
+                    // Prefer function's declaration file/line if available, then function start's line info
+                    let file = func.file.clone().or(func_file);
+                    let line = func.line.or(func_line);
 
                     callers.push(CallerInfo {
                         caller: func.clone(),
@@ -541,11 +545,27 @@ fn get_source_location<R: Reader>(
                 }
 
                 if let Some(file_entry) = row.file(header) {
+                    // Get the directory and filename to build the full path
                     let file_name = dwarf
                         .attr_string(&unit, file_entry.path_name())?
                         .to_string_lossy()?
                         .into_owned();
-                    prev_row = Some((file_name, row.line().map(|l| l.get() as u32).unwrap_or(0)));
+
+                    let full_path = if let Some(dir) = file_entry.directory(header) {
+                        let dir_str = dwarf
+                            .attr_string(&unit, dir)?
+                            .to_string_lossy()?
+                            .into_owned();
+                        if dir_str.is_empty() {
+                            file_name
+                        } else {
+                            format!("{}/{}", dir_str, file_name)
+                        }
+                    } else {
+                        file_name
+                    };
+
+                    prev_row = Some((full_path, row.line().map(|l| l.get() as u32).unwrap_or(0)));
                 }
             }
         }

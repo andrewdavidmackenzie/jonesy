@@ -34,12 +34,16 @@ A `HashSet<u64>` tracks visited function addresses to prevent infinite recursion
 
 ### 4. Source File Resolution
 
-For each caller, Jones extracts the source file path from DWARF debug info:
+For each caller, Jones extracts the source file and line from DWARF debug info:
 
-1. **Function declaration file** (`DW_AT_decl_file`) - preferred but not always present
-2. **Line info at function start** - fallback that provides the outer function's source file
+1. **Function declaration file/line** (`DW_AT_decl_file`, `DW_AT_decl_line`) - preferred but not always present
+2. **Line info at function start address** - fallback using DWARF line program
 
-This is important because inlined functions (like `panic!` macro expansions) have their own source locations. Using the function's START address ensures we get the outer function's file, not the inlined code's file.
+Both file AND line are resolved from the function's start address to ensure we get the outer function's location, not inlined code. This is important because:
+
+- The `panic!` macro expands to multiple inlined functions
+- The actual call instruction may be inside inlined code with different source attribution
+- Using the function start gives consistent, meaningful source references
 
 ### 5. Call Tree Pruning
 
@@ -118,13 +122,15 @@ Jones produces:
 
 ```
 __rustc::rust_panic
-Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:250)
-    Called from: '{closure#0}' (source: library/std/src/panicking.rs:250)
-        Called from: '__rust_end_short_backtrace<...>'
-            Called from: 'panic_handler'
-                Called from: 'panic_fmt' (source: library/core/src/panicking.rs:75)
-                    Called from: 'main' (source: examples/panic/src/main.rs:259)
+Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
+    Called from: '{closure#0}' (source: library/std/src/panicking.rs:698)
+        Called from: '__rust_end_short_backtrace<...>' (source: library/std/src/sys/backtrace.rs:170)
+            Called from: 'panic_handler' (source: library/std/src/panicking.rs:631)
+                Called from: 'panic_fmt' (source: library/core/src/panicking.rs:55)
+                    Called from: 'main' (source: examples/panic/src/main.rs:4)
 ```
+
+The line numbers now correctly reference the function declaration lines, not inlined code locations.
 
 Without pruning, this tree would include hundreds of branches for:
 - Signal handlers
@@ -135,13 +141,13 @@ Without pruning, this tree would include hundreds of branches for:
 
 ## Limitations
 
-1. **Inlined code line numbers**: The line numbers shown are from the call site, which may be inside inlined code (like `panic!` macro expansion)
+1. **ARM64 only**: Currently only supports ARM64 binaries (uses `bl` instruction detection)
 
-2. **ARM64 only**: Currently only supports ARM64 binaries (uses `bl` instruction detection)
+2. **Direct calls only**: Only detects direct function calls via `bl` instructions, not indirect calls through function pointers
 
-3. **Direct calls only**: Only detects direct function calls via `bl` instructions, not indirect calls through function pointers
+3. **macOS/Mach-O**: Currently only supports Mach-O binaries with dSYM or embedded DWARF
 
-4. **macOS/Mach-O**: Currently only supports Mach-O binaries with dSYM or embedded DWARF
+4. **Function declaration lines**: Line numbers reference where functions are declared, not the specific panic call site within the function
 
 ## Key Files
 

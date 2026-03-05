@@ -4,12 +4,96 @@ use crate::sym::{
     read_symbols, DebugInfo, SymbolTable,
 };
 use goblin::mach::Mach::{Binary, Fat};
+use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
+use std::path::Path;
 
 mod args;
 #[cfg(target_os = "macos")]
 mod sym;
+
+/// A node in the call tree representing a function that can lead to the target symbol
+#[derive(Debug)]
+struct CallTreeNode {
+    /// Symbol/function name
+    name: String,
+    /// Source file (if available from debug info)
+    file: Option<String>,
+    /// Line number (if available from debug info)
+    line: Option<u32>,
+    /// Functions that call this one
+    callers: Vec<CallTreeNode>,
+}
+
+/// Returns true if the node's source file matches the crate source path
+fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
+    if let Some(file) = &node.file {
+        file.contains(crate_src_path)
+    } else {
+        false
+    }
+}
+
+/// Prune branches that don't lead to a leaf node in the target crate's source.
+/// Removes leaf nodes not in the crate, then recursively removes parents
+/// that no longer have children leading to crate code.
+/// Returns true if this node should be kept.
+fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str) -> bool {
+    // Recursively prune children first
+    node.callers.retain_mut(|caller| prune_call_tree(caller, crate_src_path));
+
+    // Keep this node if:
+    // 1. It's a leaf AND in the crate source, OR
+    // 2. It still has children after pruning (meaning it leads to crate code)
+    if node.callers.is_empty() {
+        // Leaf node: keep only if it's in the crate source
+        is_in_crate(node, crate_src_path)
+    } else {
+        // Has children that lead to crate code, so keep it
+        true
+    }
+}
+
+/// Try to derive the crate source path from the binary path.
+/// For a binary at "target/panic/panic", looks for source in common locations.
+fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
+    // Get the binary name (e.g., "panic" from "target/panic/panic")
+    let binary_name = binary_path.file_stem()?.to_str()?;
+
+    // Common patterns:
+    // 1. examples/<name>/src/ for example crates
+    // 2. <name>/src/ for workspace members
+    // 3. src/ for the main crate
+
+    // Try to find the workspace root by looking for Cargo.toml
+    let mut current = binary_path.parent();
+    while let Some(dir) = current {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            // Check for examples/<binary_name>/src/
+            let example_src = dir.join("examples").join(binary_name).join("src");
+            if example_src.exists() {
+                return Some(format!("examples/{}/src/", binary_name));
+            }
+
+            // Check for <binary_name>/src/
+            let member_src = dir.join(binary_name).join("src");
+            if member_src.exists() {
+                return Some(format!("{}/src/", binary_name));
+            }
+
+            // Check for src/ in the workspace root
+            let root_src = dir.join("src");
+            if root_src.exists() {
+                return Some("src/".to_string());
+            }
+        }
+        current = dir.parent();
+    }
+
+    None
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -37,18 +121,38 @@ fn main() -> Result<(), Box<dyn Error>> {
                         Some((_sym_name, target_addr)) => {
                             println!("Symbol {demangled}");
                             let debug_info = load_debug_info(&macho, &binary_path);
-                            match &debug_info {
-                                DebugInfo::Embedded => {
-                                    call_tree(&macho, &binary_buffer, &debug_info, target_addr, 1);
-                                }
-                                DebugInfo::DSym(_) => {
-                                    call_tree(&macho, &binary_buffer, &debug_info, target_addr, 1);
-                                }
-                                DebugInfo::None => {
-                                    println!("No debug info found, looking for callers by address");
-                                    call_tree(&macho, &binary_buffer, &debug_info, target_addr, 1);
-                                }
+
+                            // Create the root node for the call tree
+                            let mut root = CallTreeNode {
+                                name: demangled.clone(),
+                                file: None,
+                                line: None,
+                                callers: Vec::new(),
+                            };
+
+                            // Track visited addresses to avoid infinite recursion
+                            let mut visited = HashSet::new();
+                            visited.insert(target_addr);
+
+                            build_call_tree(
+                                &macho,
+                                &binary_buffer,
+                                &debug_info,
+                                target_addr,
+                                &mut root,
+                                &mut visited,
+                            );
+
+                            // Try to derive the crate source path from the binary path
+                            if let Some(crate_src_path) = derive_crate_src_path(&binary_path) {
+                                println!("Filtering to crate source: {}", crate_src_path);
+                                prune_call_tree(&mut root, &crate_src_path);
+                            } else {
+                                println!("Could not determine crate source path, showing full tree");
                             }
+
+                            // Print the tree
+                            print_call_tree(&root, 0);
                         }
                         None => println!("Couldn't find '{}' address", panic_symbol),
                     }
@@ -67,18 +171,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// TODO Maybe have a list of internal rust symbols that is used to filter out call tree
-// paths that we are not interested in, as this finds A LOT of paths, some that don't even
-// make it up to main (like signal handling)
-// std::rt::lang_start
-// std::sys::pal::unix::stack_overflow::imp::signal_handler
-// Construct a Graph or DAG that can be filtered, inverted and printed out or drawn (dot?) later?
-fn call_tree(
+/// Build a call tree by recursively finding callers of the target address.
+/// Uses a visited set to avoid infinite recursion when there are cycles.
+fn build_call_tree(
     binary_macho: &goblin::mach::MachO,
     binary_buffer: &[u8],
     debug_source: &DebugInfo,
     target_addr: u64,
-    depth: usize,
+    node: &mut CallTreeNode,
+    visited: &mut HashSet<u64>,
 ) {
     let callers = match debug_source {
         DebugInfo::Embedded => {
@@ -94,9 +195,8 @@ fn call_tree(
         }
         DebugInfo::DSym(dsym_info) => {
             // Binary for code, dSYM for debug info
-            // Use ouroboros-generated accessors to get references
             dsym_info.with_debug_macho(|debug_macho| {
-                if let goblin::mach::Mach::Binary(macho) = debug_macho {
+                if let Binary(macho) = debug_macho {
                     find_callers_with_debug_info(
                         binary_macho,
                         binary_buffer,
@@ -116,26 +216,64 @@ fn call_tree(
         }
     };
 
-    let indent = "    ".repeat(depth);
     for caller_info in callers {
-        match (&caller_info.file, &caller_info.line) {
-            (Some(filename), None) => println!(
-                "{}Called from: '{}' (source: {}",
-                indent, caller_info.caller.name, filename
-            ),
-            (Some(filename), Some(line)) => println!(
-                "{}Called from: '{}' (source: {}:{})",
-                indent, caller_info.caller.name, filename, line
-            ),
-            _ => println!("{}Called from: '{}'", indent, caller_info.caller.name),
+        let caller_addr = caller_info.caller.start_address;
+
+        // Create a new node for this caller
+        // Use the function's declaration file for crate identification,
+        // falling back to the call site file if not available
+        let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+        let mut caller_node = CallTreeNode {
+            name: caller_info.caller.name.clone(),
+            file,
+            line: caller_info.line,
+            callers: Vec::new(),
+        };
+
+        // Only recurse if we haven't visited this address before
+        if !visited.contains(&caller_addr) {
+            visited.insert(caller_addr);
+            build_call_tree(
+                binary_macho,
+                binary_buffer,
+                debug_source,
+                caller_addr,
+                &mut caller_node,
+                visited,
+            );
         }
-        // Recurse using the caller's function start address, not the call site
-        call_tree(
-            binary_macho,
-            binary_buffer,
-            debug_source,
-            caller_info.caller.start_address,
-            depth + 1,
-        );
+
+        node.callers.push(caller_node);
+    }
+}
+
+/// Print the call tree with indentation
+fn print_call_tree(node: &CallTreeNode, depth: usize) {
+    let indent = "    ".repeat(depth);
+
+    if depth == 0 {
+        // Root node (the panic symbol)
+        println!("{}{}", indent, node.name);
+    }
+
+    for caller in &node.callers {
+        match (&caller.file, &caller.line) {
+            (Some(filename), Some(line)) => {
+                println!(
+                    "{}Called from: '{}' (source: {}:{})",
+                    indent, caller.name, filename, line
+                );
+            }
+            (Some(filename), None) => {
+                println!(
+                    "{}Called from: '{}' (source: {})",
+                    indent, caller.name, filename
+                );
+            }
+            _ => {
+                println!("{}Called from: '{}'", indent, caller.name);
+            }
+        }
+        print_call_tree(caller, depth + 1);
     }
 }
