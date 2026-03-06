@@ -71,7 +71,8 @@ fn usage() -> String {
 
 /// Find target/debug directory, checking current directory and walking up to workspace root
 fn find_target_dir() -> Result<PathBuf, String> {
-    let mut current = std::env::current_dir().map_err(|e| format!("Cannot get current dir: {}", e))?;
+    let mut current =
+        std::env::current_dir().map_err(|e| format!("Cannot get current dir: {}", e))?;
 
     loop {
         let target_dir = current.join("target/debug");
@@ -86,9 +87,7 @@ fn find_target_dir() -> Result<PathBuf, String> {
             && content.contains("[workspace]")
         {
             // This is workspace root but no target/debug
-            return Err(
-                "target/debug/ directory not found. Run 'cargo build' first.".to_string(),
-            );
+            return Err("target/debug/ directory not found. Run 'cargo build' first.".to_string());
         }
 
         // Move up one directory

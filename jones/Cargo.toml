@@ -17,3 +17,6 @@ capstone = "0.12"
 ouroboros = "0.18"
 regex = "1"
 cargo_toml = "0.22"
+
+[dev-dependencies]
+wait-timeout = "0.2"

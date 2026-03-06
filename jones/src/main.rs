@@ -1,7 +1,8 @@
 use crate::args::parse_args;
 use crate::sym::{
-    find_callers, find_callers_with_debug_info, find_callers_with_debug_map, find_symbol_address,
-    find_symbol_containing, load_debug_info, read_symbols, DebugInfo, SymbolTable,
+    DebugInfo, SymbolTable, find_callers, find_callers_with_debug_info,
+    find_callers_with_debug_map, find_symbol_address, find_symbol_containing, load_debug_info,
+    read_symbols,
 };
 use cargo_toml::Manifest;
 use goblin::mach::Mach::{Binary, Fat};
@@ -166,8 +167,7 @@ fn find_lib_src_path(workspace_root: &Path, lib_name: &str) -> Option<String> {
                     .unwrap_or_default();
 
                 // Check if this lib matches the target name
-                if manifest_lib_name == lib_name
-                    || manifest_lib_name.replace('-', "_") == lib_name
+                if manifest_lib_name == lib_name || manifest_lib_name.replace('-', "_") == lib_name
                 {
                     // Return relative path from workspace root
                     if let Ok(rel_path) = member_path.strip_prefix(workspace_root) {
@@ -214,8 +214,7 @@ fn detect_library_type(binary_path: &Path) -> Option<String> {
                     .or_else(|| manifest.package.as_ref().map(|p| p.name.clone()))
                     .unwrap_or_default();
 
-                if manifest_lib_name == lib_name
-                    || manifest_lib_name.replace('-', "_") == lib_name
+                if manifest_lib_name == lib_name || manifest_lib_name.replace('-', "_") == lib_name
                 {
                     // Check crate types
                     for crate_type in &lib.crate_type {
@@ -279,12 +278,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Processing {}", binary_path.display());
 
         // Check if this is a library and detect its type
-        let is_dylib = binary_path
-            .extension()
-            .is_some_and(|ext| ext == "dylib");
-        if is_dylib
-            && let Some(lib_type) = detect_library_type(&binary_path)
-        {
+        let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
+        if is_dylib && let Some(lib_type) = detect_library_type(&binary_path) {
             println!("Library type: {}", lib_type);
             if lib_type == "dylib" {
                 println!(
@@ -354,9 +349,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// For binaries, rust_panic$ is the root. For libraries, we look for
 /// the functions that call into the panic runtime.
 const PANIC_SYMBOL_PATTERNS: &[&str] = &[
-    "rust_panic$",      // Main panic entry point (binaries)
-    "panic_fmt$",       // Core panic formatting (libraries)
-    "panic_display",    // Panic display helper
+    "rust_panic$",   // Main panic entry point (binaries)
+    "panic_fmt$",    // Core panic formatting (libraries)
+    "panic_display", // Panic display helper
 ];
 
 /// Analyze a single MachO binary/object for panic points.

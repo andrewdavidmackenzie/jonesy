@@ -7,5 +7,6 @@ fn foo() -> usize {
 }
 
 fn main() {
+    // jones: expect panic - allocation too large, will panic on OOM
     vec![0; 1 << foo()];
 }
