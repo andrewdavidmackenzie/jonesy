@@ -152,17 +152,42 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
 
     for line in output.lines() {
         let line = line.trim();
-        // Look for lines like "examples/panic/src/main.rs:9 in 'main'"
-        if line.contains(":")
-            && line.contains(" in '")
-            && let Some(file_line) = line.split(" in '").next()
-            && let Some((file, line_str)) = file_line.rsplit_once(':')
-            && let Ok(line_num) = line_str.parse::<u32>()
-        {
-            points.insert(PanicPoint {
-                file: file.to_string(),
-                line: line_num,
-            });
+        // Strip tree characters (├── └── │) from the start of the line
+        let line = line
+            .trim_start_matches("├── ")
+            .trim_start_matches("└── ")
+            .trim_start_matches("│   ")
+            .trim_start_matches("│");
+
+        // Look for lines with " --> " followed by file:line:column
+        // Format: " --> examples/panic/src/main.rs:9:1" or "└──  --> path:line:col"
+        if let Some(arrow_pos) = line.find(" --> ") {
+            let location = &line[arrow_pos + 5..]; // Skip " --> "
+            // Parse file:line:column format
+            let parts: Vec<&str> = location.rsplitn(3, ':').collect();
+            if parts.len() >= 2
+                && let Ok(line_num) = parts[1].parse::<u32>()
+            {
+                // parts[0] is column, parts[1] is line, parts[2..] is file path
+                let file = if parts.len() > 2 { parts[2] } else { "" };
+                points.insert(PanicPoint {
+                    file: file.to_string(),
+                    line: line_num,
+                });
+            }
+        } else if line.starts_with("-->") {
+            // Handle " --> path:line:col" at start (after trim)
+            let location = line.trim_start_matches("-->").trim();
+            let parts: Vec<&str> = location.rsplitn(3, ':').collect();
+            if parts.len() >= 2
+                && let Ok(line_num) = parts[1].parse::<u32>()
+            {
+                let file = if parts.len() > 2 { parts[2] } else { "" };
+                points.insert(PanicPoint {
+                    file: file.to_string(),
+                    line: line_num,
+                });
+            }
         }
     }
 
