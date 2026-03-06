@@ -90,7 +90,7 @@ is independent per instruction - perfect for parallelization.
 Once the CallGraph is built, finding callers is O(1). The tree building parallelizes exploration of
 independent branches:
 
-```
+```text
                         panic_function
                               │
               ┌───────────────┼───────────────┐
