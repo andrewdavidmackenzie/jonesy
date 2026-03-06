@@ -9,6 +9,7 @@ use crate::sym::CallGraph;
 use dashmap::DashSet;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 /// A node in the call tree representing a function that can lead to the target symbol
@@ -335,7 +336,12 @@ pub fn count_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usi
 
 /// Print only the crate code points without the full tree.
 /// Returns the number of unique panic code points found.
-pub fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usize {
+/// The project_root is used to make relative paths absolute for clickable links.
+pub fn print_crate_code_points(
+    node: &CallTreeNode,
+    crate_src_path: &str,
+    project_root: Option<&Path>,
+) -> usize {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
 
     // Deduplicate roots by (file, line)
@@ -350,7 +356,7 @@ pub fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usi
     } else {
         println!("\nPanic code points in crate:");
         for point in &roots {
-            print_crate_point(point, "", true, true);
+            print_crate_point(point, "", true, true, project_root);
         }
     }
     count
@@ -373,9 +379,27 @@ fn collect_unique_point_keys(points: &[CrateCodePoint], seen: &mut HashSet<(Stri
 
 /// Print a crate code point with tree-style indentation
 /// Uses rustc-style " --> file:line:column" format for terminal-clickable links
-fn print_crate_point(point: &CrateCodePoint, prefix: &str, is_last: bool, is_root: bool) {
+fn print_crate_point(
+    point: &CrateCodePoint,
+    prefix: &str,
+    is_last: bool,
+    is_root: bool,
+    project_root: Option<&Path>,
+) {
+    // Make path absolute for clickable terminal links
+    let file_path = if point.file.starts_with('/') {
+        // Already absolute
+        point.file.clone()
+    } else if let Some(root) = project_root {
+        // Make relative path absolute
+        root.join(&point.file).to_string_lossy().to_string()
+    } else {
+        // No project root, use as-is
+        point.file.clone()
+    };
+
     // Format like rustc/clippy: " --> file:line:column" which is widely recognized as clickable
-    let location = format!("{}:{}:1", point.file, point.line);
+    let location = format!("{}:{}:1", file_path, point.line);
 
     // Only show cause and help on leaf nodes (no children)
     let is_leaf = point.children.is_empty();
@@ -429,7 +453,7 @@ fn print_crate_point(point: &CrateCodePoint, prefix: &str, is_last: bool, is_roo
         } else {
             format!("{}│   ", prefix)
         };
-        print_crate_point(child, &child_prefix, is_last_child, false);
+        print_crate_point(child, &child_prefix, is_last_child, false, project_root);
     }
 }
 

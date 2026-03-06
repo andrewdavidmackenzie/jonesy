@@ -44,10 +44,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     for binary_path in &parsed_args.binaries {
         println!("Processing {}", binary_path.display());
 
-        // Load configuration per-crate: find project root from binary path
+        // Find project root from binary path for config loading and absolute paths
+        let project_root = find_project_root(binary_path);
+
+        // Load configuration per-crate
         // If no project root found, use defaults plus any explicit --config only
-        let config = if let Some(project_root) = find_project_root(binary_path) {
-            Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
+        let config = if let Some(ref root) = project_root {
+            Config::load_for_project(root, parsed_args.config_path.as_deref())
         } else {
             // No project root found - use defaults plus explicit --config only
             let mut config = Config::with_defaults();
@@ -86,6 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
                     &config,
+                    project_root.as_deref(),
                 );
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
@@ -115,6 +119,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
                             &config,
+                            project_root.as_deref(),
                         );
                     }
                 }
@@ -147,6 +152,7 @@ fn analyze_macho(
     crate_src_path: Option<&str>,
     show_tree: bool,
     config: &Config,
+    project_root: Option<&Path>,
 ) -> usize {
     // Try each panic symbol pattern until we find one
     let mut panic_symbol = None;
@@ -238,7 +244,7 @@ fn analyze_macho(
         print_call_tree(&root, 0);
         crate_src_path.map_or(0, |cp| count_crate_code_points(&root, cp))
     } else if let Some(crate_path) = crate_src_path {
-        print_crate_code_points(&root, crate_path)
+        print_crate_code_points(&root, crate_path, project_root)
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);

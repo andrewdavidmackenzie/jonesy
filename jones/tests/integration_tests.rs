@@ -64,11 +64,27 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
     markers
 }
 
+/// Check if two file paths match (handles absolute vs relative paths)
+/// Returns true if they're equal or if the absolute path ends with the relative path
+fn paths_match(detected_path: &str, marker_path: &str) -> bool {
+    if detected_path == marker_path {
+        return true;
+    }
+    // Handle absolute vs relative: check if absolute ends with relative
+    if detected_path.starts_with('/') && !marker_path.starts_with('/') {
+        detected_path.ends_with(&format!("/{}", marker_path))
+    } else if marker_path.starts_with('/') && !detected_path.starts_with('/') {
+        marker_path.ends_with(&format!("/{}", detected_path))
+    } else {
+        false
+    }
+}
+
 /// Check if a detected panic point has an expected marker nearby
 /// The marker comment can be on the same line, previous line, or up to 2 lines before
 fn has_nearby_marker(detected: &PanicPoint, markers: &[(String, u32)]) -> bool {
     markers.iter().any(|(file, comment_line)| {
-        file == &detected.file
+        paths_match(&detected.file, file)
             && (detected.line >= *comment_line && detected.line <= comment_line + 2)
     })
 }
@@ -76,9 +92,9 @@ fn has_nearby_marker(detected: &PanicPoint, markers: &[(String, u32)]) -> bool {
 /// Check if a marker has a nearby detected panic
 fn has_nearby_detection(marker: &(String, u32), detected: &HashSet<PanicPoint>) -> bool {
     let (file, comment_line) = marker;
-    detected
-        .iter()
-        .any(|p| &p.file == file && (p.line >= *comment_line && p.line <= comment_line + 2))
+    detected.iter().any(|p| {
+        paths_match(&p.file, file) && (p.line >= *comment_line && p.line <= comment_line + 2)
+    })
 }
 
 /// Recursively visit all .rs files in a directory
