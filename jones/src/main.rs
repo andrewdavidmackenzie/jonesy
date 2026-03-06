@@ -45,18 +45,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Processing {}", binary_path.display());
 
         // Load configuration per-crate: find project root from binary path
-        // Falls back to current directory if project root cannot be determined
-        let project_root = find_project_root(binary_path).unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|e| {
-                eprintln!("Warning: Could not determine project root: {e}");
-                std::path::PathBuf::new()
-            })
+        // If no project root found, use defaults plus any explicit --config only
+        let config = if let Some(project_root) = find_project_root(binary_path) {
+            Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
+        } else {
+            // No project root found - use defaults plus explicit --config only
+            let mut config = Config::with_defaults();
+            if let Some(config_path) = parsed_args.config_path.as_deref() {
+                config.load_from_config_file(config_path)?;
+            }
+            Ok(config)
+        }
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(255);
         });
-        let config = Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
-            .unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(255);
-            });
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");

@@ -154,15 +154,20 @@ impl Config {
 
     /// Load configuration from a jones.toml file.
     pub fn load_from_jones_toml(&mut self, jones_toml_path: &Path) {
-        if let Ok(content) = fs::read_to_string(jones_toml_path) {
-            match toml::from_str::<TomlConfig>(&content) {
+        match fs::read_to_string(jones_toml_path) {
+            Ok(content) => match toml::from_str::<TomlConfig>(&content) {
                 Ok(config) => self.apply_toml_config(&config),
                 Err(e) => eprintln!(
                     "Warning: Failed to parse {}: {}",
                     jones_toml_path.display(),
                     e
                 ),
-            }
+            },
+            Err(e) => eprintln!(
+                "Warning: Failed to read {}: {}",
+                jones_toml_path.display(),
+                e
+            ),
         }
     }
 
