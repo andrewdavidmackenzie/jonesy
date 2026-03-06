@@ -45,7 +45,8 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
         for (i, line) in content.lines().enumerate() {
             if line.trim().starts_with(PANIC_MARKER) {
                 // Get relative path from workspace root for matching
-                let rel_path = file_path.strip_prefix(find_workspace_root())
+                let rel_path = file_path
+                    .strip_prefix(find_workspace_root())
                     .unwrap_or(file_path)
                     .to_string_lossy()
                     .to_string();
@@ -62,18 +63,17 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
 /// The marker comment can be on the same line, previous line, or up to 2 lines before
 fn has_nearby_marker(detected: &PanicPoint, markers: &[(String, u32)]) -> bool {
     markers.iter().any(|(file, comment_line)| {
-        file == &detected.file &&
-        (detected.line >= *comment_line && detected.line <= comment_line + 2)
+        file == &detected.file
+            && (detected.line >= *comment_line && detected.line <= comment_line + 2)
     })
 }
 
 /// Check if a marker has a nearby detected panic
 fn has_nearby_detection(marker: &(String, u32), detected: &HashSet<PanicPoint>) -> bool {
     let (file, comment_line) = marker;
-    detected.iter().any(|p| {
-        &p.file == file &&
-        (p.line >= *comment_line && p.line <= comment_line + 2)
-    })
+    detected
+        .iter()
+        .any(|p| &p.file == file && (p.line >= *comment_line && p.line <= comment_line + 2))
 }
 
 /// Recursively visit all .rs files in a directory
@@ -98,13 +98,13 @@ where
 fn run_jones_on_example(example_dir: &Path) -> HashSet<PanicPoint> {
     let workspace_root = find_workspace_root();
     let jones_binary = workspace_root.join("target/debug/jones");
-    
+
     // Run jones from the example directory
     let output = Command::new(&jones_binary)
         .current_dir(example_dir)
         .output()
         .expect("Failed to run jones");
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_jones_output(&stdout)
 }
@@ -113,7 +113,7 @@ fn run_jones_on_example(example_dir: &Path) -> HashSet<PanicPoint> {
 /// Output format: "  examples/panic/src/main.rs:9 in 'main'"
 fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
     let mut points = HashSet::new();
-    
+
     for line in output.lines() {
         let line = line.trim();
         // Look for lines like "examples/panic/src/main.rs:9 in 'main'"
@@ -129,14 +129,14 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             });
         }
     }
-    
+
     points
 }
 
 /// Build the jones binary and all examples
 fn setup() {
     let workspace_root = find_workspace_root();
-    
+
     // Build jones
     let status = Command::new("cargo")
         .args(["build", "-p", "jones"])
@@ -144,7 +144,7 @@ fn setup() {
         .status()
         .expect("Failed to build jones");
     assert!(status.success(), "Failed to build jones");
-    
+
     // Build all examples
     let status = Command::new("cargo")
         .arg("build")
@@ -167,12 +167,14 @@ fn test_example(example_name: &str) {
     let detected = run_jones_on_example(&example_dir);
 
     // Check each detected panic has a nearby marker
-    let unexpected: Vec<_> = detected.iter()
+    let unexpected: Vec<_> = detected
+        .iter()
         .filter(|p| !has_nearby_marker(p, &markers))
         .collect();
 
     // Check each marker has a nearby detection
-    let missing: Vec<_> = markers.iter()
+    let missing: Vec<_> = markers
+        .iter()
         .filter(|m| !has_nearby_detection(m, &detected))
         .collect();
 

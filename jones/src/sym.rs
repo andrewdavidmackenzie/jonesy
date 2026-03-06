@@ -2,7 +2,7 @@
 #![allow(dead_code)] // TODO Just for now
 
 use capstone::arch::BuildsCapstone;
-use capstone::{arch, Capstone};
+use capstone::{Capstone, arch};
 /// Here's how to use gimli with a MachO binary to get function information and then find call sites
 /// Note that DWARF doesn't directly encode "function A calls
 /// function B" - it provides accurate function boundaries and source locations, which you combine with disassembly.
@@ -10,12 +10,12 @@ use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian,
     SectionId, Unit,
 };
+use goblin::Object;
 use goblin::archive::Archive;
 use goblin::mach::segment::SectionData;
 use goblin::mach::segment::{Section, Segment};
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
-use goblin::Object;
 use ouroboros::self_referencing;
 use regex::Regex;
 use rustc_demangle::demangle;
@@ -952,7 +952,10 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
     }
 
     println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
-    println!("Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols", binary_path.display());
+    println!(
+        "Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols",
+        binary_path.display()
+    );
     DebugInfo::None
 }
 
