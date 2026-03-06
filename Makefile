@@ -2,6 +2,9 @@
 
 all: clippy test
 
+clean:
+	cargo clean
+
 clippy:
 	cargo clippy --tests --no-deps --all-features --all-targets
 

@@ -893,6 +893,21 @@ fn load_debug_map(macho: &MachO) -> Option<DebugMapInfo> {
     Some(DebugMapInfo { object_files })
 }
 
+/// Check if a dSYM bundle is stale (binary is newer than the dSYM)
+fn is_dsym_stale(binary_path: &Path, dsym_path: &Path) -> bool {
+    let binary_modified = match fs::metadata(binary_path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return false, // Can't check, assume not stale
+    };
+
+    let dsym_modified = match fs::metadata(dsym_path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return true, // Can't read dSYM metadata, regenerate
+    };
+
+    binary_modified > dsym_modified
+}
+
 // 1) No embedded debug info, no dSYM
 // 2) No embedded debug info, dSYM
 // 3) Embedded debug info, no dSYM
@@ -925,14 +940,20 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
 
     for dsym_path in &dsym_paths {
         if dsym_path.exists() {
-            println!("Using .dSYM bundle for debug info");
-            let debug_buffer = fs::read(dsym_path).unwrap();
-            let dsym_info = DSymInfoBuilder {
-                debug_buffer,
-                debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+            // Check if dSYM is stale (binary is newer than dSYM)
+            let dsym_stale = is_dsym_stale(binary_path, dsym_path);
+            if dsym_stale {
+                println!("dSYM is stale, will regenerate");
+            } else {
+                println!("Using .dSYM bundle for debug info");
+                let debug_buffer = fs::read(dsym_path).unwrap();
+                let dsym_info = DSymInfoBuilder {
+                    debug_buffer,
+                    debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+                }
+                .build();
+                return DebugInfo::DSym(Box::new(dsym_info));
             }
-            .build();
-            return DebugInfo::DSym(Box::new(dsym_info));
         }
     }
 
