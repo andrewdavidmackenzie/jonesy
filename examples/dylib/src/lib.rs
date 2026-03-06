@@ -1,4 +1,3 @@
-// to test that we only find the reference to panic code
 const PANIC_STR: &str = "panic";
 
 mod module;
@@ -7,7 +6,10 @@ mod module;
 #[unsafe(no_mangle)]
 pub fn library_function() {
     if std::env::args().len() > 1 {
+        // jones: expect panic -
         panic!("{}", PANIC_STR);
     }
+
+    // jones: expect panic -
     module::cause_a_panic();
 }

@@ -7,10 +7,10 @@ const CATCHPHRASES: [&str; 3] = [
 ];
 
 fn main() {
-    // this random number could be out of range of array indexes
+    // jones: expect panic - seems this can panic also!
     let index = rand::rng().random_range(0..4);
 
-    // jones: this is a potential panic at runtime
+    // jones: expect panic - this is a potential panic at runtime
     let phrase = CATCHPHRASES[index];
     println!("{}", phrase);
 

@@ -1,185 +1,113 @@
-# Jones - Panic Call Tree Analyzer
+# Jones Technical Documentation
 
-Jones analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
-can originate in their code.
+## macOS Debug Info Cases
 
-## How It Works
+On macOS, Rust/Cargo uses Apple's "lazy" DWARF scheme by default. This section documents the debug info configurations and how Jones handles them.
 
-### 1. Symbol Discovery
+### The Problem
 
-Jones starts by finding the `rust_panic` symbol in the binary using a regex pattern match:
+By default, macOS Rust builds do not embed DWARF debug info in the final binary:
 
-```
-rust_panic$
-```
+1. **Object files (`.o`)** in `target/debug/deps/` contain full DWARF debug info
+2. **Final binary** contains only a "debug map" - stab entries (`OSO`, `SO`) pointing to object files
+3. **No embedded DWARF** in the final binary itself
 
-This matches the core panic function that all Rust panics eventually call. Due to recent Rust ABI changes, this symbol
-may be mangled (e.g., `__rustc::rust_panic`), so regex matching is used instead of exact name matching.
+This is why Jones requires a `.dSYM` bundle or the `dsymutil` step - the binary alone doesn't contain the debug information needed to map addresses to source locations.
 
-### 2. Call Tree Construction
+### Debug Map Explained
 
-Starting from `rust_panic`, Jones builds a reverse call tree by:
+Apple's solution segregates executable linking and debug info linking into two separate actions:
 
-1. **Disassembling the `__text` section** using Capstone (ARM64)
-2. **Finding all `bl` (branch-link) instructions** that call the target address
-3. **Looking up the containing function** for each call site using DWARF debug info
-4. **Recursively repeating** for each caller function
+- The linker produces `OSO` stab entries (like `SO` but for object files) that point to where object files are located
+- The `SO` stabs tell debuggers what source file corresponds to each object
+- Object file paths include modification timestamps to detect stale debug info
+- Every binary is stamped with a 128-bit UUID (`LC_UUID`) that's copied into the dSYM for verification
 
-The result is a tree where:
+Debuggers like `lldb` can either:
+1. Read DWARF from a `.dSYM` bundle (addresses already remapped by `dsymutil`)
+2. Read DWARF from `.o` files and perform address translation on-the-fly
 
-- The root is `rust_panic`
-- Each node represents a function that eventually leads to a panic
-- Leaf nodes are functions with no further callers in the binary
+### Three Debug Info Configurations
 
-### 3. Cycle Detection
+| Configuration | Where debug info lives | `dsymutil` needed? | Build speed |
+|--------------|----------------------|-------------------|-------------|
+| `split-debuginfo = "unpacked"` (default) | Object files in `target/debug/deps/*.o` | Yes | Fast |
+| `split-debuginfo = "packed"` | `.dSYM` bundle created automatically | No | Slower |
+| Manual `dsymutil <binary>` step | `.dSYM` bundle | Already run | N/A |
 
-A `HashSet<u64>` tracks visited function addresses to prevent infinite recursion when there are cycles in the call
-graph (e.g., recursive functions, mutual recursion).
+### Configuration Options
 
-### 4. Source File Resolution
+#### Option 1: Use `split-debuginfo = "packed"`
 
-For each caller, Jones extracts the source file and line from DWARF debug info:
+Add to `Cargo.toml`:
 
-1. **Function declaration file/line** (`DW_AT_decl_file`, `DW_AT_decl_line`) - preferred but not always present
-2. **Line info at function start address** - fallback using DWARF line program
-
-Both file AND line are resolved from the function's start address to ensure we get the outer function's location, not
-inlined code. This is important because:
-
-- The `panic!` macro expands to multiple inlined functions
-- The actual call instruction may be inside inlined code with different source attribution
-- Using the function start gives consistent, meaningful source references
-
-### 5. Call Tree Pruning
-
-After building the full tree, Jones prunes branches that don't lead to user code:
-
-```rust
-fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str) -> bool {
-    // Recursively prune children first
-    node.callers.retain_mut(|caller| prune_call_tree(caller, crate_src_path));
-
-    // Keep this node if:
-    // 1. It's a leaf AND in the crate source, OR
-    // 2. It still has children after pruning
-    if node.callers.is_empty() {
-        is_in_crate(node, crate_src_path)
-    } else {
-        true
-    }
-}
+```toml
+[profile.dev]
+split-debuginfo = "packed"
 ```
 
-The algorithm:
+Or add to `~/.cargo/config.toml` for all projects:
 
-1. Recursively prunes all children first (depth-first)
-2. For leaf nodes: keeps only those whose source file contains the crate path
-3. For non-leaf nodes: keeps them if they still have children after pruning
-4. Removes entire branches that don't eventually reach user code
+```toml
+[profile.dev]
+split-debuginfo = "packed"
 
-### 6. Crate Source Path Detection
-
-The crate source path is derived from the binary path:
-
-```
-target/panic/panic → examples/panic/src/
+[profile.test]
+split-debuginfo = "packed"
 ```
 
-Jones looks for:
+This automatically creates `.dSYM` bundles during build, eliminating the manual `dsymutil` step. However, it slows incremental builds because `dsymutil` runs on every build.
 
-- `examples/<name>/src/` for example crates
-- `<name>/src/` for workspace members
-- `src/` for the main crate
+#### Option 2: Manual `dsymutil` Step
 
-## Data Structures
+Run after building:
 
-### CallTreeNode
-
-```rust
-struct CallTreeNode {
-    name: String,              // Function name (e.g., "main", "panic_fmt")
-    file: Option<String>,      // Source file path
-    line: Option<u32>,         // Line number at call site
-    callers: Vec<CallTreeNode> // Functions that call this one
-}
+```bash
+cargo build
+dsymutil target/debug/my-binary -o target/debug/my-binary.dSYM
 ```
 
-### CallerInfo (from sym.rs)
+This is faster for development since you only create the dSYM when needed for analysis.
 
-```rust
-struct CallerInfo {
-    caller: FunctionInfo,      // Calling function info
-    call_site_addr: u64,       // Address of the call instruction
-    file: Option<String>,      // Source file at call site
-    line: Option<u32>,         // Line number at call site
-}
-```
+#### Option 3: Default (unpacked) with Debug Map Reading
 
-## Example Output
+Currently not supported by Jones, but debuggers like `lldb` can read debug info directly from object files using the debug map in the binary. This would eliminate all extra steps.
 
-For an example with multiple panic paths:
+### Profile Options Affecting Debug Info
 
-```rust
-// lib
-mod module;
+| Profile Setting | Effect |
+|----------------|--------|
+| `debug = true` | Include debug info (default for dev profile) |
+| `debug = false` | No debug info generated |
+| `debug = "line-tables-only"` | Minimal debug info (file/line only, no variables) |
+| `debug = 2` | Full debug info (same as `true`) |
+| `split-debuginfo = "off"` | Embed debug info in binary (not typical on macOS) |
+| `split-debuginfo = "unpacked"` | Keep in object files (macOS default) |
+| `split-debuginfo = "packed"` | Create `.dSYM` bundle automatically |
 
-fn main() {
-    if std::env::args().len() > 1 {
-        panic!("direct panic");      // line 8
-    }
-    module::cause_a_panic();         // line 10
-}
+### Current Jones Behavior
 
-// module/mod.rs
-pub fn cause_a_panic() {
-    panic!("panic");                 // line 2
-}
-```
+Jones looks for debug info in this order:
 
-Jones produces (simplified):
+1. **dSYM bundle** at `<binary>.dSYM/Contents/Resources/DWARF/<binary_name>`
+2. **Embedded DWARF** in the binary itself (`.debug_info` section)
+3. **Auto-generate dSYM** by running `dsymutil` automatically
+4. **Debug map fallback** - if `dsymutil` is not available or fails, Jones reads DWARF directly from object files referenced in the binary's debug map
+5. **Falls back** to symbol table only (no source locations)
 
-```
-__rustc::rust_panic
-Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
-    Called from: '{closure#0}' (source: library/std/src/panicking.rs:698)
-        ...
-            Called from: 'panic_fmt' (source: library/core/src/panicking.rs:55)
-                Called from: 'cause_a_panic' (source: examples/panic/src/module/mod.rs:2)
-                    Called from: 'main' (source: examples/panic/src/main.rs:10)
-                Called from: 'panic_display<&str>' (source: .../panicking.rs:258)
-                    Called from: 'main' (source: examples/panic/src/main.rs:8)
-```
+The auto-generation of dSYM bundles means Jones "just works" with default Cargo builds - no manual `dsymutil` step required. If `dsymutil` is unavailable, the debug map fallback provides partial functionality (source locations may be less accurate).
 
-Key findings:
+### Future Improvements
 
-- `main.rs:8` - the direct `panic!` call
-- `main.rs:10` - the call to `cause_a_panic()`
-- `module/mod.rs:2` - the panic inside `cause_a_panic`
+Potential enhancements for Jones:
 
-Line numbers reference the actual source lines where the panic-inducing code is located, not just function declarations.
+1. **Read debug map directly** - Parse `OSO`/`SO` stabs and read DWARF from object files, like `lldb` does. This would avoid the `dsymutil` step entirely, though it requires complex address translation and parsing of `.rlib` archives.
 
-Without pruning, this tree would include hundreds of branches for:
+### Sources
 
-- Signal handlers
-- Runtime initialization
-- I/O operations that can panic
-- Memory allocation failures
-- And more...
-
-## Limitations
-
-1. **ARM64 only**: Currently only supports ARM64 binaries (uses `bl` instruction detection)
-
-2. **Direct calls only**: Only detects direct function calls via `bl` instructions, not indirect calls through function
-   pointers
-
-3. **macOS/Mach-O**: Currently only supports Mach-O binaries with dSYM or embedded DWARF
-
-4. **Function declaration lines**: Line numbers reference where functions are declared, not the specific panic call site
-   within the function
-
-## Key Files
-
-- `jones/src/main.rs` - Entry point, tree building, pruning logic
-- `jones/src/sym.rs` - Symbol resolution, DWARF parsing, caller detection
-- `jones/src/args.rs` - Command line argument parsing
+- [Profiles - The Cargo Book](https://doc.rust-lang.org/cargo/reference/profiles.html)
+- [Apple's "Lazy" DWARF Scheme - DWARF Wiki](https://wiki.dwarfstd.org/Apple's_%22Lazy%22_DWARF_Scheme.md)
+- [dsymutil - LLVM Documentation](https://llvm.org/docs/CommandGuide/dsymutil.html)
+- [Add split-debuginfo profile option - Cargo PR #9112](https://github.com/rust-lang/cargo/pull/9112)
+- [Reducing Rust Incremental Compilation Times on macOS by 70%](https://jacobdeichert.ca/blog/reducing-rust-incremental-compilation-times-on-macos-by-70-percent/)
+- [Missing dSYM on macos - Rust Forum](https://users.rust-lang.org/t/missing-dsym-on-macos-when-building-with-cargo/97543)

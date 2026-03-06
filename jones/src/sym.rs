@@ -13,6 +13,7 @@ use gimli::{
 use goblin::archive::Archive;
 use goblin::mach::segment::SectionData;
 use goblin::mach::segment::{Section, Segment};
+use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
 use goblin::Object;
 use ouroboros::self_referencing;
@@ -66,12 +67,31 @@ pub struct DSymInfo {
     pub debug_macho: Mach<'this>,
 }
 
+/// Information about an object file from the debug map
+#[derive(Debug)]
+pub struct ObjectFileInfo {
+    /// Path to the object file
+    pub path: PathBuf,
+    /// Raw bytes of the object file
+    pub buffer: Vec<u8>,
+    /// Symbol address translations: object file address -> final binary address
+    pub addr_map: HashMap<u64, u64>,
+}
+
+/// Debug map information parsed from the binary's symbol table
+pub struct DebugMapInfo {
+    /// Object files referenced by the debug map
+    pub object_files: Vec<ObjectFileInfo>,
+}
+
 /// Debug info source - either embedded in binary or from a separate dSYM file/bundle
 pub enum DebugInfo {
     /// Debug info is embedded in the binary
     Embedded,
     /// Debug info is in a separate dSYM bundle
     DSym(Box<DSymInfo>),
+    /// Debug info from object files via debug map
+    DebugMap(Box<DebugMapInfo>),
     /// No debug info available
     None,
 }
@@ -709,6 +729,170 @@ pub fn get_dwarf_sections(macho: &MachO) -> Vec<String> {
     sections
 }
 
+/// Extract object file paths from the debug map (OSO stab entries)
+fn get_oso_paths(macho: &MachO) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(symbols) = &macho.symbols {
+        for (name, nlist) in symbols.iter().flatten() {
+            // N_OSO (0x66) indicates an object file reference
+            if nlist.n_type == N_OSO && !name.is_empty() {
+                paths.push(PathBuf::from(name));
+            }
+        }
+    }
+
+    // Deduplicate paths
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Build address translation map from object file symbols to final binary addresses
+fn build_addr_translation_map(binary_macho: &MachO, obj_macho: &MachO) -> HashMap<u64, u64> {
+    let mut addr_map = HashMap::new();
+
+    // Get symbols from both binary and object file
+    let Some(binary_symbols) = &binary_macho.symbols else {
+        return addr_map;
+    };
+    let Some(obj_symbols) = &obj_macho.symbols else {
+        return addr_map;
+    };
+
+    // Build a map of symbol name -> address in binary
+    let mut binary_sym_addrs: HashMap<String, u64> = HashMap::new();
+    for (name, nlist) in binary_symbols.iter().flatten() {
+        if nlist.n_value > 0 && !name.is_empty() {
+            binary_sym_addrs.insert(name.to_string(), nlist.n_value);
+        }
+    }
+
+    // For each symbol in the object file, find its final address in the binary
+    for (name, nlist) in obj_symbols.iter().flatten() {
+        if nlist.n_value > 0
+            && !name.is_empty()
+            && let Some(&binary_addr) = binary_sym_addrs.get(name)
+        {
+            addr_map.insert(nlist.n_value, binary_addr);
+        }
+    }
+
+    addr_map
+}
+
+/// Find callers with source info using the debug map
+/// This searches all object files for DWARF info
+pub fn find_callers_with_debug_map(
+    binary_macho: &MachO,
+    binary_buffer: &[u8],
+    debug_map: &DebugMapInfo,
+    target_addr: u64,
+    _crate_src_path: Option<&str>,
+) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
+    // First, get callers from the binary's text section
+    let mut callers = find_callers(binary_macho, binary_buffer, target_addr)?;
+
+    // Build a map of function name -> source info from all object files
+    let mut func_source_map: HashMap<String, (Option<String>, Option<u32>)> = HashMap::new();
+
+    for obj_info in &debug_map.object_files {
+        // Parse the object file
+        let Ok(Object::Mach(Mach::Binary(obj_macho))) = Object::parse(&obj_info.buffer) else {
+            continue;
+        };
+
+        // Get functions from this object file
+        let Ok(functions) = get_functions_from_dwarf(&obj_macho, &obj_info.buffer) else {
+            continue;
+        };
+
+        // Store source info by function name (both mangled and demangled)
+        for func in functions {
+            if func.file.is_some() {
+                // Store by original name
+                func_source_map.insert(func.name.clone(), (func.file.clone(), func.line));
+
+                // Also store by demangled name for matching
+                let stripped = func.name.strip_prefix("_").unwrap_or(&func.name);
+                let demangled = format!("{:#}", demangle(stripped));
+                if demangled != func.name {
+                    func_source_map.insert(demangled, (func.file.clone(), func.line));
+                }
+            }
+        }
+    }
+
+    // Enrich caller info with source locations from DWARF by matching function names
+    for caller in &mut callers {
+        // Try to find source info by function name
+        if let Some((file, line)) = func_source_map.get(&caller.caller.name) {
+            caller.caller.file = file.clone();
+            caller.caller.line = *line;
+            caller.file = file.clone();
+            caller.line = *line;
+        }
+    }
+
+    Ok(callers)
+}
+
+/// Load debug map from the binary's symbol table
+/// This reads OSO entries and loads DWARF from the referenced object files
+fn load_debug_map(macho: &MachO) -> Option<DebugMapInfo> {
+    let oso_paths = get_oso_paths(macho);
+
+    if oso_paths.is_empty() {
+        return None;
+    }
+
+    let mut object_files = Vec::new();
+    let mut loaded_count = 0;
+
+    for path in oso_paths {
+        // Skip if object file doesn't exist
+        if !path.exists() {
+            continue;
+        }
+
+        // Read the object file
+        let Ok(buffer) = fs::read(&path) else {
+            continue;
+        };
+
+        // Parse as MachO and check for DWARF
+        let Ok(Object::Mach(Mach::Binary(obj_macho))) = Object::parse(&buffer) else {
+            continue;
+        };
+
+        // Only include if it has debug info
+        if get_dwarf_sections(&obj_macho).is_empty() {
+            continue;
+        }
+
+        // Build address translation map
+        let addr_map = build_addr_translation_map(macho, &obj_macho);
+
+        object_files.push(ObjectFileInfo {
+            path,
+            buffer,
+            addr_map,
+        });
+        loaded_count += 1;
+    }
+
+    if object_files.is_empty() {
+        return None;
+    }
+
+    println!(
+        "Using debug map: loaded {} object files with DWARF",
+        loaded_count
+    );
+
+    Some(DebugMapInfo { object_files })
+}
+
 // 1) No embedded debug info, no dSYM
 // 2) No embedded debug info, dSYM
 // 3) Embedded debug info, no dSYM
@@ -757,6 +941,60 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
         return DebugInfo::Embedded;
     }
 
-    println!("No Embedded or dSYM bundle DWARF info found");
+    // Try to auto-generate dSYM using dsymutil
+    if let Some(dsym_info) = auto_generate_dsym(binary_path) {
+        return DebugInfo::DSym(Box::new(dsym_info));
+    }
+
+    // Fall back to debug map (reading DWARF from object files)
+    if let Some(debug_map) = load_debug_map(macho) {
+        return DebugInfo::DebugMap(Box::new(debug_map));
+    }
+
+    println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
+    println!("Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols", binary_path.display());
     DebugInfo::None
+}
+
+/// Auto-generate dSYM by running dsymutil
+fn auto_generate_dsym(binary_path: &Path) -> Option<DSymInfo> {
+    use std::process::Command;
+
+    let dsym_path = binary_path.with_extension("dSYM");
+
+    // Check if dsymutil is available
+    let status = Command::new("dsymutil")
+        .arg(binary_path)
+        .arg("-o")
+        .arg(&dsym_path)
+        .status()
+        .ok()?;
+
+    if !status.success() {
+        return None;
+    }
+
+    // Find the DWARF file inside the dSYM bundle
+    let file_name = binary_path.file_name()?.to_str()?;
+    let file_stem = binary_path.file_stem()?.to_str()?;
+
+    let dwarf_paths = [
+        dsym_path.join("Contents/Resources/DWARF").join(file_name),
+        dsym_path.join("Contents/Resources/DWARF").join(file_stem),
+    ];
+
+    for dwarf_path in &dwarf_paths {
+        if dwarf_path.exists() {
+            println!("Generated .dSYM bundle for debug info");
+            let debug_buffer = fs::read(dwarf_path).ok()?;
+            let dsym_info = DSymInfoBuilder {
+                debug_buffer,
+                debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+            }
+            .build();
+            return Some(dsym_info);
+        }
+    }
+
+    None
 }

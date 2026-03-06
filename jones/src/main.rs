@@ -1,7 +1,7 @@
 use crate::args::parse_args;
 use crate::sym::{
-    find_callers, find_callers_with_debug_info, find_symbol_address, find_symbol_containing,
-    load_debug_info, read_symbols, DebugInfo, SymbolTable,
+    find_callers, find_callers_with_debug_info, find_callers_with_debug_map, find_symbol_address,
+    find_symbol_containing, load_debug_info, read_symbols, DebugInfo, SymbolTable,
 };
 use cargo_toml::Manifest;
 use goblin::mach::Mach::{Binary, Fat};
@@ -474,6 +474,17 @@ fn build_call_tree(
                     find_callers(binary_macho, binary_buffer, target_addr).unwrap()
                 }
             })
+        }
+        DebugInfo::DebugMap(debug_map) => {
+            // Use debug map to find callers with source info from object files
+            find_callers_with_debug_map(
+                binary_macho,
+                binary_buffer,
+                debug_map,
+                target_addr,
+                crate_src_path,
+            )
+            .unwrap()
         }
         DebugInfo::None => {
             // No debug info, use symbol table only
