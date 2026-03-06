@@ -44,6 +44,50 @@ pub enum PanicCause {
 }
 
 impl PanicCause {
+    /// Get the configuration identifier for this panic cause.
+    /// Used in allow/deny configuration files.
+    pub fn id(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => "panic",
+            PanicCause::BoundsCheck => "bounds",
+            PanicCause::ArithmeticOverflow(_) => "overflow",
+            PanicCause::ShiftOverflow(_) => "overflow",
+            PanicCause::DivisionByZero => "div_zero",
+            PanicCause::UnwrapNone => "unwrap",
+            PanicCause::UnwrapErr => "unwrap",
+            PanicCause::ExpectNone => "expect",
+            PanicCause::ExpectErr => "expect",
+            PanicCause::AssertFailed => "assert",
+            PanicCause::DebugAssertFailed => "debug_assert",
+            PanicCause::Unreachable => "unreachable",
+            PanicCause::Unimplemented => "unimplemented",
+            PanicCause::Todo => "todo",
+            PanicCause::PanicInDrop => "drop",
+            PanicCause::CannotUnwind => "unwind",
+            PanicCause::Unknown => "unknown",
+        }
+    }
+
+    /// Get all valid configuration identifiers
+    pub fn all_ids() -> &'static [&'static str] {
+        &[
+            "panic",
+            "bounds",
+            "overflow",
+            "div_zero",
+            "unwrap",
+            "expect",
+            "assert",
+            "debug_assert",
+            "unreachable",
+            "unimplemented",
+            "todo",
+            "drop",
+            "unwind",
+            "unknown",
+        ]
+    }
+
     /// Get a short description of the panic cause
     pub fn description(&self) -> &'static str {
         match self {
@@ -161,11 +205,13 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     if func_name.contains("unreachable") && func_name.contains("panic") {
         return Some(PanicCause::Unreachable);
     }
-    // panic_fmt is the core panic function - if we reach here without a more
-    // specific match, it's likely an explicit panic!() call
-    if func_name.contains("panic_fmt") {
-        return Some(PanicCause::ExplicitPanic);
-    }
+    // panic_fmt is the core panic function used by MANY things:
+    // - explicit panic!() calls
+    // - format string errors in write!/format!/etc.
+    // - bail!() and similar error macros when formatting fails
+    // We don't classify it as "explicit panic" because that would be misleading
+    // for the common case where it's reached through formatting code.
+    // Instead, leave cause as None (unknown) to avoid incorrect labeling.
 
     None
 }

@@ -3,7 +3,8 @@ use crate::call_tree::{
     CallTreeNode, build_call_tree_parallel, count_crate_code_points, print_call_tree,
     print_crate_code_points, prune_call_tree,
 };
-use crate::cargo::{derive_crate_src_path, detect_library_type};
+use crate::cargo::{derive_crate_src_path, detect_library_type, find_project_root};
+use crate::config::Config;
 use crate::sym::{
     CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
     load_debug_info, read_symbols,
@@ -19,6 +20,7 @@ use std::sync::Arc;
 mod args;
 mod call_tree;
 mod cargo;
+mod config;
 mod panic_cause;
 #[cfg(target_os = "macos")]
 mod sym;
@@ -39,8 +41,48 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut total_panic_points: usize = 0;
 
-    for binary_path in parsed_args.binaries {
+    for binary_path in &parsed_args.binaries {
+        // Canonicalize the binary path to ensure absolute paths for clickable links
+        let binary_path = binary_path
+            .canonicalize()
+            .unwrap_or_else(|_| binary_path.clone());
         println!("Processing {}", binary_path.display());
+
+        // Find project/workspace root from binary path
+        let project_root = find_project_root(&binary_path);
+
+        // Find the member crate directory for config loading
+        // In workspaces, derive_crate_src_path returns paths like "flowc/src/" or "examples/panic/src/"
+        // We want the crate directory (parent of src/) for config loading
+        let crate_dir = derive_crate_src_path(&binary_path).and_then(|src_path| {
+            // Strip trailing "src/" to get crate directory
+            let crate_rel = src_path.strip_suffix("src/").unwrap_or(&src_path);
+            project_root
+                .as_ref()
+                .map(|root| root.join(crate_rel.trim_end_matches('/')))
+        });
+
+        // Load configuration: prefer crate-specific config, fall back to workspace root
+        let config = if let Some(ref crate_path) = crate_dir
+            && crate_path.join("Cargo.toml").exists()
+        {
+            // Load from member crate directory
+            Config::load_for_project(crate_path, parsed_args.config_path.as_deref())
+        } else if let Some(ref root) = project_root {
+            // Fall back to workspace/project root
+            Config::load_for_project(root, parsed_args.config_path.as_deref())
+        } else {
+            // No project root found - use defaults plus explicit --config only
+            let mut config = Config::with_defaults();
+            if let Some(config_path) = parsed_args.config_path.as_deref() {
+                config.load_from_config_file(config_path)?;
+            }
+            Ok(config)
+        }
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(255);
+        });
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
@@ -66,7 +108,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
-                    parsed_args.show_drops,
+                    &config,
+                    project_root.as_deref(),
                 );
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
@@ -95,7 +138,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &binary_path,
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
-                            parsed_args.show_drops,
+                            &config,
+                            project_root.as_deref(),
                         );
                     }
                 }
@@ -127,7 +171,8 @@ fn analyze_macho(
     binary_path: &Path,
     crate_src_path: Option<&str>,
     show_tree: bool,
-    show_drops: bool,
+    config: &Config,
+    project_root: Option<&Path>,
 ) -> usize {
     // Try each panic symbol pattern until we find one
     let mut panic_symbol = None;
@@ -210,7 +255,7 @@ fn analyze_macho(
 
     // Prune to only show paths leading to user code
     if let Some(crate_path) = crate_src_path {
-        prune_call_tree(&mut root, crate_path, show_drops);
+        prune_call_tree(&mut root, crate_path, config);
     }
 
     // Print output based on --tree flag
@@ -219,7 +264,7 @@ fn analyze_macho(
         print_call_tree(&root, 0);
         crate_src_path.map_or(0, |cp| count_crate_code_points(&root, cp))
     } else if let Some(crate_path) = crate_src_path {
-        print_crate_code_points(&root, crate_path)
+        print_crate_code_points(&root, crate_path, project_root, config)
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);

@@ -1,0 +1,2 @@
+# Test config that allows explicit panic!() calls (which are denied by default)
+allow = ["panic"]

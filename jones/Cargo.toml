@@ -3,6 +3,7 @@ name = "jones"
 description = "Jones is here to help you not panic!"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.85"
 authors = [" Andrew Mackenzie andrew@mackenzie-serres.net"]
 repository = "https://github.com/andrewdavidmackenzie/jones"
 readme = "../README.md"
@@ -19,6 +20,8 @@ regex = "1"
 cargo_toml = "0.22"
 rayon = "1.10"
 dashmap = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 wait-timeout = "0.2"

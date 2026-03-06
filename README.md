@@ -103,15 +103,16 @@ There are two ways to build a Rust dynamic library:
 
 ```
 Usage:
-  jones [--tree] [--drops]
-  jones [--tree] [--drops] --bin <path_to_binary>
-  jones [--tree] [--drops] --lib <path_to_lib_object>
+  jones [OPTIONS]
+  jones [OPTIONS] --bin <path_to_binary>
+  jones [OPTIONS] --lib <path_to_lib_object>
 
 Options:
-  --tree   Show full call tree instead of just crate code points
-  --drops  Include panic paths from drop/cleanup operations
-  --bin    Analyze a specific binary file
-  --lib    Analyze a specific library object file
+  --tree             Show full call tree instead of just crate code points
+  --config <path>    Path to a TOML config file for allow/deny rules
+  --max-threads N    Maximum threads for parallel analysis (default: CPU count)
+  --bin              Analyze a specific binary file
+  --lib              Analyze a specific library object file
 ```
 
 ### `--tree`
@@ -135,13 +136,94 @@ Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
                 Called from: 'main' (source: src/main.rs:8)
 ```
 
-### `--drops`
+### `--config`
 
-By default, jones excludes panic paths that occur during drop/cleanup operations (e.g., `panic_in_cleanup`,
-`panic_nounwind`). Use `--drops` to include these:
+Specify a custom TOML configuration file for allow/deny rules:
 
 ```bash
-jones --drops
+jones --config my-config.toml
+```
+
+See the [Configuration](#configuration) section for details on the config file format.
+
+## Configuration
+
+Jones supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
+
+- Suppressing known-acceptable panics in your codebase
+- Enforcing stricter rules (e.g., reporting drop panics)
+- Per-project customization
+
+### Configuration Cascade
+
+Configuration is loaded in order of precedence (later overrides earlier):
+
+1. **Code defaults** - `drop` and `unwind` panics are allowed; all others are denied
+2. **Cargo.toml** - `[package.metadata.jones]` section
+3. **jones.toml** - Project root config file
+4. **`--config`** - Command-line override
+
+### Panic Cause Identifiers
+
+| ID              | Description                               | Default     |
+|-----------------|-------------------------------------------|-------------|
+| `panic`         | Explicit `panic!()` calls                 | denied      |
+| `bounds`        | Array/slice index out of bounds           | denied      |
+| `overflow`      | Arithmetic overflow (add, sub, mul, etc.) | denied      |
+| `div_zero`      | Division by zero                          | denied      |
+| `unwrap`        | `unwrap()` on `None` or `Err`             | denied      |
+| `expect`        | `expect()` on `None` or `Err`             | denied      |
+| `assert`        | `assert!()` failures                      | denied      |
+| `debug_assert`  | `debug_assert!()` failures                | denied      |
+| `unreachable`   | `unreachable!()` reached                  | denied      |
+| `unimplemented` | `unimplemented!()` reached                | denied      |
+| `todo`          | `todo!()` reached                         | denied      |
+| `drop`          | Panic during drop/cleanup                 | **allowed** |
+| `unwind`        | Panic in no-unwind context                | **allowed** |
+| `unknown`       | Unknown panic cause                       | denied      |
+
+### jones.toml Format
+
+Create a `jones.toml` file in your project root:
+
+```toml
+# Allow specific panic causes (suppress from output)
+allow = ["drop", "unwind", "debug_assert"]
+
+# Deny specific panic causes (report in output)
+deny = ["todo", "unimplemented"]
+```
+
+### Cargo.toml Format
+
+Add configuration to your `Cargo.toml` under `[package.metadata.jones]`:
+
+```toml
+[package]
+name = "my-crate"
+version = "0.1.0"
+
+[package.metadata.jones]
+allow = ["drop", "unwind"]
+deny = ["todo"]
+```
+
+### Example: Strict Mode
+
+To report all panic causes including drops:
+
+```toml
+# jones.toml
+deny = ["drop", "unwind"]
+```
+
+### Example: Lenient Development Mode
+
+To allow common development panics:
+
+```toml
+# jones.toml
+allow = ["todo", "unimplemented", "debug_assert"]
 ```
 
 ## Exit Status
