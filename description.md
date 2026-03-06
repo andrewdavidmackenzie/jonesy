@@ -247,7 +247,7 @@ Jones identifies the **cause** of potential panics by analyzing function names i
 
 When Rust code panics, it follows a well-defined call path through the standard library:
 
-```
+```text
 User code (e.g., array[index])
     ↓
 Panic helper (e.g., panic_bounds_check)
@@ -302,7 +302,7 @@ This means:
 
 Causes are displayed only on **leaf nodes** (the actual user code lines that lead to panics):
 
-```
+```text
 Panic code points in crate:
  --> examples/array_access/src/main.rs:14:1 [index out of bounds]
      = help: Use .get() for safe access or validate index before use
