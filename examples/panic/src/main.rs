@@ -11,4 +11,7 @@ fn main() {
 
     // jones: expect panic - This obviously causes a panic
     module::cause_a_panic();
+
+    // jones: expect panic - This obviously causes a panic
+    module::cause_an_unwrap();
 }

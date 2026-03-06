@@ -47,6 +47,153 @@ fn is_cleanup_panic_path(node: &CallTreeNode) -> bool {
         || node.name.contains("panic_cannot_unwind")
 }
 
+/// Known panic causes with explanations and suggestions
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // Some variants reserved for future detection
+enum PanicCause {
+    /// Explicit panic!() macro
+    ExplicitPanic,
+    /// Array or slice index out of bounds
+    BoundsCheck,
+    /// Arithmetic overflow (add, sub, mul, div, rem, neg)
+    ArithmeticOverflow(String),
+    /// Shift overflow (shl, shr)
+    ShiftOverflow(String),
+    /// Division by zero
+    DivisionByZero,
+    /// Unwrap on None
+    UnwrapNone,
+    /// Unwrap on Err
+    UnwrapErr,
+    /// Expect on None
+    ExpectNone,
+    /// Expect on Err
+    ExpectErr,
+    /// Assert failed
+    AssertFailed,
+    /// Debug assert failed
+    DebugAssertFailed,
+    /// Unreachable code reached
+    Unreachable,
+    /// Unimplemented code reached
+    Unimplemented,
+    /// Todo macro reached
+    Todo,
+    /// Unknown cause
+    Unknown,
+}
+
+impl PanicCause {
+    /// Get a short description of the panic cause
+    fn description(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => "explicit panic!() call",
+            PanicCause::BoundsCheck => "index out of bounds",
+            PanicCause::ArithmeticOverflow(_) => "arithmetic overflow",
+            PanicCause::ShiftOverflow(_) => "shift overflow",
+            PanicCause::DivisionByZero => "division by zero",
+            PanicCause::UnwrapNone => "unwrap() on None",
+            PanicCause::UnwrapErr => "unwrap() on Err",
+            PanicCause::ExpectNone => "expect() on None",
+            PanicCause::ExpectErr => "expect() on Err",
+            PanicCause::AssertFailed => "assertion failed",
+            PanicCause::DebugAssertFailed => "debug assertion failed",
+            PanicCause::Unreachable => "unreachable!() reached",
+            PanicCause::Unimplemented => "unimplemented!() reached",
+            PanicCause::Todo => "todo!() reached",
+            PanicCause::Unknown => "unknown cause",
+        }
+    }
+
+    /// Get a suggestion for how to avoid this panic
+    fn suggestion(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => "Review if panic is intentional or add error handling",
+            PanicCause::BoundsCheck => "Use .get() for safe access or validate index before use",
+            PanicCause::ArithmeticOverflow(_) => {
+                "Use checked_*, saturating_*, or wrapping_* methods"
+            }
+            PanicCause::ShiftOverflow(_) => "Validate shift amount is within valid range",
+            PanicCause::DivisionByZero => "Check divisor is non-zero before division",
+            PanicCause::UnwrapNone => "Use if let, match, unwrap_or, or ? operator instead",
+            PanicCause::UnwrapErr => "Use if let, match, unwrap_or, or ? operator instead",
+            PanicCause::ExpectNone => "Use if let, match, unwrap_or, or ? operator instead",
+            PanicCause::ExpectErr => "Use if let, match, unwrap_or, or ? operator instead",
+            PanicCause::AssertFailed => "Review assertion condition",
+            PanicCause::DebugAssertFailed => "Review debug assertion condition",
+            PanicCause::Unreachable => "Ensure code path is truly unreachable",
+            PanicCause::Unimplemented => "Implement the missing functionality",
+            PanicCause::Todo => "Complete the TODO implementation",
+            PanicCause::Unknown => "",
+        }
+    }
+}
+
+/// Detect panic cause from a function name in the call chain
+fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
+    // Check for specific panic functions
+    if func_name.contains("panic_bounds_check") {
+        return Some(PanicCause::BoundsCheck);
+    }
+    if func_name.contains("panic_const_add_overflow") {
+        return Some(PanicCause::ArithmeticOverflow("addition".to_string()));
+    }
+    if func_name.contains("panic_const_sub_overflow") {
+        return Some(PanicCause::ArithmeticOverflow("subtraction".to_string()));
+    }
+    if func_name.contains("panic_const_mul_overflow") {
+        return Some(PanicCause::ArithmeticOverflow("multiplication".to_string()));
+    }
+    if func_name.contains("panic_const_div_overflow") {
+        return Some(PanicCause::ArithmeticOverflow("division".to_string()));
+    }
+    if func_name.contains("panic_const_rem_overflow") {
+        return Some(PanicCause::ArithmeticOverflow("remainder".to_string()));
+    }
+    if func_name.contains("panic_const_neg_overflow") {
+        return Some(PanicCause::ArithmeticOverflow("negation".to_string()));
+    }
+    if func_name.contains("panic_const_shl_overflow") {
+        return Some(PanicCause::ShiftOverflow("left".to_string()));
+    }
+    if func_name.contains("panic_const_shr_overflow") {
+        return Some(PanicCause::ShiftOverflow("right".to_string()));
+    }
+    if func_name.contains("panic_const_div_by_zero") {
+        return Some(PanicCause::DivisionByZero);
+    }
+    if func_name.contains("panic_const_rem_by_zero") {
+        return Some(PanicCause::DivisionByZero);
+    }
+    // unwrap/expect detection
+    if func_name.contains("unwrap_failed") {
+        // Could be Option or Result - context would tell us which
+        return Some(PanicCause::UnwrapNone);
+    }
+    if func_name.contains("expect_failed") {
+        return Some(PanicCause::ExpectNone);
+    }
+    // Assert macros
+    if func_name.contains("assert_failed") {
+        return Some(PanicCause::AssertFailed);
+    }
+    // panic_display is explicit panic! with a simple message
+    if func_name.contains("panic_display") {
+        return Some(PanicCause::ExplicitPanic);
+    }
+    // Check for unreachable/unimplemented/todo patterns
+    if func_name.contains("unreachable") && func_name.contains("panic") {
+        return Some(PanicCause::Unreachable);
+    }
+    // panic_fmt is the core panic function - if we reach here without a more
+    // specific match, it's likely an explicit panic!() call
+    if func_name.contains("panic_fmt") {
+        return Some(PanicCause::ExplicitPanic);
+    }
+
+    None
+}
+
 /// Prune branches that don't lead to a leaf node in the target crate's source.
 /// Also removes panic cleanup paths (panic_nounwind, panic_in_cleanup) unless
 /// show_drops is true.
@@ -559,6 +706,8 @@ struct CrateCodePoint {
     name: String,
     file: String,
     line: u32,
+    /// The detected cause of this panic path
+    cause: Option<PanicCause>,
     /// Code points that this one calls (closer to panic in the call chain)
     children: Vec<CrateCodePoint>,
 }
@@ -566,9 +715,15 @@ struct CrateCodePoint {
 /// Key for identifying a code point: (file, line)
 type CodePointKey = (String, u32);
 
-/// Map of code points: key -> (function name, set of child keys)
-type CodePointMap =
-    std::collections::HashMap<CodePointKey, (String, std::collections::HashSet<CodePointKey>)>;
+/// Info stored for each code point: (function name, panic cause, set of child keys)
+type CodePointInfo = (
+    String,
+    Option<PanicCause>,
+    std::collections::HashSet<CodePointKey>,
+);
+
+/// Map of code points: key -> info
+type CodePointMap = std::collections::HashMap<CodePointKey, CodePointInfo>;
 
 /// Collect crate code points with hierarchy.
 /// Returns a list of "root" code points (entry points) with their children.
@@ -579,15 +734,15 @@ fn collect_crate_code_points_hierarchical(
     use std::collections::HashSet;
 
     // First pass: collect all crate code points and their relationships
-    // Map: (file, line) -> (name, set of callers also in crate as (file, line))
+    // Map: (file, line) -> (name, cause, set of child keys)
     let mut points: CodePointMap = CodePointMap::new();
 
-    collect_crate_relationships(node, crate_src_path, &mut points, None);
+    collect_crate_relationships(node, crate_src_path, &mut points, None, None);
 
-    // Find roots: points that are not in any other point's callers
+    // Find roots: points that are not in any other point's children
     let all_children: HashSet<(String, u32)> = points
         .values()
-        .flat_map(|(_, callers)| callers.iter().cloned())
+        .flat_map(|(_, _, children)| children.iter().cloned())
         .collect();
 
     let mut roots: Vec<CodePointKey> = points
@@ -613,9 +768,9 @@ fn collect_crate_code_points_hierarchical(
             return None;
         }
 
-        let (name, callers) = points.get(key)?;
+        let (name, cause, child_keys_set) = points.get(key)?;
         // Sort child keys for deterministic output
-        let mut child_keys: Vec<_> = callers.iter().cloned().collect();
+        let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
         let mut children: Vec<CrateCodePoint> = child_keys
             .iter()
@@ -628,6 +783,7 @@ fn collect_crate_code_points_hierarchical(
             name: name.clone(),
             file: key.0.clone(),
             line: key.1,
+            cause: cause.clone(),
             children,
         })
     }
@@ -645,12 +801,18 @@ fn collect_crate_code_points_hierarchical(
 /// In the CallTreeNode tree, "callers" are functions that CALL this node.
 /// So if A.callers contains B, then B calls A.
 /// For our output hierarchy: B is the parent (entry point), A is the child (closer to panic).
+///
+/// Also detects panic causes from function names in the call path.
 fn collect_crate_relationships(
     node: &CallTreeNode,
     crate_src_path: &str,
     points: &mut CodePointMap,
     child_crate_key: Option<CodePointKey>,
+    current_cause: Option<PanicCause>,
 ) {
+    // Try to detect panic cause from this node's function name
+    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
+
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
         && file.contains(crate_src_path)
         && *line > 0
@@ -661,14 +823,18 @@ fn collect_crate_relationships(
     };
 
     if let Some(key) = &node_key {
-        // Ensure this point exists in the map
-        points
-            .entry(key.clone())
-            .or_insert_with(|| (node.name.clone(), std::collections::HashSet::new()));
+        // Ensure this point exists in the map with detected cause
+        points.entry(key.clone()).or_insert_with(|| {
+            (
+                node.name.clone(),
+                detected_cause.clone(),
+                std::collections::HashSet::new(),
+            )
+        });
 
         // If there's a child crate code point (closer to panic), add it as a child of this node
         if let Some(child_key) = &child_crate_key
-            && let Some((_, children)) = points.get_mut(key)
+            && let Some((_, _, children)) = points.get_mut(key)
         {
             children.insert(child_key.clone());
         }
@@ -679,7 +845,13 @@ fn collect_crate_relationships(
     let next_child = node_key.or(child_crate_key);
 
     for caller in &node.callers {
-        collect_crate_relationships(caller, crate_src_path, points, next_child.clone());
+        collect_crate_relationships(
+            caller,
+            crate_src_path,
+            points,
+            next_child.clone(),
+            detected_cause.clone(),
+        );
     }
 }
 
@@ -748,15 +920,41 @@ fn print_crate_point(point: &CrateCodePoint, prefix: &str, is_last: bool, is_roo
     // Format like rustc/clippy: " --> file:line:column" which is widely recognized as clickable
     let location = format!("{}:{}:1", point.file, point.line);
 
+    // Only show cause and help on leaf nodes (no children)
+    let is_leaf = point.children.is_empty();
+
+    // Format cause description if available (only for leaf nodes)
+    let cause_str = if is_leaf {
+        if let Some(cause) = &point.cause {
+            format!(" [{}]", cause.description())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     // Print the current node - location on its own line for clickability
     if is_root {
-        println!(" --> {}", location);
-        println!("     in '{}'", point.name);
+        println!(" --> {}{}", location, cause_str);
+        // Print suggestion if we have a cause (only for leaf nodes)
+        if is_leaf && let Some(cause) = &point.cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                println!("     = help: {}", suggestion);
+            }
+        }
     } else {
         let connector = if is_last { "└── " } else { "├── " };
         // Indent to align with parent, show tree connector, then clickable location
-        println!("     {}{} --> {}", prefix, connector, location);
-        println!("     {}     in '{}'", prefix, point.name);
+        println!("     {}{} --> {}{}", prefix, connector, location, cause_str);
+        // Print suggestion if we have a cause (only for leaf nodes)
+        if is_leaf && let Some(cause) = &point.cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                println!("     {}     = help: {}", prefix, suggestion);
+            }
+        }
     }
 
     // Sort and print children
