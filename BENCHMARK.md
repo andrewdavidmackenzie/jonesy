@@ -36,6 +36,81 @@ Build: Release
 
 ## Implementation Details
 
+The parallelization uses a **two-phase approach**:
+
+### Phase 1: Parallel CallGraph Construction
+
+The most expensive operation is scanning millions of instructions to find `bl` (branch-and-link) calls:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Disassembly (Parallel)                    │
+│  __TEXT section divided into chunks, each thread disassembles│
+│  its chunk using its own Capstone instance (ARM64 only)      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│               Extract BL Instructions                        │
+│  Filter to only branch-and-link instructions with targets    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Parallel Instruction Processing                 │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐        │
+│  │Thread 1 │  │Thread 2 │  │Thread 3 │  │Thread N │        │
+│  │ BL @ A  │  │ BL @ B  │  │ BL @ C  │  │ BL @ Z  │        │
+│  │   │     │  │   │     │  │   │     │  │   │     │        │
+│  │   ▼     │  │   ▼     │  │   ▼     │  │   ▼     │        │
+│  │ Lookup  │  │ Lookup  │  │ Lookup  │  │ Lookup  │        │
+│  │Function │  │Function │  │Function │  │Function │        │
+│  │+ DWARF  │  │+ DWARF  │  │+ DWARF  │  │+ DWARF  │        │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘        │
+│       │            │            │            │              │
+│       └────────────┴────────────┴────────────┘              │
+│                         │                                    │
+│                         ▼                                    │
+│              ┌─────────────────────┐                        │
+│              │  DashMap (thread-   │                        │
+│              │  safe concurrent    │                        │
+│              │  hash map)          │                        │
+│              │                     │                        │
+│              │  target_addr →      │                        │
+│              │    [CallerInfo...]  │                        │
+│              └─────────────────────┘                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key insight**: Looking up which function contains each call site (symbol table search + DWARF enrichment)
+is independent per instruction - perfect for parallelization.
+
+### Phase 2: Parallel Call Tree Building
+
+Once the CallGraph is built, finding callers is O(1). The tree building parallelizes exploration of
+independent branches:
+
+```
+                        panic_function
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+           caller_A        caller_B        caller_C
+              │               │               │
+         ┌────┴────┐     ┌────┴────┐     ┌────┴────┐
+         │         │     │         │     │         │
+      (Thread 1) (T1)  (Thread 2)(T2)  (Thread 3)(T3)
+         │         │     │         │     │         │
+       (...sequential recursion within each branch...)
+```
+
+**Strategy**:
+- Top-level callers of the panic function are explored **in parallel** using rayon's work-stealing
+- Within each branch, recursion is **sequential** to ensure deterministic results
+- A **DashSet** tracks visited addresses (prevents cycles, thread-safe)
+
+### Summary
+
 1. **CallGraph Pre-computation**: Scans all instructions once upfront, enabling O(1) lookups
 2. **Parallel Instruction Processing**: Uses rayon to process `bl` instructions in parallel
 3. **Parallel Tree Building**: Top-level callers explored in parallel, sequential within branches
