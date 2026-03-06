@@ -486,13 +486,19 @@ fn build_call_tree_parallel(
     // Use pre-computed call graph for O(1) lookup
     let callers = call_graph.get_callers(target_addr);
 
-    // Process callers in parallel at this level
+    // Process callers in parallel at this level.
+    // Note: We intentionally share visited across all branches. This means if function C
+    // is called from both A→C and B→C paths, only one branch will recurse into C's callers.
+    // This is correct because:
+    // 1. All caller nodes are still added to the tree (node creation is unconditional)
+    // 2. We only skip redundant exploration of the same subtree
+    // 3. The set of leaf code points found is the same regardless of which branch explores C
     callers
         .into_par_iter()
         .filter_map(|caller_info| {
             let caller_addr = caller_info.caller.start_address;
 
-            // Try to insert - if already present, skip recursion but still create node
+            // Atomically try to insert - if already present, skip recursion but still create node
             let should_recurse = visited.insert(caller_addr);
 
             // Create a new node for this caller

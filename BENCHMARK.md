@@ -78,27 +78,41 @@ negligible impact on smaller binaries. This is because:
 
 ## Thread Scaling (--max-threads sweep)
 
-Tested with the `dylib` example (largest binary) to show scaling behavior:
+Tested with the `dylib` example (largest binary) to show scaling behavior.
+System: macOS ARM64 (Apple Silicon M1 Pro) with 10 physical cores.
 
 | Threads | Time (s) | Speedup vs 1 | CPU Utilization |
 |---------|----------|--------------|-----------------|
-| 1       | 22.40    | 1.0x         | 98%             |
-| 2       | 11.42    | 2.0x         | 197%            |
-| 4       | 5.65     | 4.0x         | 396%            |
-| 6       | 3.84     | 5.8x         | 593%            |
-| 8       | 2.93     | 7.6x         | 788%            |
-| 10      | 2.88     | 7.8x         | 897%            |
+| 1       | 22.00    | 1.0x         | 98%             |
+| 2       | 11.14    | 2.0x         | 197%            |
+| 4       | 5.79     | 3.8x         | 396%            |
+| 6       | 4.12     | 5.3x         | 593%            |
+| 8       | 2.99     | 7.4x         | 788%            |
+| 10      | 2.73     | 8.1x         | 897%            |
+| 12      | 2.58     | 8.5x         | ~900%           |
+| 14      | 2.74     | 8.0x         | ~900%           |
+| 16      | 2.56     | 8.6x         | ~900%           |
+| 18      | 2.62     | 8.4x         | ~900%           |
+| 20      | 2.57     | 8.6x         | ~900%           |
 
-**Observation**: Near-linear scaling up to 8 threads, with diminishing returns beyond that due to
-coordination overhead and memory bandwidth limits.
+**Observations**:
+- Near-linear scaling up to 8 threads
+- Diminishing returns beyond physical core count (10 cores)
+- Oversubscription (>10 threads) provides no additional benefit
+- Maximum achievable speedup: ~8.5x on this 10-core system
 
 ### Benchmark Commands
 
 ```bash
-# Build release binary
+# Build release binary (jones itself)
 cargo build --release
 
+# Build debug example libraries (what we're analyzing)
+cargo build -p dylib_example
+
 # Run with specific thread count
+# Note: We analyze debug-built libraries (more symbols/debug info to process)
+# using the release-built jones binary (optimized analyzer)
 time ./target/release/jones --lib target/debug/libdylib_example.dylib --max-threads N
 
 # Default (uses all available cores)
