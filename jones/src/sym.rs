@@ -293,13 +293,122 @@ pub struct CallGraph {
 /// Extracted instruction data for parallel processing (avoids Insn lifetime issues)
 struct InsnData {
     address: u64,
-    is_bl: bool,
     call_target: Option<u64>,
+}
+
+/// ARM64 instruction size in bytes (fixed-size ISA)
+const ARM64_INSN_SIZE: usize = 4;
+
+/// Minimum chunk size for parallel disassembly (avoid overhead for small sections)
+const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
+
+/// Disassemble ARM64 instructions in parallel by dividing into chunks.
+/// Each chunk is disassembled by a separate thread, then results are combined.
+/// Returns extracted BL instruction data ready for parallel processing.
+fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
+    let num_threads = rayon::current_num_threads();
+
+    // Calculate chunk size, ensuring alignment to instruction boundary
+    let ideal_chunk_size = text_data.len() / num_threads;
+    let chunk_size = if ideal_chunk_size < MIN_CHUNK_SIZE {
+        // Data too small to benefit from parallelization
+        text_data.len()
+    } else {
+        // Align to 4-byte instruction boundary
+        (ideal_chunk_size / ARM64_INSN_SIZE) * ARM64_INSN_SIZE
+    };
+
+    if chunk_size >= text_data.len() {
+        // Single chunk - use sequential disassembly
+        return sequential_disassemble_arm64(text_data, text_addr);
+    }
+
+    // Create chunks with their base addresses
+    let chunks: Vec<(usize, &[u8], u64)> = text_data
+        .chunks(chunk_size)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let chunk_addr = text_addr + (i * chunk_size) as u64;
+            (i, chunk, chunk_addr)
+        })
+        .collect();
+
+    // Disassemble chunks in parallel
+    let results: Vec<Vec<InsnData>> = chunks
+        .par_iter()
+        .map(|(_i, chunk, chunk_addr)| {
+            // Each thread creates its own Capstone instance (not thread-safe)
+            let Ok(cs) = Capstone::new()
+                .arm64()
+                .mode(arch::arm64::ArchMode::Arm)
+                .build()
+            else {
+                return Vec::new();
+            };
+
+            let Ok(instructions) = cs.disasm_all(chunk, *chunk_addr) else {
+                return Vec::new();
+            };
+
+            // Extract BL instructions
+            instructions
+                .iter()
+                .filter_map(|insn| {
+                    if insn.mnemonic() == Some("bl") {
+                        let operand = insn.op_str()?;
+                        let addr_str = operand.trim_start_matches("#0x");
+                        let call_target = u64::from_str_radix(addr_str, 16).ok();
+                        Some(InsnData {
+                            address: insn.address(),
+                            call_target,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    // Flatten results from all chunks
+    results.into_iter().flatten().collect()
+}
+
+/// Sequential disassembly fallback for small sections or non-ARM64.
+fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
+    let Ok(cs) = Capstone::new()
+        .arm64()
+        .mode(arch::arm64::ArchMode::Arm)
+        .build()
+    else {
+        return Vec::new();
+    };
+
+    let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
+        return Vec::new();
+    };
+
+    instructions
+        .iter()
+        .filter_map(|insn| {
+            if insn.mnemonic() == Some("bl") {
+                let operand = insn.op_str()?;
+                let addr_str = operand.trim_start_matches("#0x");
+                let call_target = u64::from_str_radix(addr_str, 16).ok();
+                Some(InsnData {
+                    address: insn.address(),
+                    call_target,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 impl CallGraph {
     /// Build a call graph by scanning all instructions once (no debug info).
-    /// Uses parallel processing for faster analysis of large binaries.
+    /// Uses parallel disassembly and parallel processing for faster analysis.
     pub fn build(macho: &MachO, buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
             return Ok(Self {
@@ -307,35 +416,12 @@ impl CallGraph {
             });
         };
 
-        let cs = Capstone::new()
-            .arm64()
-            .mode(arch::arm64::ArchMode::Arm)
-            .build()?;
+        // Parallel disassembly - divides text section into chunks (ARM64 only)
+        #[cfg(target_arch = "aarch64")]
+        let insn_data = parallel_disassemble_arm64(text_data, text_addr);
 
-        let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
-            return Ok(Self {
-                edges: HashMap::new(),
-            });
-        };
-
-        // Extract instruction data (sequential, fast)
-        let insn_data: Vec<InsnData> = instructions
-            .iter()
-            .filter_map(|insn| {
-                if insn.mnemonic() == Some("bl") {
-                    let operand = insn.op_str()?;
-                    let addr_str = operand.trim_start_matches("#0x");
-                    let call_target = u64::from_str_radix(addr_str, 16).ok();
-                    Some(InsnData {
-                        address: insn.address(),
-                        is_bl: true,
-                        call_target,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
+        #[cfg(not(target_arch = "aarch64"))]
+        let insn_data = sequential_disassemble_arm64(text_data, text_addr);
 
         // Process bl instructions in parallel (the expensive part is function lookup)
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
@@ -397,7 +483,7 @@ impl CallGraph {
     }
 
     /// Build a call graph with debug info enrichment.
-    /// Uses parallel processing for faster analysis of large binaries.
+    /// Uses parallel disassembly and parallel processing for faster analysis.
     pub fn build_with_debug_info(
         binary_macho: &MachO,
         binary_buffer: &[u8],
@@ -415,35 +501,12 @@ impl CallGraph {
             });
         };
 
-        let cs = Capstone::new()
-            .arm64()
-            .mode(arch::arm64::ArchMode::Arm)
-            .build()?;
+        // Parallel disassembly - divides text section into chunks (ARM64 only)
+        #[cfg(target_arch = "aarch64")]
+        let insn_data = parallel_disassemble_arm64(text_data, text_addr);
 
-        let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
-            return Ok(Self {
-                edges: HashMap::new(),
-            });
-        };
-
-        // Extract instruction data (sequential, fast)
-        let insn_data: Vec<InsnData> = instructions
-            .iter()
-            .filter_map(|insn| {
-                if insn.mnemonic() == Some("bl") {
-                    let operand = insn.op_str()?;
-                    let addr_str = operand.trim_start_matches("#0x");
-                    let call_target = u64::from_str_radix(addr_str, 16).ok();
-                    Some(InsnData {
-                        address: insn.address(),
-                        is_bl: true,
-                        call_target,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
+        #[cfg(not(target_arch = "aarch64"))]
+        let insn_data = sequential_disassemble_arm64(text_data, text_addr);
 
         // Process bl instructions in parallel
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
