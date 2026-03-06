@@ -15,7 +15,15 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
     let file_stem = binary_path.file_stem()?.to_str()?;
 
     // For libraries, strip "lib" prefix (e.g., "liblibrary" -> "library")
-    let binary_name = file_stem.strip_prefix("lib").unwrap_or(file_stem);
+    // Only strip for actual library artifacts to avoid renaming binaries like "libtool"
+    let is_library_artifact = binary_path
+        .extension()
+        .is_some_and(|ext| ext == "dylib" || ext == "rlib" || ext == "a");
+    let binary_name = if is_library_artifact {
+        file_stem.strip_prefix("lib").unwrap_or(file_stem)
+    } else {
+        file_stem
+    };
 
     // Common patterns:
     // 1. examples/<name>/src/ for crates in examples
@@ -57,6 +65,31 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
     None
 }
 
+/// Expand a workspace member pattern to concrete paths.
+/// Handles glob patterns like "examples/*" by enumerating directories.
+fn expand_workspace_member(workspace_root: &Path, member_pattern: &str) -> Vec<std::path::PathBuf> {
+    if member_pattern.contains('*') {
+        let base = member_pattern.trim_end_matches("/*");
+        let base_path = workspace_root.join(base);
+        if base_path.is_dir() {
+            fs::read_dir(&base_path)
+                .ok()
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().is_dir())
+                        .map(|e| e.path())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![workspace_root.join(member_pattern)]
+    }
+}
+
 /// Search workspace members to find the source path for a library by its name.
 /// Returns the relative path to the src directory (e.g., "examples/cdylib/src/").
 pub fn find_lib_src_path(workspace_root: &Path, lib_name: &str) -> Option<String> {
@@ -67,23 +100,7 @@ pub fn find_lib_src_path(workspace_root: &Path, lib_name: &str) -> Option<String
     let workspace = manifest.workspace.as_ref()?;
 
     for member_pattern in &workspace.members {
-        // Handle glob patterns
-        let member_paths: Vec<_> = if member_pattern.contains('*') {
-            let base = member_pattern.trim_end_matches("/*");
-            let base_path = workspace_root.join(base);
-            if base_path.is_dir() {
-                fs::read_dir(&base_path)
-                    .ok()?
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .map(|e| e.path())
-                    .collect()
-            } else {
-                vec![]
-            }
-        } else {
-            vec![workspace_root.join(member_pattern)]
-        };
+        let member_paths = expand_workspace_member(workspace_root, member_pattern);
 
         for member_path in member_paths {
             let member_cargo_toml = member_path.join("Cargo.toml");
@@ -133,10 +150,13 @@ pub fn detect_library_type(binary_path: &Path) -> Option<String> {
         {
             // Check if this is a workspace, look for member with matching lib name
             if let Some(workspace) = &manifest.workspace {
-                for member in &workspace.members {
-                    let member_path = dir.join(member);
-                    if let Some(lib_type) = check_member_lib_type(&member_path, lib_name) {
-                        return Some(lib_type);
+                for member_pattern in &workspace.members {
+                    // Handle glob patterns (e.g., "examples/*")
+                    let member_paths = expand_workspace_member(dir, member_pattern);
+                    for member_path in member_paths {
+                        if let Some(lib_type) = check_member_lib_type(&member_path, lib_name) {
+                            return Some(lib_type);
+                        }
                     }
                 }
             }

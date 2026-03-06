@@ -353,12 +353,19 @@ pub fn print_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usi
     count
 }
 
-/// Count total crate code points in the hierarchy
+/// Count unique crate code points in the hierarchy
 fn count_crate_points(points: &[CrateCodePoint]) -> usize {
-    points
-        .iter()
-        .map(|p| 1 + count_crate_points(&p.children))
-        .sum()
+    let mut seen = HashSet::new();
+    collect_unique_point_keys(points, &mut seen);
+    seen.len()
+}
+
+/// Collect unique (file, line) keys from the hierarchy
+fn collect_unique_point_keys(points: &[CrateCodePoint], seen: &mut HashSet<(String, u32)>) {
+    for p in points {
+        seen.insert((p.file.clone(), p.line));
+        collect_unique_point_keys(&p.children, seen);
+    }
 }
 
 /// Print a crate code point with tree-style indentation
