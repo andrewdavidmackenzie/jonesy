@@ -2,7 +2,8 @@
 #![allow(dead_code)] // TODO Just for now
 
 use capstone::arch::BuildsCapstone;
-use capstone::{Capstone, arch};
+use capstone::{Capstone, Insn, arch};
+use dashmap::DashMap;
 /// Here's how to use gimli with a MachO binary to get function information and then find call sites
 /// Note that DWARF doesn't directly encode "function A calls
 /// function B" - it provides accurate function boundaries and source locations, which you combine with disassembly.
@@ -17,6 +18,7 @@ use goblin::mach::segment::{Section, Segment};
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
 use ouroboros::self_referencing;
+use rayon::prelude::*;
 use regex::Regex;
 use rustc_demangle::demangle;
 use std::collections::HashMap;
@@ -279,6 +281,265 @@ fn find_sections<'a>(macho: &'a MachO, section_name: &str) -> Vec<(Section, Sect
             }
         })
         .collect()
+}
+
+/// Pre-computed call graph mapping target addresses to their callers.
+/// This allows O(1) lookup instead of O(n) scanning for each query.
+pub struct CallGraph {
+    /// Maps target_addr -> list of CallerInfo
+    edges: HashMap<u64, Vec<CallerInfo>>,
+}
+
+/// Extracted instruction data for parallel processing (avoids Insn lifetime issues)
+struct InsnData {
+    address: u64,
+    is_bl: bool,
+    call_target: Option<u64>,
+}
+
+impl CallGraph {
+    /// Build a call graph by scanning all instructions once (no debug info).
+    /// Uses parallel processing for faster analysis of large binaries.
+    pub fn build(macho: &MachO, buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+            return Ok(Self {
+                edges: HashMap::new(),
+            });
+        };
+
+        let cs = Capstone::new()
+            .arm64()
+            .mode(arch::arm64::ArchMode::Arm)
+            .build()?;
+
+        let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
+            return Ok(Self {
+                edges: HashMap::new(),
+            });
+        };
+
+        // Extract instruction data (sequential, fast)
+        let insn_data: Vec<InsnData> = instructions
+            .iter()
+            .filter_map(|insn| {
+                if insn.mnemonic() == Some("bl") {
+                    let operand = insn.op_str()?;
+                    let addr_str = operand.trim_start_matches("#0x");
+                    let call_target = u64::from_str_radix(addr_str, 16).ok();
+                    Some(InsnData {
+                        address: insn.address(),
+                        is_bl: true,
+                        call_target,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Process bl instructions in parallel (the expensive part is function lookup)
+        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+
+        insn_data.par_iter().for_each(|data| {
+            if let Some(call_target) = data.call_target {
+                if let Some((func_addr, func_name)) =
+                    find_containing_function_with_addr(macho, data.address)
+                {
+                    edges.entry(call_target).or_default().push(CallerInfo {
+                        caller: FunctionInfo {
+                            name: func_name,
+                            start_address: func_addr,
+                            ..Default::default()
+                        },
+                        call_site_addr: data.address,
+                        ..Default::default()
+                    });
+                }
+            }
+        });
+
+        // Convert DashMap to HashMap
+        Ok(Self {
+            edges: edges.into_iter().collect(),
+        })
+    }
+
+    /// Build a call graph by scanning all instructions once (no debug info).
+    /// Non-parallel version for comparison or single-threaded mode.
+    #[allow(dead_code)]
+    pub fn build_sequential(
+        macho: &MachO,
+        buffer: &[u8],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut edges: HashMap<u64, Vec<CallerInfo>> = HashMap::new();
+
+        let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+            return Ok(Self { edges });
+        };
+
+        let cs = Capstone::new()
+            .arm64()
+            .mode(arch::arm64::ArchMode::Arm)
+            .build()?;
+
+        let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
+            return Ok(Self { edges });
+        };
+
+        for instruction in instructions.iter() {
+            if let Some((call_target, caller_info)) = process_instruction_basic(macho, &instruction)
+            {
+                edges.entry(call_target).or_default().push(caller_info);
+            }
+        }
+
+        Ok(Self { edges })
+    }
+
+    /// Build a call graph with debug info enrichment.
+    /// Uses parallel processing for faster analysis of large binaries.
+    pub fn build_with_debug_info(
+        binary_macho: &MachO,
+        binary_buffer: &[u8],
+        debug_macho: &MachO,
+        debug_buffer: &[u8],
+        crate_src_path: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Pre-load DWARF info once (shared across threads)
+        let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+
+        let Some((text_addr, text_data)) = get_text_section(binary_macho, binary_buffer) else {
+            return Ok(Self {
+                edges: HashMap::new(),
+            });
+        };
+
+        let cs = Capstone::new()
+            .arm64()
+            .mode(arch::arm64::ArchMode::Arm)
+            .build()?;
+
+        let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
+            return Ok(Self {
+                edges: HashMap::new(),
+            });
+        };
+
+        // Extract instruction data (sequential, fast)
+        let insn_data: Vec<InsnData> = instructions
+            .iter()
+            .filter_map(|insn| {
+                if insn.mnemonic() == Some("bl") {
+                    let operand = insn.op_str()?;
+                    let addr_str = operand.trim_start_matches("#0x");
+                    let call_target = u64::from_str_radix(addr_str, 16).ok();
+                    Some(InsnData {
+                        address: insn.address(),
+                        is_bl: true,
+                        call_target,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Process bl instructions in parallel
+        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+
+        insn_data.par_iter().for_each(|data| {
+            if let Some(call_target) = data.call_target {
+                if let Some((target, caller_info)) =
+                    process_instruction_data_with_debug(data, &functions, &dwarf, crate_src_path)
+                {
+                    edges.entry(target).or_default().push(caller_info);
+                }
+            }
+        });
+
+        Ok(Self {
+            edges: edges.into_iter().collect(),
+        })
+    }
+
+    /// Get all callers of a target address.
+    pub fn get_callers(&self, target_addr: u64) -> Vec<CallerInfo> {
+        self.edges.get(&target_addr).cloned().unwrap_or_default()
+    }
+
+    /// Create an empty call graph.
+    pub fn empty() -> Self {
+        Self {
+            edges: HashMap::new(),
+        }
+    }
+}
+
+/// Process a single instruction and extract call information (basic version without debug info).
+/// Returns (call_target, CallerInfo) if this is a bl instruction, None otherwise.
+fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, CallerInfo)> {
+    if instruction.mnemonic() != Some("bl") {
+        return None;
+    }
+
+    let operand = instruction.op_str()?;
+    let addr_str = operand.trim_start_matches("#0x");
+    let call_target = u64::from_str_radix(addr_str, 16).ok()?;
+    let (func_addr, func_name) = find_containing_function_with_addr(macho, instruction.address())?;
+
+    Some((
+        call_target,
+        CallerInfo {
+            caller: FunctionInfo {
+                name: func_name,
+                start_address: func_addr,
+                ..Default::default()
+            },
+            call_site_addr: instruction.address(),
+            ..Default::default()
+        },
+    ))
+}
+
+/// Process extracted instruction data and enrich with debug info.
+/// Returns (call_target, CallerInfo) if successful, None otherwise.
+fn process_instruction_data_with_debug(
+    data: &InsnData,
+    functions: &[FunctionInfo],
+    dwarf: &Dwarf<DwarfReader>,
+    crate_src_path: Option<&str>,
+) -> Option<(u64, CallerInfo)> {
+    let call_target = data.call_target?;
+
+    // Find the function containing this call using DWARF info
+    let func = find_function_at_address(functions, data.address)?;
+
+    // Get source info
+    let (func_file, func_line) =
+        get_source_location(dwarf, func.start_address).unwrap_or((None, None));
+
+    let file = func.file.clone().or(func_file);
+    let mut line = func.line.or(func_line);
+
+    // For functions in the crate source, find actual call line
+    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
+        && f.contains(crate_path)
+        && let Ok(Some(crate_line)) =
+            get_crate_line_at_address(dwarf, func.start_address, data.address, crate_path)
+    {
+        line = Some(crate_line);
+    }
+
+    Some((
+        call_target,
+        CallerInfo {
+            caller: func.clone(),
+            call_site_addr: data.address,
+            file,
+            line,
+        },
+    ))
 }
 
 // TODO Note that the address passed in is an n_value or Symbol table offset,
