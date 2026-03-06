@@ -46,26 +46,11 @@ pub fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
     }
 }
 
-/// Detect if a node represents an allowed (not reported) panic cause based on config.
-/// Returns Some(PanicCause) if the panic cause is allowed (should be pruned).
-fn get_allowed_panic_cause(node: &CallTreeNode, config: &Config) -> Option<PanicCause> {
-    if let Some(cause) = detect_panic_cause(&node.name)
-        && !config.is_denied(&cause)
-    {
-        return Some(cause);
-    }
-    None
-}
-
 /// Prune branches that don't lead to a leaf node in the target crate's source.
-/// Also removes panic paths whose causes are allowed (not denied) in the config.
+/// Note: Allowed cause filtering is done during code point collection, not here,
+/// to avoid incorrectly pruning shared subtrees that are reachable via denied causes.
 /// Returns true if this node should be kept.
 pub fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, config: &Config) -> bool {
-    // Remove panic paths whose cause is allowed (not denied) by config
-    if get_allowed_panic_cause(node, config).is_some() {
-        return false;
-    }
-
     // Recursively prune children first
     node.callers
         .retain_mut(|caller| prune_call_tree(caller, crate_src_path, config));
@@ -95,12 +80,8 @@ pub fn build_call_tree_parallel(
     let callers = call_graph.get_callers(target_addr);
 
     // Process callers in parallel at this level.
-    // Note: We intentionally share visited across all branches. This means if function C
-    // is called from both A→C and B→C paths, only one branch will recurse into C's callers.
-    // This is correct because:
-    // 1. All caller nodes are still added to the tree (node creation is unconditional)
-    // 2. We only skip redundant exploration of the same subtree
-    // 3. The set of leaf code points found is the same regardless of which branch explores C
+    // Note: We share visited across all branches to avoid exponential blowup.
+    // This means shared subtrees are only explored once, but all nodes are still created.
     callers
         .into_par_iter()
         .filter_map(|caller_info| {
@@ -162,13 +143,13 @@ fn build_call_tree_sequential(
 }
 
 /// A crate code point with its hierarchical children (code points it calls toward panic)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateCodePoint {
     pub name: String,
     pub file: String,
     pub line: u32,
-    /// The detected cause of this panic path
-    pub cause: Option<PanicCause>,
+    /// All detected causes of panic paths through this point
+    pub causes: HashSet<PanicCause>,
     /// Code points that this one calls (closer to panic in the call chain)
     pub children: Vec<CrateCodePoint>,
 }
@@ -176,8 +157,8 @@ pub struct CrateCodePoint {
 /// Key for identifying a code point: (file, line)
 type CodePointKey = (String, u32);
 
-/// Info stored for each code point: (function name, panic cause, set of child keys)
-type CodePointInfo = (String, Option<PanicCause>, HashSet<CodePointKey>);
+/// Info stored for each code point: (function name, set of causes, set of child keys)
+type CodePointInfo = (String, HashSet<PanicCause>, HashSet<CodePointKey>);
 
 /// Map of code points: key -> info
 type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
@@ -223,7 +204,7 @@ pub fn collect_crate_code_points_hierarchical(
             return None;
         }
 
-        let (name, cause, child_keys_set) = points.get(key)?;
+        let (name, causes, child_keys_set) = points.get(key)?;
         // Sort child keys for deterministic output
         let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
@@ -238,7 +219,7 @@ pub fn collect_crate_code_points_hierarchical(
             name: name.clone(),
             file: key.0.clone(),
             line: key.1,
-            cause: cause.clone(),
+            causes: causes.clone(),
             children,
         })
     }
@@ -278,16 +259,19 @@ fn collect_crate_relationships(
     };
 
     if let Some(key) = &node_key {
-        // Ensure this point exists in the map with detected cause
-        points
+        // Ensure this point exists in the map and accumulate all causes
+        let entry = points
             .entry(key.clone())
-            .or_insert_with(|| (node.name.clone(), detected_cause.clone(), HashSet::new()));
+            .or_insert_with(|| (node.name.clone(), HashSet::new(), HashSet::new()));
+
+        // Add this path's cause to the set of causes (if detected)
+        if let Some(cause) = &detected_cause {
+            entry.1.insert(cause.clone());
+        }
 
         // If there's a child crate code point (closer to panic), add it as a child of this node
-        if let Some(child_key) = &child_crate_key
-            && let Some((_, _, children)) = points.get_mut(key)
-        {
-            children.insert(child_key.clone());
+        if let Some(child_key) = &child_crate_key {
+            entry.2.insert(child_key.clone());
         }
     }
 
@@ -337,12 +321,17 @@ pub fn count_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usi
 /// Print only the crate code points without the full tree.
 /// Returns the number of unique panic code points found.
 /// The project_root is used to make relative paths absolute for clickable links.
+/// The config is used to filter out code points with allowed (not denied) causes.
 pub fn print_crate_code_points(
     node: &CallTreeNode,
     crate_src_path: &str,
     project_root: Option<&Path>,
+    config: &Config,
 ) -> usize {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
+
+    // Filter out code points with allowed causes
+    filter_allowed_causes(&mut roots, config);
 
     // Deduplicate roots by (file, line)
     dedupe_crate_points(&mut roots);
@@ -360,6 +349,25 @@ pub fn print_crate_code_points(
         }
     }
     count
+}
+
+/// Filter out code points whose causes are ALL allowed (not denied) by config.
+/// A point is kept if ANY of its causes is denied.
+/// If a point has no causes, it's kept (conservative - assume denied).
+fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
+    points.retain_mut(|point| {
+        // Keep if no causes (conservative) or if ANY cause is denied
+        let should_keep =
+            point.causes.is_empty() || point.causes.iter().any(|cause| config.is_denied(cause));
+
+        if should_keep {
+            // Recursively filter children
+            filter_allowed_causes(&mut point.children, config);
+            true
+        } else {
+            false
+        }
+    });
 }
 
 /// Count unique crate code points in the hierarchy
@@ -404,9 +412,16 @@ fn print_crate_point(
     // Only show cause and help on leaf nodes (no children)
     let is_leaf = point.children.is_empty();
 
+    // Get the primary cause for display (first one, sorted for determinism)
+    let primary_cause: Option<&PanicCause> = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().copied()
+    };
+
     // Format cause description if available (only for leaf nodes)
     let cause_str = if is_leaf {
-        if let Some(cause) = &point.cause {
+        if let Some(cause) = primary_cause {
             format!(" [{}]", cause.description())
         } else {
             String::new()
@@ -419,7 +434,7 @@ fn print_crate_point(
     if is_root {
         println!(" --> {}{}", location, cause_str);
         // Print suggestion if we have a cause (only for leaf nodes)
-        if is_leaf && let Some(cause) = &point.cause {
+        if is_leaf && let Some(cause) = primary_cause {
             let suggestion = cause.suggestion();
             if !suggestion.is_empty() {
                 println!("     = help: {}", suggestion);
@@ -430,7 +445,7 @@ fn print_crate_point(
         // Indent to align with parent, show tree connector, then clickable location
         println!("     {}{} --> {}{}", prefix, connector, location, cause_str);
         // Print suggestion if we have a cause (only for leaf nodes)
-        if is_leaf && let Some(cause) = &point.cause {
+        if is_leaf && let Some(cause) = primary_cause {
             let suggestion = cause.suggestion();
             if !suggestion.is_empty() {
                 println!("     {}     = help: {}", prefix, suggestion);

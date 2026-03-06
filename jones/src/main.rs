@@ -48,12 +48,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|_| binary_path.clone());
         println!("Processing {}", binary_path.display());
 
-        // Find project root from binary path for config loading and absolute paths
+        // Find project/workspace root from binary path
         let project_root = find_project_root(&binary_path);
 
-        // Load configuration per-crate
-        // If no project root found, use defaults plus any explicit --config only
-        let config = if let Some(ref root) = project_root {
+        // Find the member crate directory for config loading
+        // In workspaces, derive_crate_src_path returns paths like "flowc/src/" or "examples/panic/src/"
+        // We want the crate directory (parent of src/) for config loading
+        let crate_dir = derive_crate_src_path(&binary_path).and_then(|src_path| {
+            // Strip trailing "src/" to get crate directory
+            let crate_rel = src_path.strip_suffix("src/").unwrap_or(&src_path);
+            project_root
+                .as_ref()
+                .map(|root| root.join(crate_rel.trim_end_matches('/')))
+        });
+
+        // Load configuration: prefer crate-specific config, fall back to workspace root
+        let config = if let Some(ref crate_path) = crate_dir
+            && crate_path.join("Cargo.toml").exists()
+        {
+            // Load from member crate directory
+            Config::load_for_project(crate_path, parsed_args.config_path.as_deref())
+        } else if let Some(ref root) = project_root {
+            // Fall back to workspace/project root
             Config::load_for_project(root, parsed_args.config_path.as_deref())
         } else {
             // No project root found - use defaults plus explicit --config only
@@ -248,7 +264,7 @@ fn analyze_macho(
         print_call_tree(&root, 0);
         crate_src_path.map_or(0, |cp| count_crate_code_points(&root, cp))
     } else if let Some(crate_path) = crate_src_path {
-        print_crate_code_points(&root, crate_path, project_root)
+        print_crate_code_points(&root, crate_path, project_root, config)
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);
