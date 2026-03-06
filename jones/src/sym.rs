@@ -2,7 +2,8 @@
 #![allow(dead_code)] // TODO Just for now
 
 use capstone::arch::BuildsCapstone;
-use capstone::{Capstone, arch};
+use capstone::{Capstone, Insn, arch};
+use dashmap::DashMap;
 /// Here's how to use gimli with a MachO binary to get function information and then find call sites
 /// Note that DWARF doesn't directly encode "function A calls
 /// function B" - it provides accurate function boundaries and source locations, which you combine with disassembly.
@@ -17,6 +18,7 @@ use goblin::mach::segment::{Section, Segment};
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
 use ouroboros::self_referencing;
+use rayon::prelude::*;
 use regex::Regex;
 use rustc_demangle::demangle;
 use std::collections::HashMap;
@@ -279,6 +281,340 @@ fn find_sections<'a>(macho: &'a MachO, section_name: &str) -> Vec<(Section, Sect
             }
         })
         .collect()
+}
+
+/// Pre-computed call graph mapping target addresses to their callers.
+/// This allows O(1) lookup instead of O(n) scanning for each query.
+pub struct CallGraph {
+    /// Maps target_addr -> list of CallerInfo
+    edges: HashMap<u64, Vec<CallerInfo>>,
+}
+
+/// Extracted instruction data for parallel processing (avoids Insn lifetime issues)
+struct InsnData {
+    address: u64,
+    call_target: Option<u64>,
+}
+
+/// ARM64 instruction size in bytes (fixed-size ISA)
+const ARM64_INSN_SIZE: usize = 4;
+
+/// Minimum chunk size for parallel disassembly (avoid overhead for small sections)
+const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
+
+/// ARM64 BL instruction mask: bits [31:26] must be 100101
+const BL_MASK: u32 = 0xFC000000;
+const BL_OPCODE: u32 = 0x94000000;
+
+/// Decode ARM64 BL instruction target address from raw bytes.
+/// BL encoding: 100101 imm26
+/// Target = PC + sign_extend(imm26) * 4
+fn decode_bl_target(insn_bytes: u32, pc: u64) -> u64 {
+    // Extract 26-bit immediate
+    let imm26 = insn_bytes & 0x03FFFFFF;
+    // Sign-extend to 32 bits and multiply by 4 (shift left 2)
+    let offset = ((imm26 as i32) << 6) >> 4;
+    // Add to PC
+    (pc as i64 + offset as i64) as u64
+}
+
+/// Scan for ARM64 BL instructions in parallel by dividing into chunks.
+/// Directly scans raw bytes for BL pattern - no disassembly needed.
+/// This is much faster than using Capstone for full disassembly.
+fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
+    let num_threads = rayon::current_num_threads();
+
+    // Calculate chunk size, ensuring alignment to instruction boundary
+    let ideal_chunk_size = text_data.len() / num_threads;
+    let chunk_size = if ideal_chunk_size < MIN_CHUNK_SIZE {
+        // Data too small to benefit from parallelization
+        text_data.len()
+    } else {
+        // Align to 4-byte instruction boundary
+        (ideal_chunk_size / ARM64_INSN_SIZE) * ARM64_INSN_SIZE
+    };
+
+    if chunk_size >= text_data.len() {
+        // Single chunk - use sequential scanning
+        return sequential_scan_bl_instructions(text_data, text_addr);
+    }
+
+    // Create chunks with their base addresses
+    let chunks: Vec<(usize, &[u8], u64)> = text_data
+        .chunks(chunk_size)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let chunk_addr = text_addr + (i * chunk_size) as u64;
+            (i, chunk, chunk_addr)
+        })
+        .collect();
+
+    // Scan chunks in parallel for BL instructions
+    let results: Vec<Vec<InsnData>> = chunks
+        .par_iter()
+        .map(|(_i, chunk, chunk_addr)| scan_bl_instructions(chunk, *chunk_addr))
+        .collect();
+
+    // Flatten results from all chunks
+    results.into_iter().flatten().collect()
+}
+
+/// Scan a chunk of ARM64 code for BL instructions.
+/// Directly checks raw bytes against BL opcode pattern.
+fn scan_bl_instructions(data: &[u8], base_addr: u64) -> Vec<InsnData> {
+    data.chunks_exact(ARM64_INSN_SIZE)
+        .enumerate()
+        .filter_map(|(i, bytes)| {
+            let insn = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if (insn & BL_MASK) == BL_OPCODE {
+                let pc = base_addr + (i * ARM64_INSN_SIZE) as u64;
+                let target = decode_bl_target(insn, pc);
+                Some(InsnData {
+                    address: pc,
+                    call_target: Some(target),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Sequential BL scanning fallback for small sections.
+fn sequential_scan_bl_instructions(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
+    scan_bl_instructions(text_data, text_addr)
+}
+
+/// Sequential disassembly using Capstone - kept for non-ARM64 platforms.
+#[allow(dead_code)]
+fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
+    let Ok(cs) = Capstone::new()
+        .arm64()
+        .mode(arch::arm64::ArchMode::Arm)
+        .build()
+    else {
+        eprintln!("Warning: failed to initialize Capstone disassembler");
+        return Vec::new();
+    };
+
+    let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
+        eprintln!("Warning: disassembly failed for text section at {text_addr:#x}");
+        return Vec::new();
+    };
+
+    instructions
+        .iter()
+        .filter_map(|insn| {
+            if insn.mnemonic() == Some("bl") {
+                let operand = insn.op_str()?;
+                let addr_str = operand.trim_start_matches("#0x");
+                let call_target = u64::from_str_radix(addr_str, 16).ok();
+                Some(InsnData {
+                    address: insn.address(),
+                    call_target,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+impl CallGraph {
+    /// Build a call graph by scanning all instructions once (no debug info).
+    /// Uses parallel disassembly and parallel processing for faster analysis.
+    pub fn build(macho: &MachO, buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+            return Ok(Self {
+                edges: HashMap::new(),
+            });
+        };
+
+        // Parallel disassembly - divides text section into chunks (ARM64 only)
+        #[cfg(target_arch = "aarch64")]
+        let insn_data = parallel_disassemble_arm64(text_data, text_addr);
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let insn_data = sequential_disassemble_arm64(text_data, text_addr);
+
+        // Process bl instructions in parallel (the expensive part is function lookup)
+        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+
+        insn_data.par_iter().for_each(|data| {
+            if let Some(call_target) = data.call_target
+                && let Some((func_addr, func_name)) =
+                    find_containing_function_with_addr(macho, data.address)
+            {
+                edges.entry(call_target).or_default().push(CallerInfo {
+                    caller: FunctionInfo {
+                        name: func_name,
+                        start_address: func_addr,
+                        ..Default::default()
+                    },
+                    call_site_addr: data.address,
+                    ..Default::default()
+                });
+            }
+        });
+
+        // Convert DashMap to HashMap
+        Ok(Self {
+            edges: edges.into_iter().collect(),
+        })
+    }
+
+    /// Build a call graph by scanning all instructions once (no debug info).
+    /// Non-parallel version for comparison or single-threaded mode.
+    #[allow(dead_code)]
+    pub fn build_sequential(
+        macho: &MachO,
+        buffer: &[u8],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut edges: HashMap<u64, Vec<CallerInfo>> = HashMap::new();
+
+        let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+            return Ok(Self { edges });
+        };
+
+        let cs = Capstone::new()
+            .arm64()
+            .mode(arch::arm64::ArchMode::Arm)
+            .build()?;
+
+        let instructions = cs
+            .disasm_all(text_data, text_addr)
+            .map_err(|e| format!("Disassembly failed: {e}"))?;
+
+        for instruction in instructions.iter() {
+            if let Some((call_target, caller_info)) = process_instruction_basic(macho, instruction)
+            {
+                edges.entry(call_target).or_default().push(caller_info);
+            }
+        }
+
+        Ok(Self { edges })
+    }
+
+    /// Build a call graph with debug info enrichment.
+    /// Uses parallel disassembly and parallel processing for faster analysis.
+    pub fn build_with_debug_info(
+        binary_macho: &MachO,
+        binary_buffer: &[u8],
+        debug_macho: &MachO,
+        debug_buffer: &[u8],
+        crate_src_path: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Pre-load DWARF info once (shared across threads)
+        let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+
+        let Some((text_addr, text_data)) = get_text_section(binary_macho, binary_buffer) else {
+            return Ok(Self {
+                edges: HashMap::new(),
+            });
+        };
+
+        // Parallel disassembly - divides text section into chunks (ARM64 only)
+        #[cfg(target_arch = "aarch64")]
+        let insn_data = parallel_disassemble_arm64(text_data, text_addr);
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let insn_data = sequential_disassemble_arm64(text_data, text_addr);
+
+        // Process bl instructions in parallel
+        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+
+        insn_data.par_iter().for_each(|data| {
+            if let Some(call_target) = data.call_target
+                && let Some((target, caller_info)) =
+                    process_instruction_data_with_debug(data, &functions, &dwarf, crate_src_path)
+            {
+                edges.entry(target).or_default().push(caller_info);
+            }
+        });
+
+        Ok(Self {
+            edges: edges.into_iter().collect(),
+        })
+    }
+
+    /// Get all callers of a target address.
+    pub fn get_callers(&self, target_addr: u64) -> Vec<CallerInfo> {
+        self.edges.get(&target_addr).cloned().unwrap_or_default()
+    }
+
+    /// Create an empty call graph.
+    pub fn empty() -> Self {
+        Self {
+            edges: HashMap::new(),
+        }
+    }
+}
+
+/// Process a single instruction and extract call information (basic version without debug info).
+/// Returns (call_target, CallerInfo) if this is a bl instruction, None otherwise.
+fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, CallerInfo)> {
+    if instruction.mnemonic() != Some("bl") {
+        return None;
+    }
+
+    let operand = instruction.op_str()?;
+    let addr_str = operand.trim_start_matches("#0x");
+    let call_target = u64::from_str_radix(addr_str, 16).ok()?;
+    let (func_addr, func_name) = find_containing_function_with_addr(macho, instruction.address())?;
+
+    Some((
+        call_target,
+        CallerInfo {
+            caller: FunctionInfo {
+                name: func_name,
+                start_address: func_addr,
+                ..Default::default()
+            },
+            call_site_addr: instruction.address(),
+            ..Default::default()
+        },
+    ))
+}
+
+/// Process extracted instruction data and enrich with debug info.
+/// Returns (call_target, CallerInfo) if successful, None otherwise.
+fn process_instruction_data_with_debug(
+    data: &InsnData,
+    functions: &[FunctionInfo],
+    dwarf: &Dwarf<DwarfReader>,
+    crate_src_path: Option<&str>,
+) -> Option<(u64, CallerInfo)> {
+    let call_target = data.call_target?;
+
+    // Find the function containing this call using DWARF info
+    let func = find_function_at_address(functions, data.address)?;
+
+    // Get source info
+    let (func_file, func_line) =
+        get_source_location(dwarf, func.start_address).unwrap_or((None, None));
+
+    let file = func.file.clone().or(func_file);
+    let mut line = func.line.or(func_line);
+
+    // For functions in the crate source, find actual call line
+    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
+        && f.contains(crate_path)
+        && let Ok(Some(crate_line)) =
+            get_crate_line_at_address(dwarf, func.start_address, data.address, crate_path)
+    {
+        line = Some(crate_line);
+    }
+
+    Some((
+        call_target,
+        CallerInfo {
+            caller: func.clone(),
+            call_site_addr: data.address,
+            file,
+            line,
+        },
+    ))
 }
 
 // TODO Note that the address passed in is an n_value or Symbol table offset,

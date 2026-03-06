@@ -9,6 +9,8 @@ pub(crate) struct Args {
     pub show_tree: bool,
     /// Whether to show drop/cleanup panic paths (--drops flag)
     pub show_drops: bool,
+    /// Maximum number of threads to use for parallel analysis
+    pub max_threads: usize,
 }
 
 /// Parse command line arguments.
@@ -23,17 +25,28 @@ pub(crate) struct Args {
 ///    Analyze the specified library object file
 ///
 /// Optional flags:
-/// --tree   Show the full call tree instead of just crate code points
-/// --drops  Include panic paths from drop/cleanup operations
+/// --tree           Show the full call tree instead of just crate code points
+/// --drops          Include panic paths from drop/cleanup operations
+/// --max-threads N  Maximum threads for parallel analysis (default: number of CPUs)
 pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     // Check for flags
     let show_tree = args.iter().any(|a| a == "--tree");
     let show_drops = args.iter().any(|a| a == "--drops");
 
-    // Filter out flags from args for path parsing
+    // Parse --max-threads option
+    let max_threads = parse_max_threads(args)?;
+
+    // Filter out flags and --max-threads from args for path parsing
     let filtered_args: Vec<&String> = args
         .iter()
-        .filter(|a| *a != "--tree" && *a != "--drops")
+        .enumerate()
+        .filter(|(i, a)| {
+            *a != "--tree"
+                && *a != "--drops"
+                && *a != "--max-threads"
+                && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--max-threads"))
+        })
+        .map(|(_, a)| a)
         .collect();
 
     let binaries = if filtered_args.len() == 1 {
@@ -53,19 +66,43 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         binaries,
         show_tree,
         show_drops,
+        max_threads,
     })
+}
+
+/// Parse --max-threads option, defaulting to number of available CPUs
+fn parse_max_threads(args: &[String]) -> Result<usize, String> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--max-threads" {
+            let value = args
+                .get(i + 1)
+                .ok_or("--max-threads requires a number argument")?;
+            let n: usize = value
+                .parse()
+                .map_err(|_| format!("Invalid --max-threads value: {}", value))?;
+            if n == 0 {
+                return Err("--max-threads must be at least 1".to_string());
+            }
+            return Ok(n);
+        }
+    }
+    // Default to number of available CPUs
+    Ok(std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1))
 }
 
 fn usage() -> String {
     "Usage:\n  \
-     jones [--tree] [--drops]\n  \
-     jones [--tree] [--drops] --bin <path_to_binary>\n  \
-     jones [--tree] [--drops] --lib <path_to_lib_object>\n\n\
+     jones [OPTIONS]\n  \
+     jones [OPTIONS] --bin <path_to_binary>\n  \
+     jones [OPTIONS] --lib <path_to_lib_object>\n\n\
      When run without --bin or --lib, jones looks for Cargo.toml in the current\n\
      directory and analyzes all binary targets found in target/debug/.\n\n\
      Options:\n  \
-     --tree   Show full call tree instead of just crate code points\n  \
-     --drops  Include panic paths from drop/cleanup operations"
+     --tree             Show full call tree instead of just crate code points\n  \
+     --drops            Include panic paths from drop/cleanup operations\n  \
+     --max-threads N    Maximum threads for parallel analysis (default: CPU count)"
         .to_string()
 }
 

@@ -1,16 +1,17 @@
 use crate::args::parse_args;
 use crate::sym::{
-    DebugInfo, SymbolTable, find_callers, find_callers_with_debug_info,
-    find_callers_with_debug_map, find_symbol_address, find_symbol_containing, load_debug_info,
-    read_symbols,
+    CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
+    load_debug_info, read_symbols,
 };
 use cargo_toml::Manifest;
+use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
 use goblin::mach::MachO;
-use std::collections::HashSet;
+use rayon::prelude::*;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 mod args;
 #[cfg(target_os = "macos")]
@@ -272,6 +273,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(255);
     });
 
+    // Configure rayon thread pool with user-specified max threads
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(parsed_args.max_threads)
+        .build_global()
+        .ok(); // Ignore error if pool already initialized
+
     let mut total_panic_points: usize = 0;
 
     for binary_path in parsed_args.binaries {
@@ -387,6 +394,52 @@ fn analyze_macho(
 
     let debug_info = load_debug_info(macho, binary_path);
 
+    // Pre-compute call graph by scanning all instructions once
+    // Use debug info variant for source file/line enrichment
+    let call_graph = match &debug_info {
+        DebugInfo::Embedded => {
+            CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path)
+                .or_else(|e| {
+                    eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
+                    CallGraph::build(macho, buffer)
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("Error: call graph build failed: {e}");
+                    CallGraph::empty()
+                })
+        }
+        DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
+            if let Binary(debug_mach) = debug_macho {
+                CallGraph::build_with_debug_info(
+                    macho,
+                    buffer,
+                    debug_mach,
+                    dsym_info.borrow_debug_buffer(),
+                    crate_src_path,
+                )
+                .or_else(|e| {
+                    eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
+                    CallGraph::build(macho, buffer)
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("Error: call graph build failed: {e}");
+                    CallGraph::empty()
+                })
+            } else {
+                CallGraph::build(macho, buffer).unwrap_or_else(|e| {
+                    eprintln!("Error: call graph build failed: {e}");
+                    CallGraph::empty()
+                })
+            }
+        }),
+        DebugInfo::DebugMap(_) | DebugInfo::None => {
+            CallGraph::build(macho, buffer).unwrap_or_else(|e| {
+                eprintln!("Error: call graph build failed: {e}");
+                CallGraph::empty()
+            })
+        }
+    };
+
     // Create the root node for the call tree
     let mut root = CallTreeNode {
         name: demangled.clone(),
@@ -395,19 +448,12 @@ fn analyze_macho(
         callers: Vec::new(),
     };
 
-    // Track visited addresses to avoid infinite recursion
-    let mut visited = HashSet::new();
+    // Track visited addresses to avoid infinite recursion (thread-safe)
+    let visited = Arc::new(DashSet::new());
     visited.insert(target_addr);
 
-    build_call_tree(
-        macho,
-        buffer,
-        &debug_info,
-        target_addr,
-        &mut root,
-        &mut visited,
-        crate_src_path,
-    );
+    // Build the call tree in parallel
+    root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
 
     // Prune to only show paths leading to user code
     if let Some(crate_path) = crate_src_path {
@@ -429,94 +475,82 @@ fn analyze_macho(
 }
 
 /// Build a call tree by recursively finding callers of the target address.
-/// Uses a visited set to avoid infinite recursion when there are cycles.
-fn build_call_tree(
-    binary_macho: &goblin::mach::MachO,
-    binary_buffer: &[u8],
-    debug_source: &DebugInfo,
+/// Uses a thread-safe visited set to avoid infinite recursion when there are cycles.
+/// Uses pre-computed CallGraph for O(1) lookups instead of re-scanning instructions.
+/// Parallelizes exploration of top-level callers, with sequential recursion within each branch.
+fn build_call_tree_parallel(
+    call_graph: &CallGraph,
     target_addr: u64,
-    node: &mut CallTreeNode,
-    visited: &mut HashSet<u64>,
-    crate_src_path: Option<&str>,
-) {
-    let callers = match debug_source {
-        DebugInfo::Embedded => {
-            // Binary and debug are the same
-            find_callers_with_debug_info(
-                binary_macho,
-                binary_buffer,
-                binary_macho,
-                binary_buffer,
-                target_addr,
-                crate_src_path,
-            )
-            .unwrap()
-        }
-        DebugInfo::DSym(dsym_info) => {
-            // Binary for code, dSYM for debug info
-            dsym_info.with_debug_macho(|debug_macho| {
-                if let Binary(macho) = debug_macho {
-                    find_callers_with_debug_info(
-                        binary_macho,
-                        binary_buffer,
-                        macho,
-                        dsym_info.borrow_debug_buffer(),
-                        target_addr,
-                        crate_src_path,
-                    )
-                    .unwrap()
-                } else {
-                    find_callers(binary_macho, binary_buffer, target_addr).unwrap()
-                }
+    visited: &Arc<DashSet<u64>>,
+) -> Vec<CallTreeNode> {
+    // Use pre-computed call graph for O(1) lookup
+    let callers = call_graph.get_callers(target_addr);
+
+    // Process callers in parallel at this level.
+    // Note: We intentionally share visited across all branches. This means if function C
+    // is called from both A→C and B→C paths, only one branch will recurse into C's callers.
+    // This is correct because:
+    // 1. All caller nodes are still added to the tree (node creation is unconditional)
+    // 2. We only skip redundant exploration of the same subtree
+    // 3. The set of leaf code points found is the same regardless of which branch explores C
+    callers
+        .into_par_iter()
+        .filter_map(|caller_info| {
+            let caller_addr = caller_info.caller.start_address;
+
+            // Atomically try to insert - if already present, skip recursion but still create node
+            let should_recurse = visited.insert(caller_addr);
+
+            // Create a new node for this caller
+            // Use the function's declaration file for crate identification,
+            // falling back to the call site file if not available
+            let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+            let child_callers = if should_recurse {
+                // Use sequential recursion within each branch to ensure deterministic behavior
+                build_call_tree_sequential(call_graph, caller_addr, visited)
+            } else {
+                Vec::new()
+            };
+
+            Some(CallTreeNode {
+                name: caller_info.caller.name.clone(),
+                file,
+                line: caller_info.line,
+                callers: child_callers,
             })
-        }
-        DebugInfo::DebugMap(debug_map) => {
-            // Use debug map to find callers with source info from object files
-            find_callers_with_debug_map(
-                binary_macho,
-                binary_buffer,
-                debug_map,
-                target_addr,
-                crate_src_path,
-            )
-            .unwrap()
-        }
-        DebugInfo::None => {
-            // No debug info, use symbol table only
-            find_callers(binary_macho, binary_buffer, target_addr).unwrap()
-        }
-    };
+        })
+        .collect()
+}
 
-    for caller_info in callers {
-        let caller_addr = caller_info.caller.start_address;
+/// Sequential version for recursion within parallel branches.
+fn build_call_tree_sequential(
+    call_graph: &CallGraph,
+    target_addr: u64,
+    visited: &Arc<DashSet<u64>>,
+) -> Vec<CallTreeNode> {
+    let callers = call_graph.get_callers(target_addr);
 
-        // Create a new node for this caller
-        // Use the function's declaration file for crate identification,
-        // falling back to the call site file if not available
-        let file = caller_info.caller.file.clone().or(caller_info.file.clone());
-        let mut caller_node = CallTreeNode {
-            name: caller_info.caller.name.clone(),
-            file,
-            line: caller_info.line,
-            callers: Vec::new(),
-        };
+    callers
+        .into_iter()
+        .map(|caller_info| {
+            let caller_addr = caller_info.caller.start_address;
+            let should_recurse = visited.insert(caller_addr);
 
-        // Only recurse if we haven't visited this address before
-        if !visited.contains(&caller_addr) {
-            visited.insert(caller_addr);
-            build_call_tree(
-                binary_macho,
-                binary_buffer,
-                debug_source,
-                caller_addr,
-                &mut caller_node,
-                visited,
-                crate_src_path,
-            );
-        }
+            let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+            let child_callers = if should_recurse {
+                build_call_tree_sequential(call_graph, caller_addr, visited)
+            } else {
+                Vec::new()
+            };
 
-        node.callers.push(caller_node);
-    }
+            CallTreeNode {
+                name: caller_info.caller.name.clone(),
+                file,
+                line: caller_info.line,
+                callers: child_callers,
+            }
+        })
+        .collect()
 }
 
 /// Collect all crate code points from the tree (nodes whose source is in the crate)
