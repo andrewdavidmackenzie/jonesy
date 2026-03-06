@@ -9,9 +9,3 @@ members = [
     "examples/panic",
     "examples/perfect",
 ]
-
-[profile.panic]
-inherits = "dev"
-debug = true
-# split-debuginfo - for macos
-# overflow-checks = false ?
