@@ -590,29 +590,39 @@ fn collect_crate_code_points_hierarchical(
         .flat_map(|(_, callers)| callers.iter().cloned())
         .collect();
 
-    let roots: Vec<CodePointKey> = points
+    let mut roots: Vec<CodePointKey> = points
         .keys()
         .filter(|k| !all_children.contains(*k))
         .cloned()
         .collect();
 
+    // Cyclic relationship fallback: still emit collected points
+    if roots.is_empty() && !points.is_empty() {
+        roots = points.keys().cloned().collect();
+        roots.sort();
+    }
+
     // Build tree from roots
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,
-        visited: &mut HashSet<CodePointKey>,
+        path: &mut HashSet<CodePointKey>,
     ) -> Option<CrateCodePoint> {
-        if visited.contains(key) {
-            return None; // Prevent cycles
+        // Prevent cycles only on current DFS path (not across sibling/root branches)
+        if !path.insert(key.clone()) {
+            return None;
         }
-        visited.insert(key.clone());
 
         let (name, callers) = points.get(key)?;
-        let mut children: Vec<CrateCodePoint> = callers
+        // Sort child keys for deterministic output
+        let mut child_keys: Vec<_> = callers.iter().cloned().collect();
+        child_keys.sort();
+        let mut children: Vec<CrateCodePoint> = child_keys
             .iter()
-            .filter_map(|child_key| build_subtree(child_key, points, visited))
+            .filter_map(|child_key| build_subtree(child_key, points, path))
             .collect();
         children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        path.remove(key);
 
         Some(CrateCodePoint {
             name: name.clone(),
@@ -622,10 +632,9 @@ fn collect_crate_code_points_hierarchical(
         })
     }
 
-    let mut visited = HashSet::new();
     roots
         .iter()
-        .filter_map(|root| build_subtree(root, &points, &mut visited))
+        .filter_map(|root| build_subtree(root, &points, &mut HashSet::new()))
         .collect()
 }
 
