@@ -238,3 +238,104 @@ The speedup is nearly linear with core count because:
 - [Add split-debuginfo profile option - Cargo PR #9112](https://github.com/rust-lang/cargo/pull/9112)
 - [Reducing Rust Incremental Compilation Times on macOS by 70%](https://jacobdeichert.ca/blog/reducing-rust-incremental-compilation-times-on-macos-by-70-percent/)
 - [Missing dSYM on macos - Rust Forum](https://users.rust-lang.org/t/missing-dsym-on-macos-when-building-with-cargo/97543)
+
+## Panic Cause Detection
+
+Jones identifies the **cause** of potential panics by analyzing function names in the call chain between the panic symbol and user code. This allows it to provide helpful descriptions and suggestions.
+
+### How It Works
+
+When Rust code panics, it follows a well-defined call path through the standard library:
+
+```text
+User code (e.g., array[index])
+    ↓
+Panic helper (e.g., panic_bounds_check)
+    ↓
+panic_fmt
+    ↓
+rust_panic
+```
+
+Jones walks this call tree from `rust_panic` upward, examining each function name for known patterns that indicate specific panic causes.
+
+### Pattern Matching
+
+The `detect_panic_cause()` function in `panic_cause.rs` matches function names against known patterns:
+
+| Function Pattern | Detected Cause | Description |
+|-----------------|----------------|-------------|
+| `panic_in_cleanup` | PanicInDrop | Panic during drop/cleanup |
+| `panic_cannot_unwind` | CannotUnwind | Panic in no-unwind context |
+| `panic_nounwind` | CannotUnwind | Panic in no-unwind context |
+| `panic_bounds_check` | BoundsCheck | Index out of bounds |
+| `panic_const_add_overflow` | ArithmeticOverflow | Addition overflow |
+| `panic_const_sub_overflow` | ArithmeticOverflow | Subtraction overflow |
+| `panic_const_mul_overflow` | ArithmeticOverflow | Multiplication overflow |
+| `panic_const_div_overflow` | ArithmeticOverflow | Division overflow |
+| `panic_const_shl_overflow` | ShiftOverflow | Left shift overflow |
+| `panic_const_shr_overflow` | ShiftOverflow | Right shift overflow |
+| `panic_const_div_by_zero` | DivisionByZero | Division by zero |
+| `panic_const_rem_by_zero` | DivisionByZero | Remainder by zero |
+| `unwrap_failed` | UnwrapNone | unwrap() on None |
+| `expect_failed` | ExpectNone | expect() on None |
+| `assert_failed` | AssertFailed | Assertion failed |
+| `panic_display` | ExplicitPanic | Explicit panic!() call |
+| `panic_fmt` (fallback) | ExplicitPanic | Explicit panic!() call |
+
+**Note**: Drop/cleanup panics (`PanicInDrop`, `CannotUnwind`) are hidden by default since they represent internal cleanup paths. Use `--drops` to show them.
+
+### Cause Propagation
+
+Once a cause is detected at a node in the call tree, it propagates up through the `collect_crate_relationships()` function:
+
+```rust
+let detected_cause = detect_panic_cause(&node.name).or(current_cause);
+```
+
+This means:
+1. If the current node's function name matches a pattern, use that cause
+2. Otherwise, inherit the cause from the child node (closer to panic)
+3. The cause propagates until it reaches user code (leaf nodes)
+
+### Output Display
+
+Causes are displayed only on **leaf nodes** (the actual user code lines that lead to panics):
+
+```text
+Panic code points in crate:
+ --> examples/array_access/src/main.rs:14:1 [index out of bounds]
+     = help: Use .get() for safe access or validate index before use
+```
+
+Intermediate nodes in the call hierarchy don't show causes since the actual panic source is at the leaf.
+
+### Suggestions
+
+Each panic cause includes a help suggestion:
+
+| Cause | Suggestion |
+|-------|------------|
+| Explicit panic | Review if panic is intentional or add error handling |
+| Index out of bounds | Use .get() for safe access or validate index before use |
+| Arithmetic overflow | Use checked_*, saturating_*, or wrapping_* methods |
+| Division by zero | Check divisor is non-zero before division |
+| unwrap()/expect() on None | Use if let, match, unwrap_or, or ? operator instead |
+| Assertion failed | Review assertion condition |
+| Panic during drop | Avoid panicking in Drop implementations; use catch_unwind or log errors |
+| Panic in no-unwind context | Avoid panicking in extern functions; use catch_unwind at FFI boundaries |
+
+### Implementation
+
+The panic cause detection is implemented in `jones/src/panic_cause.rs`:
+
+- `PanicCause` enum: Defines all known panic causes
+- `detect_panic_cause()`: Pattern matching on function names
+- `PanicCause::description()`: Human-readable cause description
+- `PanicCause::suggestion()`: Actionable help text
+
+### Limitations
+
+- **Symbol availability**: Cause detection requires function names to be present in the binary. Release builds with stripped symbols may not have these helper function names visible.
+- **Inlining**: Aggressive inlining in release builds may eliminate the panic helper functions, making cause detection less accurate.
+- **Option vs Result**: Currently `unwrap_failed` is reported as "unwrap() on None" even though it could be from `Result::unwrap()`. Both use the same internal helper.
