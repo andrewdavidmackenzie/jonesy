@@ -7,4 +7,4 @@ build:
 	cargo build
 
 test:
-	cargo test -p jones -- --test-threads=1
+	cargo test -p jones
