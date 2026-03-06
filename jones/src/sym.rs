@@ -343,10 +343,12 @@ fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData>
                 .mode(arch::arm64::ArchMode::Arm)
                 .build()
             else {
+                eprintln!("Warning: failed to initialize Capstone disassembler for chunk");
                 return Vec::new();
             };
 
             let Ok(instructions) = cs.disasm_all(chunk, *chunk_addr) else {
+                eprintln!("Warning: disassembly failed for chunk at {:#x}", chunk_addr);
                 return Vec::new();
             };
 
@@ -381,10 +383,12 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
         .mode(arch::arm64::ArchMode::Arm)
         .build()
     else {
+        eprintln!("Warning: failed to initialize Capstone disassembler");
         return Vec::new();
     };
 
     let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
+        eprintln!("Warning: disassembly failed for text section at {text_addr:#x}");
         return Vec::new();
     };
 
@@ -468,9 +472,9 @@ impl CallGraph {
             .mode(arch::arm64::ArchMode::Arm)
             .build()?;
 
-        let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
-            return Ok(Self { edges });
-        };
+        let instructions = cs
+            .disasm_all(text_data, text_addr)
+            .map_err(|e| format!("Disassembly failed: {e}"))?;
 
         for instruction in instructions.iter() {
             if let Some((call_target, caller_info)) = process_instruction_basic(macho, &instruction)

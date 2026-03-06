@@ -399,7 +399,14 @@ fn analyze_macho(
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
             CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path)
-                .unwrap_or_else(|_| CallGraph::empty())
+                .or_else(|e| {
+                    eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
+                    CallGraph::build(macho, buffer)
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("Error: call graph build failed: {e}");
+                    CallGraph::empty()
+                })
         }
         DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
             if let Binary(debug_mach) = debug_macho {
@@ -410,13 +417,26 @@ fn analyze_macho(
                     dsym_info.borrow_debug_buffer(),
                     crate_src_path,
                 )
-                .unwrap_or_else(|_| CallGraph::empty())
+                .or_else(|e| {
+                    eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
+                    CallGraph::build(macho, buffer)
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("Error: call graph build failed: {e}");
+                    CallGraph::empty()
+                })
             } else {
-                CallGraph::build(macho, buffer).unwrap_or_else(|_| CallGraph::empty())
+                CallGraph::build(macho, buffer).unwrap_or_else(|e| {
+                    eprintln!("Error: call graph build failed: {e}");
+                    CallGraph::empty()
+                })
             }
         }),
         DebugInfo::DebugMap(_) | DebugInfo::None => {
-            CallGraph::build(macho, buffer).unwrap_or_else(|_| CallGraph::empty())
+            CallGraph::build(macho, buffer).unwrap_or_else(|e| {
+                eprintln!("Error: call graph build failed: {e}");
+                CallGraph::empty()
+            })
         }
     };
 
