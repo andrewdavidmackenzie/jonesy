@@ -118,10 +118,33 @@ impl Config {
     }
 
     /// Load configuration from Cargo.toml metadata.
+    /// Reports parse errors but continues with defaults.
     pub fn load_from_cargo_toml(&mut self, cargo_toml_path: &Path) {
-        if let Ok(content) = fs::read_to_string(cargo_toml_path)
-            && let Ok(cargo) = toml::from_str::<CargoToml>(&content)
-            && let Some(package) = cargo.package
+        let content = match fs::read_to_string(cargo_toml_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to read {}: {}",
+                    cargo_toml_path.display(),
+                    e
+                );
+                return;
+            }
+        };
+
+        let cargo: CargoToml = match toml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to parse {}: {}",
+                    cargo_toml_path.display(),
+                    e
+                );
+                return;
+            }
+        };
+
+        if let Some(package) = cargo.package
             && let Some(metadata) = package.metadata
             && let Some(jones_config) = metadata.jones
         {
@@ -144,24 +167,30 @@ impl Config {
     }
 
     /// Load configuration from a custom config file path.
-    pub fn load_from_config_file(&mut self, config_path: &Path) {
+    /// Returns an error if the file cannot be read or parsed.
+    /// This is used for explicit --config overrides where failures should be fatal.
+    pub fn load_from_config_file(&mut self, config_path: &Path) -> Result<(), String> {
         if !config_path.exists() {
-            eprintln!("Warning: Config file not found: {}", config_path.display());
-            return;
+            return Err(format!("Config file not found: {}", config_path.display()));
         }
 
-        match fs::read_to_string(config_path) {
-            Ok(content) => match toml::from_str::<TomlConfig>(&content) {
-                Ok(config) => self.apply_toml_config(&config),
-                Err(e) => eprintln!("Error: Failed to parse {}: {}", config_path.display(), e),
-            },
-            Err(e) => eprintln!("Error: Failed to read {}: {}", config_path.display(), e),
-        }
+        let content = fs::read_to_string(config_path)
+            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+
+        let config: TomlConfig = toml::from_str(&content)
+            .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+
+        self.apply_toml_config(&config);
+        Ok(())
     }
 
     /// Load full configuration by searching for config files.
     /// Looks for Cargo.toml and jones.toml starting from the given directory.
-    pub fn load_for_project(project_dir: &Path, config_override: Option<&Path>) -> Self {
+    /// Returns an error if an explicit config_override is provided and fails to load.
+    pub fn load_for_project(
+        project_dir: &Path,
+        config_override: Option<&Path>,
+    ) -> Result<Self, String> {
         let mut config = Self::with_defaults();
 
         // Look for Cargo.toml
@@ -176,12 +205,12 @@ impl Config {
             config.load_from_jones_toml(&jones_toml);
         }
 
-        // Apply command-line config override if provided
+        // Apply command-line config override if provided (failures are fatal)
         if let Some(config_path) = config_override {
-            config.load_from_config_file(config_path);
+            config.load_from_config_file(config_path)?;
         }
 
-        config
+        Ok(config)
     }
 }
 

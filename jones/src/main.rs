@@ -3,7 +3,7 @@ use crate::call_tree::{
     CallTreeNode, build_call_tree_parallel, count_crate_code_points, print_call_tree,
     print_crate_code_points, prune_call_tree,
 };
-use crate::cargo::{derive_crate_src_path, detect_library_type};
+use crate::cargo::{derive_crate_src_path, detect_library_type, find_project_root};
 use crate::config::Config;
 use crate::sym::{
     CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
@@ -39,17 +39,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_global()
         .ok(); // Ignore error if pool already initialized
 
-    // Load configuration with cascade: defaults → Cargo.toml → jones.toml → --config
-    let current_dir = std::env::current_dir().unwrap_or_else(|e| {
-        eprintln!("Warning: Could not determine current directory: {e}");
-        std::path::PathBuf::new()
-    });
-    let config = Config::load_for_project(&current_dir, parsed_args.config_path.as_deref());
-
     let mut total_panic_points: usize = 0;
 
     for binary_path in &parsed_args.binaries {
         println!("Processing {}", binary_path.display());
+
+        // Load configuration per-crate: find project root from binary path
+        // Falls back to current directory if project root cannot be determined
+        let project_root = find_project_root(binary_path).unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("Warning: Could not determine project root: {e}");
+                std::path::PathBuf::new()
+            })
+        });
+        let config = Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
+            .unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(255);
+            });
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");

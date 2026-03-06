@@ -5,7 +5,21 @@
 
 use cargo_toml::Manifest;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Find the project root directory for a binary by walking up looking for Cargo.toml.
+/// Returns the directory containing Cargo.toml, or None if not found.
+pub fn find_project_root(binary_path: &Path) -> Option<PathBuf> {
+    let mut current = binary_path.parent();
+    while let Some(dir) = current {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            return Some(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+    None
+}
 
 /// Try to derive the crate source path from the binary path.
 /// For a binary at "target/panic/panic", looks for the source in common locations.
