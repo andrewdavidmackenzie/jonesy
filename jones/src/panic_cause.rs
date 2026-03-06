@@ -205,11 +205,13 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     if func_name.contains("unreachable") && func_name.contains("panic") {
         return Some(PanicCause::Unreachable);
     }
-    // panic_fmt is the core panic function - if we reach here without a more
-    // specific match, it's likely an explicit panic!() call
-    if func_name.contains("panic_fmt") {
-        return Some(PanicCause::ExplicitPanic);
-    }
+    // panic_fmt is the core panic function used by MANY things:
+    // - explicit panic!() calls
+    // - format string errors in write!/format!/etc.
+    // - bail!() and similar error macros when formatting fails
+    // We don't classify it as "explicit panic" because that would be misleading
+    // for the common case where it's reached through formatting code.
+    // Instead, leave cause as None (unknown) to avoid incorrect labeling.
 
     None
 }
