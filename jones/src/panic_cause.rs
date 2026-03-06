@@ -35,6 +35,10 @@ pub enum PanicCause {
     Unimplemented,
     /// Todo macro reached
     Todo,
+    /// Panic during drop/cleanup
+    PanicInDrop,
+    /// Panic in no-unwind context (e.g., extern "C" function)
+    CannotUnwind,
     /// Unknown cause
     Unknown,
 }
@@ -57,6 +61,8 @@ impl PanicCause {
             PanicCause::Unreachable => "unreachable!() reached",
             PanicCause::Unimplemented => "unimplemented!() reached",
             PanicCause::Todo => "todo!() reached",
+            PanicCause::PanicInDrop => "panic during drop",
+            PanicCause::CannotUnwind => "panic in no-unwind context",
             PanicCause::Unknown => "unknown cause",
         }
     }
@@ -80,6 +86,12 @@ impl PanicCause {
             PanicCause::Unreachable => "Ensure code path is truly unreachable",
             PanicCause::Unimplemented => "Implement the missing functionality",
             PanicCause::Todo => "Complete the TODO implementation",
+            PanicCause::PanicInDrop => {
+                "Avoid panicking in Drop implementations; use catch_unwind or log errors instead"
+            }
+            PanicCause::CannotUnwind => {
+                "Avoid panicking in extern functions; use catch_unwind at FFI boundaries"
+            }
             PanicCause::Unknown => "",
         }
     }
@@ -87,6 +99,14 @@ impl PanicCause {
 
 /// Detect panic cause from a function name in the call chain
 pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
+    // Check for drop/cleanup panic paths first
+    if func_name.contains("panic_in_cleanup") {
+        return Some(PanicCause::PanicInDrop);
+    }
+    if func_name.contains("panic_cannot_unwind") || func_name.contains("panic_nounwind") {
+        return Some(PanicCause::CannotUnwind);
+    }
+
     // Check for specific panic functions
     if func_name.contains("panic_bounds_check") {
         return Some(PanicCause::BoundsCheck);

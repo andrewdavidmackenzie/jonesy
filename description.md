@@ -265,6 +265,9 @@ The `detect_panic_cause()` function in `panic_cause.rs` matches function names a
 
 | Function Pattern | Detected Cause | Description |
 |-----------------|----------------|-------------|
+| `panic_in_cleanup` | PanicInDrop | Panic during drop/cleanup |
+| `panic_cannot_unwind` | CannotUnwind | Panic in no-unwind context |
+| `panic_nounwind` | CannotUnwind | Panic in no-unwind context |
 | `panic_bounds_check` | BoundsCheck | Index out of bounds |
 | `panic_const_add_overflow` | ArithmeticOverflow | Addition overflow |
 | `panic_const_sub_overflow` | ArithmeticOverflow | Subtraction overflow |
@@ -279,6 +282,8 @@ The `detect_panic_cause()` function in `panic_cause.rs` matches function names a
 | `assert_failed` | AssertFailed | Assertion failed |
 | `panic_display` | ExplicitPanic | Explicit panic!() call |
 | `panic_fmt` (fallback) | ExplicitPanic | Explicit panic!() call |
+
+**Note**: Drop/cleanup panics (`PanicInDrop`, `CannotUnwind`) are hidden by default since they represent internal cleanup paths. Use `--drops` to show them.
 
 ### Cause Propagation
 
@@ -317,6 +322,8 @@ Each panic cause includes a help suggestion:
 | Division by zero | Check divisor is non-zero before division |
 | unwrap()/expect() on None | Use if let, match, unwrap_or, or ? operator instead |
 | Assertion failed | Review assertion condition |
+| Panic during drop | Avoid panicking in Drop implementations; use catch_unwind or log errors |
+| Panic in no-unwind context | Avoid panicking in extern functions; use catch_unwind at FFI boundaries |
 
 ### Implementation
 
