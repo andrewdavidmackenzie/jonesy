@@ -3,6 +3,7 @@
 //! This module handles building and manipulating the call tree that traces
 //! paths from panic symbols back to user code.
 
+use crate::config::Config;
 use crate::panic_cause::{PanicCause, detect_panic_cause};
 use crate::sym::CallGraph;
 use dashmap::DashSet;
@@ -44,27 +45,29 @@ pub fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
     }
 }
 
-/// Returns true if the node is in a panic cleanup path (not a user-initiated panic)
-pub fn is_cleanup_panic_path(node: &CallTreeNode) -> bool {
-    // These are internal panic paths, not user panic! calls
-    node.name.contains("panic_nounwind")
-        || node.name.contains("panic_in_cleanup")
-        || node.name.contains("panic_cannot_unwind")
+/// Detect if a node represents an allowed (not reported) panic cause based on config.
+/// Returns Some(PanicCause) if the panic cause is allowed (should be pruned).
+fn get_allowed_panic_cause(node: &CallTreeNode, config: &Config) -> Option<PanicCause> {
+    if let Some(cause) = detect_panic_cause(&node.name)
+        && !config.is_denied(&cause)
+    {
+        return Some(cause);
+    }
+    None
 }
 
 /// Prune branches that don't lead to a leaf node in the target crate's source.
-/// Also removes panic cleanup paths (panic_nounwind, panic_in_cleanup) unless
-/// show_drops is true.
+/// Also removes panic paths whose causes are allowed (not denied) in the config.
 /// Returns true if this node should be kept.
-pub fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, show_drops: bool) -> bool {
-    // Remove cleanup panic paths unless the --drops option is specified
-    if !show_drops && is_cleanup_panic_path(node) {
+pub fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, config: &Config) -> bool {
+    // Remove panic paths whose cause is allowed (not denied) by config
+    if get_allowed_panic_cause(node, config).is_some() {
         return false;
     }
 
     // Recursively prune children first
     node.callers
-        .retain_mut(|caller| prune_call_tree(caller, crate_src_path, show_drops));
+        .retain_mut(|caller| prune_call_tree(caller, crate_src_path, config));
 
     // Keep this node if:
     // 1. It's a leaf AND in the crate source, OR

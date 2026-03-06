@@ -7,10 +7,10 @@ pub(crate) struct Args {
     pub binaries: Vec<PathBuf>,
     /// Whether to show the full call tree (--tree flag)
     pub show_tree: bool,
-    /// Whether to show drop/cleanup panic paths (--drops flag)
-    pub show_drops: bool,
     /// Maximum number of threads to use for parallel analysis
     pub max_threads: usize,
+    /// Optional path to config file (--config flag)
+    pub config_path: Option<PathBuf>,
 }
 
 /// Parse command line arguments.
@@ -26,25 +26,28 @@ pub(crate) struct Args {
 ///
 /// Optional flags:
 /// --tree           Show the full call tree instead of just crate code points
-/// --drops          Include panic paths from drop/cleanup operations
 /// --max-threads N  Maximum threads for parallel analysis (default: number of CPUs)
+/// --config <path>  Path to a TOML config file for allow/deny rules
 pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     // Check for flags
     let show_tree = args.iter().any(|a| a == "--tree");
-    let show_drops = args.iter().any(|a| a == "--drops");
 
     // Parse --max-threads option
     let max_threads = parse_max_threads(args)?;
 
-    // Filter out flags and --max-threads from args for path parsing
+    // Parse --config option
+    let config_path = parse_config_path(args)?;
+
+    // Filter out flags and options with values from args for path parsing
     let filtered_args: Vec<&String> = args
         .iter()
         .enumerate()
         .filter(|(i, a)| {
             *a != "--tree"
-                && *a != "--drops"
                 && *a != "--max-threads"
+                && *a != "--config"
                 && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--max-threads"))
+                && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--config"))
         })
         .map(|(_, a)| a)
         .collect();
@@ -65,8 +68,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     Ok(Args {
         binaries,
         show_tree,
-        show_drops,
         max_threads,
+        config_path,
     })
 }
 
@@ -92,6 +95,21 @@ fn parse_max_threads(args: &[String]) -> Result<usize, String> {
         .unwrap_or(1))
 }
 
+/// Parse --config option for custom config file path
+fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--config" {
+            let value = args.get(i + 1).ok_or("--config requires a path argument")?;
+            let path = PathBuf::from(value);
+            if !path.exists() {
+                return Err(format!("Config file not found: {}", path.display()));
+            }
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 fn usage() -> String {
     "Usage:\n  \
      jones [OPTIONS]\n  \
@@ -101,8 +119,8 @@ fn usage() -> String {
      directory and analyzes all binary targets found in target/debug/.\n\n\
      Options:\n  \
      --tree             Show full call tree instead of just crate code points\n  \
-     --drops            Include panic paths from drop/cleanup operations\n  \
-     --max-threads N    Maximum threads for parallel analysis (default: CPU count)"
+     --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
+     --config <path>    Path to TOML config file for allow/deny rules"
         .to_string()
 }
 

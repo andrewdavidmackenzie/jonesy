@@ -44,6 +44,50 @@ pub enum PanicCause {
 }
 
 impl PanicCause {
+    /// Get the configuration identifier for this panic cause.
+    /// Used in allow/deny configuration files.
+    pub fn id(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => "panic",
+            PanicCause::BoundsCheck => "bounds",
+            PanicCause::ArithmeticOverflow(_) => "overflow",
+            PanicCause::ShiftOverflow(_) => "overflow",
+            PanicCause::DivisionByZero => "div_zero",
+            PanicCause::UnwrapNone => "unwrap",
+            PanicCause::UnwrapErr => "unwrap",
+            PanicCause::ExpectNone => "expect",
+            PanicCause::ExpectErr => "expect",
+            PanicCause::AssertFailed => "assert",
+            PanicCause::DebugAssertFailed => "debug_assert",
+            PanicCause::Unreachable => "unreachable",
+            PanicCause::Unimplemented => "unimplemented",
+            PanicCause::Todo => "todo",
+            PanicCause::PanicInDrop => "drop",
+            PanicCause::CannotUnwind => "unwind",
+            PanicCause::Unknown => "unknown",
+        }
+    }
+
+    /// Get all valid configuration identifiers
+    pub fn all_ids() -> &'static [&'static str] {
+        &[
+            "panic",
+            "bounds",
+            "overflow",
+            "div_zero",
+            "unwrap",
+            "expect",
+            "assert",
+            "debug_assert",
+            "unreachable",
+            "unimplemented",
+            "todo",
+            "drop",
+            "unwind",
+            "unknown",
+        ]
+    }
+
     /// Get a short description of the panic cause
     pub fn description(&self) -> &'static str {
         match self {

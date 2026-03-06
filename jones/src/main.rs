@@ -4,6 +4,7 @@ use crate::call_tree::{
     print_crate_code_points, prune_call_tree,
 };
 use crate::cargo::{derive_crate_src_path, detect_library_type};
+use crate::config::Config;
 use crate::sym::{
     CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
     load_debug_info, read_symbols,
@@ -19,6 +20,7 @@ use std::sync::Arc;
 mod args;
 mod call_tree;
 mod cargo;
+mod config;
 mod panic_cause;
 #[cfg(target_os = "macos")]
 mod sym;
@@ -37,14 +39,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_global()
         .ok(); // Ignore error if pool already initialized
 
+    // Load configuration with cascade: defaults → Cargo.toml → jones.toml → --config
+    let current_dir = std::env::current_dir().unwrap_or_default();
+    let config = Config::load_for_project(&current_dir, parsed_args.config_path.as_deref());
+
     let mut total_panic_points: usize = 0;
 
-    for binary_path in parsed_args.binaries {
+    for binary_path in &parsed_args.binaries {
         println!("Processing {}", binary_path.display());
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
-        if is_dylib && let Some(lib_type) = detect_library_type(&binary_path) {
+        if is_dylib && let Some(lib_type) = detect_library_type(binary_path) {
             println!("Library type: {}", lib_type);
             if lib_type == "dylib" {
                 println!(
@@ -54,19 +60,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let binary_buffer = fs::read(&binary_path)?;
+        let binary_buffer = fs::read(binary_path)?;
         let symbols = read_symbols(&binary_buffer)?;
 
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
-                let crate_src_path = derive_crate_src_path(&binary_path);
+                let crate_src_path = derive_crate_src_path(binary_path);
                 total_panic_points += analyze_macho(
                     &macho,
                     &binary_buffer,
-                    &binary_path,
+                    binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
-                    parsed_args.show_drops,
+                    &config,
                 );
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
@@ -74,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             SymbolTable::Archive(archive) => {
                 // Process each object file in the archive
-                let crate_src_path = derive_crate_src_path(&binary_path);
+                let crate_src_path = derive_crate_src_path(binary_path);
 
                 for member_name in archive.members() {
                     // Skip non-object files (like .rmeta)
@@ -92,10 +98,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         total_panic_points += analyze_macho(
                             &obj_macho,
                             member_data,
-                            &binary_path,
+                            binary_path,
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
-                            parsed_args.show_drops,
+                            &config,
                         );
                     }
                 }
@@ -127,7 +133,7 @@ fn analyze_macho(
     binary_path: &Path,
     crate_src_path: Option<&str>,
     show_tree: bool,
-    show_drops: bool,
+    config: &Config,
 ) -> usize {
     // Try each panic symbol pattern until we find one
     let mut panic_symbol = None;
@@ -210,7 +216,7 @@ fn analyze_macho(
 
     // Prune to only show paths leading to user code
     if let Some(crate_path) = crate_src_path {
-        prune_call_tree(&mut root, crate_path, show_drops);
+        prune_call_tree(&mut root, crate_path, config);
     }
 
     // Print output based on --tree flag

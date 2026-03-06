@@ -1,0 +1,2 @@
+# Test config that denies drop/unwind panics (which are allowed by default)
+deny = ["drop", "unwind"]

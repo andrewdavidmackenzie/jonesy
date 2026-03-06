@@ -19,6 +19,8 @@ regex = "1"
 cargo_toml = "0.22"
 rayon = "1.10"
 dashmap = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 wait-timeout = "0.2"
