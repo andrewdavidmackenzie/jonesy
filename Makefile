@@ -1,4 +1,4 @@
-.PHONY: all clippy build test
+.PHONY: all clippy build test clean
 
 all: clippy test
 

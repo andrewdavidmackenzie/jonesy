@@ -106,7 +106,15 @@ const JONES_TIMEOUT: Duration = Duration::from_secs(600);
 /// Returns (exit_code, detected_panic_points)
 fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
     let workspace_root = find_workspace_root();
-    let jones_binary = workspace_root.join("target/debug/jones");
+    // Use Cargo-provided path if available, otherwise fall back to platform-safe path
+    let jones_binary = std::env::var_os("CARGO_BIN_EXE_jones")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            workspace_root
+                .join("target")
+                .join("debug")
+                .join(format!("jones{}", std::env::consts::EXE_SUFFIX))
+        });
 
     // Run jones from the example directory with timeout
     let mut child = Command::new(&jones_binary)
@@ -126,6 +134,8 @@ fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
         }
         None => {
             child.kill().expect("Failed to kill timed-out process");
+            // Wait for child to be reaped to avoid zombie process
+            let _ = child.wait();
             panic!(
                 "Jones timed out after {:?} on {}",
                 JONES_TIMEOUT,
