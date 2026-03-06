@@ -302,9 +302,25 @@ const ARM64_INSN_SIZE: usize = 4;
 /// Minimum chunk size for parallel disassembly (avoid overhead for small sections)
 const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
 
-/// Disassemble ARM64 instructions in parallel by dividing into chunks.
-/// Each chunk is disassembled by a separate thread, then results are combined.
-/// Returns extracted BL instruction data ready for parallel processing.
+/// ARM64 BL instruction mask: bits [31:26] must be 100101
+const BL_MASK: u32 = 0xFC000000;
+const BL_OPCODE: u32 = 0x94000000;
+
+/// Decode ARM64 BL instruction target address from raw bytes.
+/// BL encoding: 100101 imm26
+/// Target = PC + sign_extend(imm26) * 4
+fn decode_bl_target(insn_bytes: u32, pc: u64) -> u64 {
+    // Extract 26-bit immediate
+    let imm26 = insn_bytes & 0x03FFFFFF;
+    // Sign-extend to 32 bits and multiply by 4 (shift left 2)
+    let offset = ((imm26 as i32) << 6) >> 4;
+    // Add to PC
+    (pc as i64 + offset as i64) as u64
+}
+
+/// Scan for ARM64 BL instructions in parallel by dividing into chunks.
+/// Directly scans raw bytes for BL pattern - no disassembly needed.
+/// This is much faster than using Capstone for full disassembly.
 fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
     let num_threads = rayon::current_num_threads();
 
@@ -319,8 +335,8 @@ fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData>
     };
 
     if chunk_size >= text_data.len() {
-        // Single chunk - use sequential disassembly
-        return sequential_disassemble_arm64(text_data, text_addr);
+        // Single chunk - use sequential scanning
+        return sequential_scan_bl_instructions(text_data, text_addr);
     }
 
     // Create chunks with their base addresses
@@ -333,50 +349,44 @@ fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData>
         })
         .collect();
 
-    // Disassemble chunks in parallel
+    // Scan chunks in parallel for BL instructions
     let results: Vec<Vec<InsnData>> = chunks
         .par_iter()
-        .map(|(_i, chunk, chunk_addr)| {
-            // Each thread creates its own Capstone instance (not thread-safe)
-            let Ok(cs) = Capstone::new()
-                .arm64()
-                .mode(arch::arm64::ArchMode::Arm)
-                .build()
-            else {
-                eprintln!("Warning: failed to initialize Capstone disassembler for chunk");
-                return Vec::new();
-            };
-
-            let Ok(instructions) = cs.disasm_all(chunk, *chunk_addr) else {
-                eprintln!("Warning: disassembly failed for chunk at {:#x}", chunk_addr);
-                return Vec::new();
-            };
-
-            // Extract BL instructions
-            instructions
-                .iter()
-                .filter_map(|insn| {
-                    if insn.mnemonic() == Some("bl") {
-                        let operand = insn.op_str()?;
-                        let addr_str = operand.trim_start_matches("#0x");
-                        let call_target = u64::from_str_radix(addr_str, 16).ok();
-                        Some(InsnData {
-                            address: insn.address(),
-                            call_target,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
+        .map(|(_i, chunk, chunk_addr)| scan_bl_instructions(chunk, *chunk_addr))
         .collect();
 
     // Flatten results from all chunks
     results.into_iter().flatten().collect()
 }
 
-/// Sequential disassembly fallback for small sections or non-ARM64.
+/// Scan a chunk of ARM64 code for BL instructions.
+/// Directly checks raw bytes against BL opcode pattern.
+fn scan_bl_instructions(data: &[u8], base_addr: u64) -> Vec<InsnData> {
+    data.chunks_exact(ARM64_INSN_SIZE)
+        .enumerate()
+        .filter_map(|(i, bytes)| {
+            let insn = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if (insn & BL_MASK) == BL_OPCODE {
+                let pc = base_addr + (i * ARM64_INSN_SIZE) as u64;
+                let target = decode_bl_target(insn, pc);
+                Some(InsnData {
+                    address: pc,
+                    call_target: Some(target),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Sequential BL scanning fallback for small sections.
+fn sequential_scan_bl_instructions(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
+    scan_bl_instructions(text_data, text_addr)
+}
+
+/// Sequential disassembly using Capstone - kept for non-ARM64 platforms.
+#[allow(dead_code)]
 fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
     let Ok(cs) = Capstone::new()
         .arm64()
@@ -431,20 +441,19 @@ impl CallGraph {
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
-            if let Some(call_target) = data.call_target {
-                if let Some((func_addr, func_name)) =
+            if let Some(call_target) = data.call_target
+                && let Some((func_addr, func_name)) =
                     find_containing_function_with_addr(macho, data.address)
-                {
-                    edges.entry(call_target).or_default().push(CallerInfo {
-                        caller: FunctionInfo {
-                            name: func_name,
-                            start_address: func_addr,
-                            ..Default::default()
-                        },
-                        call_site_addr: data.address,
+            {
+                edges.entry(call_target).or_default().push(CallerInfo {
+                    caller: FunctionInfo {
+                        name: func_name,
+                        start_address: func_addr,
                         ..Default::default()
-                    });
-                }
+                    },
+                    call_site_addr: data.address,
+                    ..Default::default()
+                });
             }
         });
 
@@ -477,7 +486,7 @@ impl CallGraph {
             .map_err(|e| format!("Disassembly failed: {e}"))?;
 
         for instruction in instructions.iter() {
-            if let Some((call_target, caller_info)) = process_instruction_basic(macho, &instruction)
+            if let Some((call_target, caller_info)) = process_instruction_basic(macho, instruction)
             {
                 edges.entry(call_target).or_default().push(caller_info);
             }
@@ -516,12 +525,11 @@ impl CallGraph {
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
-            if let Some(call_target) = data.call_target {
-                if let Some((target, caller_info)) =
+            if let Some(call_target) = data.call_target
+                && let Some((target, caller_info)) =
                     process_instruction_data_with_debug(data, &functions, &dwarf, crate_src_path)
-                {
-                    edges.entry(target).or_default().push(caller_info);
-                }
+            {
+                edges.entry(target).or_default().push(caller_info);
             }
         });
 

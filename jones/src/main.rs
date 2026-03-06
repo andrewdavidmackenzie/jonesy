@@ -532,7 +532,7 @@ fn build_call_tree_sequential(
 
     callers
         .into_iter()
-        .filter_map(|caller_info| {
+        .map(|caller_info| {
             let caller_addr = caller_info.caller.start_address;
             let should_recurse = visited.insert(caller_addr);
 
@@ -543,12 +543,12 @@ fn build_call_tree_sequential(
                 Vec::new()
             };
 
-            Some(CallTreeNode {
+            CallTreeNode {
                 name: caller_info.caller.name.clone(),
                 file,
                 line: caller_info.line,
                 callers: child_callers,
-            })
+            }
         })
         .collect()
 }
