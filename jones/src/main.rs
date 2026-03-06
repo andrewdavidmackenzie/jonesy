@@ -40,7 +40,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok(); // Ignore error if pool already initialized
 
     // Load configuration with cascade: defaults → Cargo.toml → jones.toml → --config
-    let current_dir = std::env::current_dir().unwrap_or_default();
+    let current_dir = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("Warning: Could not determine current directory: {e}");
+        std::path::PathBuf::new()
+    });
     let config = Config::load_for_project(&current_dir, parsed_args.config_path.as_deref());
 
     let mut total_panic_points: usize = 0;

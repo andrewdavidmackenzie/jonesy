@@ -150,11 +150,12 @@ impl Config {
             return;
         }
 
-        if let Ok(content) = fs::read_to_string(config_path) {
-            match toml::from_str::<TomlConfig>(&content) {
+        match fs::read_to_string(config_path) {
+            Ok(content) => match toml::from_str::<TomlConfig>(&content) {
                 Ok(config) => self.apply_toml_config(&config),
                 Err(e) => eprintln!("Error: Failed to parse {}: {}", config_path.display(), e),
-            }
+            },
+            Err(e) => eprintln!("Error: Failed to read {}: {}", config_path.display(), e),
         }
     }
 

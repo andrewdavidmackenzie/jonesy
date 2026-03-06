@@ -102,9 +102,9 @@ where
 /// Timeout for running jones on each example (10 minutes)
 const JONES_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Run jones on an example and parse the output
+/// Run jones with optional extra arguments and parse the output
 /// Returns (exit_code, detected_panic_points)
-fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
+fn run_jones_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet<PanicPoint>) {
     let workspace_root = find_workspace_root();
     // Use Cargo-provided path if available, otherwise fall back to platform-safe path
     let jones_binary = std::env::var_os("CARGO_BIN_EXE_jones")
@@ -118,6 +118,7 @@ fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
 
     // Run jones from the example directory with timeout
     let mut child = Command::new(&jones_binary)
+        .args(extra_args)
         .current_dir(example_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -143,6 +144,12 @@ fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
             );
         }
     }
+}
+
+/// Run jones on an example and parse the output
+/// Returns (exit_code, detected_panic_points)
+fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
+    run_jones_with_args(example_dir, &[])
 }
 
 /// Parse jones output to extract panic points
@@ -333,41 +340,8 @@ fn test_dylib_example() {
 
 /// Run jones with a custom config file and return the output
 fn run_jones_with_config(example_dir: &Path, config_path: &Path) -> (i32, HashSet<PanicPoint>) {
-    let workspace_root = find_workspace_root();
-    let jones_binary = std::env::var_os("CARGO_BIN_EXE_jones")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            workspace_root
-                .join("target")
-                .join("debug")
-                .join(format!("jones{}", std::env::consts::EXE_SUFFIX))
-        });
-
-    let mut child = Command::new(&jones_binary)
-        .args(["--config", &config_path.to_string_lossy()])
-        .current_dir(example_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to spawn jones");
-
-    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
-        Some(status) => {
-            let exit_code = status.code().unwrap_or(-1);
-            let output = child.wait_with_output().expect("Failed to get output");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            (exit_code, parse_jones_output(&stdout))
-        }
-        None => {
-            child.kill().expect("Failed to kill timed-out process");
-            let _ = child.wait();
-            panic!(
-                "Jones timed out after {:?} on {}",
-                JONES_TIMEOUT,
-                example_dir.display()
-            );
-        }
-    }
+    let config_str = config_path.to_string_lossy();
+    run_jones_with_args(example_dir, &["--config", &config_str])
 }
 
 #[test]
@@ -381,17 +355,22 @@ fn test_config_allow_panic() {
         .join("test_allow_panic.toml");
 
     // Run without config to get baseline
-    let (baseline_exit_code, _baseline_detected) = run_jones_on_example(&example_dir);
+    let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
     // Run with config that allows explicit panic
-    let (config_exit_code, _config_detected) = run_jones_with_config(&example_dir, &config_path);
+    let (config_exit_code, config_detected) = run_jones_with_config(&example_dir, &config_path);
 
     // The config should result in fewer detected panics (since panic! is now allowed)
-    // The exact count depends on how many explicit panic! calls are in the example
     assert!(
-        config_exit_code <= baseline_exit_code,
-        "Config allowing panic! should result in same or fewer detected panics: baseline={}, with_config={}",
+        config_exit_code < baseline_exit_code,
+        "Config allowing panic! should result in fewer detected panics: baseline={}, with_config={}",
         baseline_exit_code,
         config_exit_code
+    );
+
+    // Config-filtered panics should be a subset of baseline panics
+    assert!(
+        config_detected.is_subset(&baseline_detected),
+        "Config-filtered panics should be a subset of baseline panics"
     );
 }

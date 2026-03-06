@@ -149,6 +149,7 @@ See the [Configuration](#configuration) section for details on the config file f
 ## Configuration
 
 Jones supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
+
 - Suppressing known-acceptable panics in your codebase
 - Enforcing stricter rules (e.g., reporting drop panics)
 - Per-project customization
@@ -164,22 +165,22 @@ Configuration is loaded in order of precedence (later overrides earlier):
 
 ### Panic Cause Identifiers
 
-| ID | Description | Default |
-|----|-------------|---------|
-| `panic` | Explicit `panic!()` calls | denied |
-| `bounds` | Array/slice index out of bounds | denied |
-| `overflow` | Arithmetic overflow (add, sub, mul, etc.) | denied |
-| `div_zero` | Division by zero | denied |
-| `unwrap` | `unwrap()` on `None` or `Err` | denied |
-| `expect` | `expect()` on `None` or `Err` | denied |
-| `assert` | `assert!()` failures | denied |
-| `debug_assert` | `debug_assert!()` failures | denied |
-| `unreachable` | `unreachable!()` reached | denied |
-| `unimplemented` | `unimplemented!()` reached | denied |
-| `todo` | `todo!()` reached | denied |
-| `drop` | Panic during drop/cleanup | **allowed** |
-| `unwind` | Panic in no-unwind context | **allowed** |
-| `unknown` | Unknown panic cause | denied |
+| ID              | Description                               | Default     |
+|-----------------|-------------------------------------------|-------------|
+| `panic`         | Explicit `panic!()` calls                 | denied      |
+| `bounds`        | Array/slice index out of bounds           | denied      |
+| `overflow`      | Arithmetic overflow (add, sub, mul, etc.) | denied      |
+| `div_zero`      | Division by zero                          | denied      |
+| `unwrap`        | `unwrap()` on `None` or `Err`             | denied      |
+| `expect`        | `expect()` on `None` or `Err`             | denied      |
+| `assert`        | `assert!()` failures                      | denied      |
+| `debug_assert`  | `debug_assert!()` failures                | denied      |
+| `unreachable`   | `unreachable!()` reached                  | denied      |
+| `unimplemented` | `unimplemented!()` reached                | denied      |
+| `todo`          | `todo!()` reached                         | denied      |
+| `drop`          | Panic during drop/cleanup                 | **allowed** |
+| `unwind`        | Panic in no-unwind context                | **allowed** |
+| `unknown`       | Unknown panic cause                       | denied      |
 
 ### jones.toml Format
 
