@@ -6,7 +6,11 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Once;
+use std::time::Duration;
+
+use wait_timeout::ChildExt;
 
 /// Marker comment that indicates an expected panic on the next line
 const PANIC_MARKER: &str = "// jones: expect panic -";
@@ -39,6 +43,7 @@ fn find_workspace_root() -> PathBuf {
 /// Returns (file, comment_line) tuples where the comment marks an expected panic
 fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
     let mut markers = Vec::new();
+    let workspace_root = find_workspace_root();
     visit_rust_files(src_dir, &mut |file_path| {
         let content = fs::read_to_string(file_path).unwrap();
 
@@ -46,7 +51,7 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
             if line.trim().starts_with(PANIC_MARKER) {
                 // Get relative path from workspace root for matching
                 let rel_path = file_path
-                    .strip_prefix(find_workspace_root())
+                    .strip_prefix(&workspace_root)
                     .unwrap_or(file_path)
                     .to_string_lossy()
                     .to_string();
@@ -94,19 +99,40 @@ where
     }
 }
 
+/// Timeout for running jones on each example (10 minutes)
+const JONES_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Run jones on an example and parse the output
-fn run_jones_on_example(example_dir: &Path) -> HashSet<PanicPoint> {
+/// Returns (exit_code, detected_panic_points)
+fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
     let workspace_root = find_workspace_root();
     let jones_binary = workspace_root.join("target/debug/jones");
 
-    // Run jones from the example directory
-    let output = Command::new(&jones_binary)
+    // Run jones from the example directory with timeout
+    let mut child = Command::new(&jones_binary)
         .current_dir(example_dir)
-        .output()
-        .expect("Failed to run jones");
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jones");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_jones_output(&stdout)
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(status) => {
+            // Jones exits with the number of panic points found (0 = no panics)
+            let exit_code = status.code().unwrap_or(-1);
+            let output = child.wait_with_output().expect("Failed to get output");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            (exit_code, parse_jones_output(&stdout))
+        }
+        None => {
+            child.kill().expect("Failed to kill timed-out process");
+            panic!(
+                "Jones timed out after {:?} on {}",
+                JONES_TIMEOUT,
+                example_dir.display()
+            );
+        }
+    }
 }
 
 /// Parse jones output to extract panic points
@@ -133,25 +159,30 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
     points
 }
 
-/// Build the jones binary and all examples
+/// One-time setup initialization
+static SETUP: Once = Once::new();
+
+/// Build the jones binary and all examples (runs only once)
 fn setup() {
-    let workspace_root = find_workspace_root();
+    SETUP.call_once(|| {
+        let workspace_root = find_workspace_root();
 
-    // Build jones
-    let status = Command::new("cargo")
-        .args(["build", "-p", "jones"])
-        .current_dir(&workspace_root)
-        .status()
-        .expect("Failed to build jones");
-    assert!(status.success(), "Failed to build jones");
+        // Build jones
+        let status = Command::new("cargo")
+            .args(["build", "-p", "jones"])
+            .current_dir(&workspace_root)
+            .status()
+            .expect("Failed to build jones");
+        assert!(status.success(), "Failed to build jones");
 
-    // Build all examples
-    let status = Command::new("cargo")
-        .arg("build")
-        .current_dir(&workspace_root)
-        .status()
-        .expect("Failed to build examples");
-    assert!(status.success(), "Failed to build examples");
+        // Build all examples
+        let status = Command::new("cargo")
+            .arg("build")
+            .current_dir(&workspace_root)
+            .status()
+            .expect("Failed to build examples");
+        assert!(status.success(), "Failed to build examples");
+    });
 }
 
 /// Test a specific example
@@ -164,7 +195,15 @@ fn test_example(example_name: &str) {
     let markers = find_expected_panic_markers(&src_dir);
 
     // Run jones and get detected panics
-    let detected = run_jones_on_example(&example_dir);
+    let (exit_code, detected) = run_jones_on_example(&example_dir);
+
+    // Verify exit code matches expected marker count
+    let expected_count = markers.len() as i32;
+    assert_eq!(
+        exit_code, expected_count,
+        "Exit code {} doesn't match expected panic count {} for '{}'",
+        exit_code, expected_count, example_name
+    );
 
     // Check each detected panic has a nearby marker
     let unexpected: Vec<_> = detected
@@ -229,7 +268,7 @@ fn test_perfect_example() {
     let src_dir = example_dir.join("src");
 
     let markers = find_expected_panic_markers(&src_dir);
-    let detected = run_jones_on_example(&example_dir);
+    let (exit_code, detected) = run_jones_on_example(&example_dir);
 
     assert!(
         markers.is_empty(),
@@ -238,6 +277,10 @@ fn test_perfect_example() {
     assert!(
         detected.is_empty(),
         "Perfect example should have no detected panics"
+    );
+    assert_eq!(
+        exit_code, 0,
+        "Perfect example should exit with 0 (no panics)"
     );
 }
 

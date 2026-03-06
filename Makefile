@@ -1,3 +1,5 @@
+.PHONY: all clippy build test
+
 all: clippy test
 
 clippy:
