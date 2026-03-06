@@ -42,10 +42,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut total_panic_points: usize = 0;
 
     for binary_path in &parsed_args.binaries {
+        // Canonicalize the binary path to ensure absolute paths for clickable links
+        let binary_path = binary_path
+            .canonicalize()
+            .unwrap_or_else(|_| binary_path.clone());
         println!("Processing {}", binary_path.display());
 
         // Find project root from binary path for config loading and absolute paths
-        let project_root = find_project_root(binary_path);
+        let project_root = find_project_root(&binary_path);
 
         // Load configuration per-crate
         // If no project root found, use defaults plus any explicit --config only
@@ -66,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
-        if is_dylib && let Some(lib_type) = detect_library_type(binary_path) {
+        if is_dylib && let Some(lib_type) = detect_library_type(&binary_path) {
             println!("Library type: {}", lib_type);
             if lib_type == "dylib" {
                 println!(
@@ -76,16 +80,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let binary_buffer = fs::read(binary_path)?;
+        let binary_buffer = fs::read(&binary_path)?;
         let symbols = read_symbols(&binary_buffer)?;
 
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
-                let crate_src_path = derive_crate_src_path(binary_path);
+                let crate_src_path = derive_crate_src_path(&binary_path);
                 total_panic_points += analyze_macho(
                     &macho,
                     &binary_buffer,
-                    binary_path,
+                    &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
                     &config,
@@ -97,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             SymbolTable::Archive(archive) => {
                 // Process each object file in the archive
-                let crate_src_path = derive_crate_src_path(binary_path);
+                let crate_src_path = derive_crate_src_path(&binary_path);
 
                 for member_name in archive.members() {
                     // Skip non-object files (like .rmeta)
@@ -115,7 +119,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         total_panic_points += analyze_macho(
                             &obj_macho,
                             member_data,
-                            binary_path,
+                            &binary_path,
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
                             &config,
