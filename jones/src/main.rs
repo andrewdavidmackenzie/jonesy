@@ -1,7 +1,7 @@
 use crate::args::parse_args;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points,
-    print_call_tree, print_crate_code_points, prune_call_tree,
+    count_crate_code_points_summary, print_call_tree, print_crate_code_points, prune_call_tree,
 };
 use crate::cargo::{derive_crate_src_path, detect_library_type, find_project_root};
 use crate::config::Config;
@@ -48,7 +48,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let binary_path = binary_path
             .canonicalize()
             .unwrap_or_else(|_| binary_path.clone());
-        println!("Processing {}", binary_path.display());
+        if !parsed_args.summary_only {
+            println!("Processing {}", binary_path.display());
+        }
 
         // Find project/workspace root from binary path
         let project_root = find_project_root(&binary_path);
@@ -88,7 +90,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
-        if is_dylib && let Some(lib_type) = detect_library_type(&binary_path) {
+        if !parsed_args.summary_only
+            && is_dylib
+            && let Some(lib_type) = detect_library_type(&binary_path)
+        {
             println!("Library type: {}", lib_type);
             if lib_type == "dylib" {
                 println!(
@@ -120,13 +125,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
+                    parsed_args.summary_only,
                     &config,
                     project_root.as_deref(),
                 );
                 total_summary.add(&summary);
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
-                println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+                if !parsed_args.summary_only {
+                    println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+                }
             }
             SymbolTable::Archive(archive) => {
                 // Process each object file in the archive
@@ -151,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &binary_path,
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
+                            parsed_args.summary_only,
                             &config,
                             project_root.as_deref(),
                         );
@@ -160,7 +169,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        println!();
+        if !parsed_args.summary_only {
+            println!();
+        }
     }
 
     // Print summary
@@ -192,12 +203,14 @@ const PANIC_SYMBOL_PATTERNS: &[&str] = &[
 
 /// Analyze a single MachO binary/object for panic points.
 /// Returns a summary of panic code points found.
+#[allow(clippy::too_many_arguments)]
 fn analyze_macho(
     macho: &MachO,
     buffer: &[u8],
     binary_path: &Path,
     crate_src_path: Option<&str>,
     show_tree: bool,
+    summary_only: bool,
     config: &Config,
     project_root: Option<&Path>,
 ) -> AnalysisSummary {
@@ -285,8 +298,13 @@ fn analyze_macho(
         prune_call_tree(&mut root, crate_path);
     }
 
-    // Print output based on --tree flag
-    if show_tree {
+    // Print output based on flags
+    if summary_only {
+        // Silent mode - just count without printing
+        crate_src_path.map_or(AnalysisSummary::default(), |cp| {
+            count_crate_code_points_summary(&root, cp, config)
+        })
+    } else if show_tree {
         println!("Full call tree:");
         print_call_tree(&root, 0);
         crate_src_path.map_or(AnalysisSummary::default(), |cp| {

@@ -318,6 +318,25 @@ pub fn count_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usi
     points.len()
 }
 
+/// Count crate code points without printing (for --summary-only mode).
+/// Returns a summary with count of panic points and affected files.
+/// The config is used to filter out code points with allowed (not denied) causes.
+pub fn count_crate_code_points_summary(
+    node: &CallTreeNode,
+    crate_src_path: &str,
+    config: &Config,
+) -> AnalysisSummary {
+    let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
+
+    // Filter out code points with allowed causes
+    filter_allowed_causes(&mut roots, config);
+
+    // Deduplicate roots by (file, line)
+    dedupe_crate_points(&mut roots);
+
+    count_crate_points_and_files(&roots)
+}
+
 /// Print only the crate code points without the full tree.
 /// Returns a summary with count of panic points and affected files.
 /// The project_root is used to make relative paths absolute for clickable links.

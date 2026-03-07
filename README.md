@@ -109,6 +109,7 @@ Usage:
 
 Options:
   --tree             Show full call tree instead of just crate code points
+  --summary-only     Only show summary, not detailed panic points
   --config <path>    Path to a TOML config file for allow/deny rules
   --max-threads N    Maximum threads for parallel analysis (default: CPU count)
   --bin              Analyze a specific binary file
@@ -134,6 +135,23 @@ Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
         ...
             Called from: 'panic_fmt' (source: library/core/src/panicking.rs:55)
                 Called from: 'main' (source: src/main.rs:8)
+```
+
+### `--summary-only`
+
+Show only the summary without detailed panic point locations. Useful for CI pipelines or quick checks:
+
+```bash
+jones --summary-only
+```
+
+Example output:
+
+```
+Summary:
+  Project: my-app
+  Root: /path/to/project
+  Panic points: 5 in 2 file(s)
 ```
 
 ### `--config`
@@ -244,22 +262,36 @@ jones || echo "Found potential panics!"
 For a crate with multiple panic paths:
 
 ```
-Processing target/debug/my-app
+Processing /path/to/target/debug/my-app
 Using .dSYM bundle for debug info
 
 Panic code points in crate:
-  src/main.rs:8 in 'main'
-  src/main.rs:10 in 'main'
-  src/module/mod.rs:2 in 'cause_a_panic'
+ --> /path/to/src/main.rs:9:1 [explicit panic!() call]
+     = help: Review if panic is intentional or add error handling
+ --> /path/to/src/main.rs:13:1
+     └──  --> /path/to/src/module/mod.rs:3:1
+ --> /path/to/src/main.rs:16:1
+     └──  --> /path/to/src/module/mod.rs:7:1 [unwrap() on None]
+          = help: Use if let, match, unwrap_or, or ? operator instead
+
+Summary:
+  Project: my-app
+  Root: /path/to
+  Panic points: 5 in 2 file(s)
 ```
 
 For a panic-free crate:
 
 ```
-Processing target/debug/perfect
+Processing /path/to/target/debug/perfect
 Using .dSYM bundle for debug info
 
 No panics in crate
+
+Summary:
+  Project: perfect
+  Root: /path/to
+  Panic points: 0 in 0 file(s)
 ```
 
 ## Requirements
