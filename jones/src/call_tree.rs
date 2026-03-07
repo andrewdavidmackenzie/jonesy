@@ -316,7 +316,9 @@ pub fn count_crate_code_points_summary(
 /// Returns a summary with count of panic points and affected files.
 /// The project_root is used to make relative paths absolute for clickable links.
 /// The config is used to filter out code points with allowed (not denied) causes.
-/// When no_hyperlinks is false, uses OSC 8 terminal hyperlinks for clickable short paths.
+/// When no_hyperlinks is false and stdout is a TTY, uses OSC 8 terminal hyperlinks
+/// with a directory-grouped tree format. Otherwise, uses a flat format with absolute
+/// paths which most terminals auto-detect as clickable file:line:column references.
 pub fn print_crate_code_points(
     node: &CallTreeNode,
     crate_src_path: &str,
@@ -353,10 +355,19 @@ pub fn print_crate_code_points(
         } else {
             println!("\nPanic code points in crate:");
         }
-        println!();
 
-        // Group points by directory and print with tree format
-        print_directory_tree(&roots, project_root, crate_root.as_deref(), no_hyperlinks);
+        // Use tree format only when OSC 8 hyperlinks are available
+        // (stdout is TTY and --no-hyperlinks not set)
+        let use_tree_format = !no_hyperlinks && io::stdout().is_terminal();
+
+        if use_tree_format {
+            println!();
+            // Directory-grouped tree format with OSC 8 hyperlinks
+            print_directory_tree(&roots, project_root, crate_root.as_deref(), no_hyperlinks);
+        } else {
+            // Flat format with absolute paths for terminal auto-detection
+            print_flat_format(&roots, project_root);
+        }
     }
     summary
 }
@@ -426,6 +437,132 @@ fn print_directory_tree(
     }
 }
 
+/// Print panic points in a flat format with absolute paths.
+/// Used when OSC 8 hyperlinks aren't available, so terminals can auto-detect
+/// the file:line:column pattern as clickable links.
+fn print_flat_format(points: &[CrateCodePoint], project_root: Option<&Path>) {
+    for point in points {
+        print_flat_point(point, project_root);
+    }
+}
+
+/// Print a single point in flat format with its children.
+fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
+    // Use absolute path for terminal clickability
+    let display_path = get_clickable_path(&point.file, project_root);
+
+    let location = format!("{}:{}:1", display_path, point.line);
+
+    // Get primary cause for display (only for leaf nodes)
+    let is_leaf = point.children.is_empty();
+    let primary_cause: Option<&PanicCause> = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().copied()
+    };
+
+    let cause_str = if is_leaf {
+        if let Some(cause) = primary_cause {
+            format!(" [{}]", cause.description())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Print the location
+    println!(" --> {}{}", location, cause_str);
+
+    // Print help and warning for leaf nodes
+    if is_leaf {
+        if let Some(cause) = primary_cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                println!("     = help: {}", suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                println!("     = warning: {}", warning);
+            }
+        }
+    }
+
+    // Print children with indentation
+    if !point.children.is_empty() {
+        let mut children = point.children.clone();
+        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
+        for child in &children {
+            print_flat_child(child, project_root, "     ");
+        }
+    }
+}
+
+/// Print a child point in flat format with indentation.
+fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent: &str) {
+    // Use absolute path for terminal clickability
+    let display_path = get_clickable_path(&point.file, project_root);
+
+    let location = format!("{}:{}:1", display_path, point.line);
+
+    // Get primary cause for display (only for leaf nodes)
+    let is_leaf = point.children.is_empty();
+    let primary_cause: Option<&PanicCause> = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().copied()
+    };
+
+    let cause_str = if is_leaf {
+        if let Some(cause) = primary_cause {
+            format!(" [{}]", cause.description())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Print with tree connector
+    println!("{}└──  --> {}{}", indent, location, cause_str);
+
+    // Print help and warning for leaf nodes
+    if is_leaf {
+        if let Some(cause) = primary_cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                println!("{}     = help: {}", indent, suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                println!("{}     = warning: {}", indent, warning);
+            }
+        }
+    }
+
+    // Print children with deeper indentation
+    if !point.children.is_empty() {
+        let mut children = point.children.clone();
+        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
+        let child_indent = format!("{}     ", indent);
+        for child in &children {
+            print_flat_child(child, project_root, &child_indent);
+        }
+    }
+}
+
+/// Get a clickable path for terminal output.
+/// Returns an absolute path for maximum terminal compatibility.
+fn get_clickable_path(file: &str, project_root: Option<&Path>) -> String {
+    if file.starts_with('/') {
+        file.to_string()
+    } else if let Some(root) = project_root {
+        root.join(file).to_string_lossy().to_string()
+    } else {
+        file.to_string()
+    }
+}
+
 /// Get the display path for a file (relative to crate root).
 fn get_display_path(file: &str, project_root: Option<&Path>, crate_root: Option<&Path>) -> String {
     // Make path absolute first
@@ -486,10 +623,12 @@ fn print_file_entry(
             let display = format!("{}:{}:1", filename, point.line);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
-            format!("{}:{}:1", filename, point.line)
+            // Fallback to absolute path if URL conversion fails
+            format!("{}:{}:1", absolute_path, point.line)
         }
     } else {
-        format!("{}:{}:1", filename, point.line)
+        // Plain absolute path for terminal auto-detection of clickable links
+        format!("{}:{}:1", absolute_path, point.line)
     };
 
     // Get primary cause for display
@@ -693,12 +832,12 @@ fn print_crate_point(
             let display = format!("{}:{}:1", display_path, point.line);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
-            // Fallback to plain path if URL conversion fails
+            // Fallback to absolute path if URL conversion fails
             format!("{}:{}:1", absolute_path, point.line)
         }
     } else {
-        // Plain short path (relative to crate root for readability)
-        format!("{}:{}:1", display_path, point.line)
+        // Plain absolute path for terminal auto-detection of clickable links
+        format!("{}:{}:1", absolute_path, point.line)
     };
 
     // Only show cause and help on leaf nodes (no children)
