@@ -173,14 +173,14 @@ impl PanicCause {
     }
 
     /// Returns true if this panic cause only occurs in debug builds.
-    /// In release builds, these conditions result in undefined behavior instead of panics.
+    /// In release builds, these conditions have different behavior (wrapping, UB, or omitted).
+    #[allow(dead_code)] // May be useful for future filtering features
     pub fn is_debug_only(&self) -> bool {
         matches!(
             self,
             PanicCause::ArithmeticOverflow(_)
                 | PanicCause::ShiftOverflow(_)
                 | PanicCause::DivisionByZero
-                | PanicCause::BoundsCheck
                 | PanicCause::DebugAssertFailed
         )
     }
@@ -188,10 +188,17 @@ impl PanicCause {
     /// Get a warning message for debug-only panics.
     /// Returns None if this panic occurs in both debug and release builds.
     pub fn release_warning(&self) -> Option<&'static str> {
-        if self.is_debug_only() {
-            Some("In release builds, this becomes undefined behavior (no panic)")
-        } else {
-            None
+        match self {
+            PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_) => {
+                Some("In release builds, this wraps around silently (no panic)")
+            }
+            PanicCause::DivisionByZero => {
+                Some("In release builds, this is undefined behavior (no panic)")
+            }
+            PanicCause::DebugAssertFailed => {
+                Some("In release builds, debug_assert! is not compiled (no check)")
+            }
+            _ => None,
         }
     }
 }
