@@ -7,6 +7,24 @@ use cargo_toml::Manifest;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Get the project name from the Cargo.toml at the given project root.
+/// For workspaces, returns the workspace package name if available, otherwise None.
+/// For regular crates, returns the package name.
+pub fn get_project_name(project_root: &Path) -> Option<String> {
+    let cargo_toml = project_root.join("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).ok()?;
+    let manifest = Manifest::from_slice(content.as_bytes()).ok()?;
+
+    // Try package name first (works for both workspace root packages and regular crates)
+    if let Some(package) = &manifest.package {
+        return Some(package.name.clone());
+    }
+
+    // For workspace-only Cargo.toml (no [package]), return None
+    // The caller can fall back to binary name
+    None
+}
+
 /// Find the project root directory for a binary by walking up looking for Cargo.toml.
 /// Returns the directory containing Cargo.toml, or None if not found.
 pub fn find_project_root(binary_path: &Path) -> Option<PathBuf> {

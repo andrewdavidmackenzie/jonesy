@@ -503,25 +503,57 @@ impl CallGraph {
         debug_macho: &MachO,
         debug_buffer: &[u8],
         crate_src_path: Option<&str>,
+        show_timings: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+
         // Pre-load DWARF info once (shared across threads)
+        let step = Instant::now();
         let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        if show_timings {
+            eprintln!(
+                "    [cg timing] get_functions_from_dwarf: {:?} ({} functions)",
+                step.elapsed(),
+                functions.len()
+            );
+        }
+
+        let step = Instant::now();
         let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+        if show_timings {
+            eprintln!("    [cg timing] load_dwarf_sections: {:?}", step.elapsed());
+        }
 
         let Some((text_addr, text_data)) = get_text_section(binary_macho, binary_buffer) else {
             return Ok(Self {
                 edges: HashMap::new(),
             });
         };
+        if show_timings {
+            eprintln!(
+                "    [cg timing] text section size: {} bytes",
+                text_data.len()
+            );
+        }
 
         // Parallel disassembly - divides text section into chunks (ARM64 only)
+        let step = Instant::now();
         #[cfg(target_arch = "aarch64")]
         let insn_data = parallel_disassemble_arm64(text_data, text_addr);
 
         #[cfg(not(target_arch = "aarch64"))]
         let insn_data = sequential_disassemble_arm64(text_data, text_addr);
+        if show_timings {
+            // insn_data contains only BL instructions (not all instructions)
+            eprintln!(
+                "    [cg timing] scan for bl instructions: {:?} ({} found)",
+                step.elapsed(),
+                insn_data.len()
+            );
+        }
 
         // Process bl instructions in parallel
+        let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
@@ -532,6 +564,9 @@ impl CallGraph {
                 edges.entry(target).or_default().push(caller_info);
             }
         });
+        if show_timings {
+            eprintln!("    [cg timing] process instructions: {:?}", step.elapsed());
+        }
 
         Ok(Self {
             edges: edges.into_iter().collect(),
@@ -1175,7 +1210,7 @@ pub fn find_callers_with_debug_map(
 
 /// Load debug map from the binary's symbol table
 /// This reads OSO entries and loads DWARF from the referenced object files
-fn load_debug_map(macho: &MachO) -> Option<DebugMapInfo> {
+fn load_debug_map(macho: &MachO, quiet: bool) -> Option<DebugMapInfo> {
     let oso_paths = get_oso_paths(macho);
 
     if oso_paths.is_empty() {
@@ -1221,10 +1256,12 @@ fn load_debug_map(macho: &MachO) -> Option<DebugMapInfo> {
         return None;
     }
 
-    println!(
-        "Using debug map: loaded {} object files with DWARF",
-        loaded_count
-    );
+    if !quiet {
+        println!(
+            "Using debug map: loaded {} object files with DWARF",
+            loaded_count
+        );
+    }
 
     Some(DebugMapInfo { object_files })
 }
@@ -1248,7 +1285,7 @@ fn is_dsym_stale(binary_path: &Path, dsym_path: &Path) -> bool {
 // 2) No embedded debug info, dSYM
 // 3) Embedded debug info, no dSYM
 // 4) Embedded debug info, dSYM
-pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
+pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugInfo {
     // Look for dSYM symbol directory
     // Try both with and without extension since dsymutil behavior varies
     let file_name = binary_path.file_name().unwrap().to_str().unwrap();
@@ -1279,9 +1316,13 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
             // Check if dSYM is stale (binary is newer than dSYM)
             let dsym_stale = is_dsym_stale(binary_path, dsym_path);
             if dsym_stale {
-                println!("dSYM is stale, will regenerate");
+                if !quiet {
+                    println!("dSYM is stale, will regenerate");
+                }
             } else {
-                println!("Using .dSYM bundle for debug info");
+                if !quiet {
+                    println!("Using .dSYM bundle for debug info");
+                }
                 let debug_buffer = fs::read(dsym_path).unwrap();
                 let dsym_info = DSymInfoBuilder {
                     debug_buffer,
@@ -1294,30 +1335,34 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
     }
 
     if !get_dwarf_sections(macho).is_empty() {
-        println!("Using embedded DWARF debugging info");
+        if !quiet {
+            println!("Using embedded DWARF debugging info");
+        }
         return DebugInfo::Embedded;
     }
 
     // Try to auto-generate dSYM using dsymutil
-    if let Some(dsym_info) = auto_generate_dsym(binary_path) {
+    if let Some(dsym_info) = auto_generate_dsym(binary_path, quiet) {
         return DebugInfo::DSym(Box::new(dsym_info));
     }
 
     // Fall back to debug map (reading DWARF from object files)
-    if let Some(debug_map) = load_debug_map(macho) {
+    if let Some(debug_map) = load_debug_map(macho, quiet) {
         return DebugInfo::DebugMap(Box::new(debug_map));
     }
 
-    println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
-    println!(
-        "Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols",
-        binary_path.display()
-    );
+    if !quiet {
+        println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
+        println!(
+            "Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols",
+            binary_path.display()
+        );
+    }
     DebugInfo::None
 }
 
 /// Auto-generate dSYM by running dsymutil
-fn auto_generate_dsym(binary_path: &Path) -> Option<DSymInfo> {
+fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
     use std::process::Command;
 
     let dsym_path = binary_path.with_extension("dSYM");
@@ -1345,7 +1390,9 @@ fn auto_generate_dsym(binary_path: &Path) -> Option<DSymInfo> {
 
     for dwarf_path in &dwarf_paths {
         if dwarf_path.exists() {
-            println!("Generated .dSYM bundle for debug info");
+            if !quiet {
+                println!("Generated .dSYM bundle for debug info");
+            }
             let debug_buffer = fs::read(dwarf_path).ok()?;
             let dsym_info = DSymInfoBuilder {
                 debug_buffer,

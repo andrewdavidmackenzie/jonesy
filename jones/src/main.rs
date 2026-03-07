@@ -1,9 +1,11 @@
 use crate::args::parse_args;
 use crate::call_tree::{
-    CallTreeNode, build_call_tree_parallel, count_crate_code_points, print_call_tree,
-    print_crate_code_points, prune_call_tree,
+    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
+    print_call_tree, print_crate_code_points, prune_call_tree,
 };
-use crate::cargo::{derive_crate_src_path, detect_library_type, find_project_root};
+use crate::cargo::{
+    derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
+};
 use crate::config::Config;
 use crate::sym::{
     CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
@@ -16,6 +18,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 mod args;
 mod call_tree;
@@ -39,14 +42,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_global()
         .ok(); // Ignore error if pool already initialized
 
-    let mut total_panic_points: usize = 0;
+    let mut total_summary = AnalysisSummary::default();
+    let mut project_name: Option<String> = None;
+    let mut project_root_path: Option<String> = None;
 
     for binary_path in &parsed_args.binaries {
         // Canonicalize the binary path to ensure absolute paths for clickable links
         let binary_path = binary_path
             .canonicalize()
             .unwrap_or_else(|_| binary_path.clone());
-        println!("Processing {}", binary_path.display());
+        if !parsed_args.summary_only {
+            println!("Processing {}", binary_path.display());
+        }
 
         // Find project/workspace root from binary path
         let project_root = find_project_root(&binary_path);
@@ -86,7 +93,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
-        if is_dylib && let Some(lib_type) = detect_library_type(&binary_path) {
+        if !parsed_args.summary_only
+            && is_dylib
+            && let Some(lib_type) = detect_library_type(&binary_path)
+        {
             println!("Library type: {}", lib_type);
             if lib_type == "dylib" {
                 println!(
@@ -99,21 +109,42 @@ fn main() -> Result<(), Box<dyn Error>> {
         let binary_buffer = fs::read(&binary_path)?;
         let symbols = read_symbols(&binary_buffer)?;
 
+        // Capture project info from the first binary processed
+        if project_name.is_none() {
+            // Prefer project name from Cargo manifest, fall back to binary filename
+            project_name = project_root
+                .as_ref()
+                .and_then(|root| get_project_name(root))
+                .or_else(|| {
+                    binary_path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                });
+            project_root_path = project_root
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+        }
+
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
                 let crate_src_path = derive_crate_src_path(&binary_path);
-                total_panic_points += analyze_macho(
+                let summary = analyze_macho(
                     &macho,
                     &binary_buffer,
                     &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
+                    parsed_args.summary_only,
+                    parsed_args.show_timings,
                     &config,
                     project_root.as_deref(),
                 );
+                total_summary.add(&summary);
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
-                println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+                if !parsed_args.summary_only {
+                    println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+                }
             }
             SymbolTable::Archive(archive) => {
                 // Process each object file in the archive
@@ -132,26 +163,45 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     // Parse the object file as Mach-O
                     if let Ok(obj_macho) = MachO::parse(member_data, 0) {
-                        total_panic_points += analyze_macho(
+                        let summary = analyze_macho(
                             &obj_macho,
                             member_data,
                             &binary_path,
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
+                            parsed_args.summary_only,
+                            parsed_args.show_timings,
                             &config,
                             project_root.as_deref(),
                         );
+                        total_summary.add(&summary);
                     }
                 }
             }
         }
 
-        println!();
+        if !parsed_args.summary_only {
+            println!();
+        }
     }
+
+    // Print summary
+    println!("Summary:");
+    if let Some(name) = &project_name {
+        println!("  Project: {}", name);
+    }
+    if let Some(root) = &project_root_path {
+        println!("  Root: {}", root);
+    }
+    println!(
+        "  Panic points: {} in {} file(s)",
+        total_summary.panic_points(),
+        total_summary.files_affected()
+    );
 
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
-    std::process::exit(total_panic_points as i32);
+    std::process::exit(total_summary.panic_points() as i32);
 }
 
 /// Panic symbol patterns to search for, in order of preference.
@@ -164,17 +214,23 @@ const PANIC_SYMBOL_PATTERNS: &[&str] = &[
 ];
 
 /// Analyze a single MachO binary/object for panic points.
-/// Returns the number of panic code points found.
+/// Returns a summary of panic code points found.
+#[allow(clippy::too_many_arguments)]
 fn analyze_macho(
     macho: &MachO,
     buffer: &[u8],
     binary_path: &Path,
     crate_src_path: Option<&str>,
     show_tree: bool,
+    summary_only: bool,
+    show_timings: bool,
     config: &Config,
     project_root: Option<&Path>,
-) -> usize {
+) -> AnalysisSummary {
+    let total_start = Instant::now();
+
     // Try each panic symbol pattern until we find one
+    let step_start = Instant::now();
     let mut panic_symbol = None;
     let mut demangled = String::new();
     let mut target_addr = 0u64;
@@ -189,19 +245,27 @@ fn analyze_macho(
             break;
         }
     }
+    if show_timings {
+        eprintln!("  [timing] Find panic symbol: {:?}", step_start.elapsed());
+    }
 
     let Some(_) = panic_symbol else {
         // No panic symbols found in this object
-        return 0;
+        return AnalysisSummary::default();
     };
 
-    let debug_info = load_debug_info(macho, binary_path);
+    let step_start = Instant::now();
+    let debug_info = load_debug_info(macho, binary_path, summary_only);
+    if show_timings {
+        eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
+    }
 
     // Pre-compute call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
+    let step_start = Instant::now();
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
-            CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path)
+            CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path, show_timings)
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
                     CallGraph::build(macho, buffer)
@@ -219,6 +283,7 @@ fn analyze_macho(
                     debug_mach,
                     dsym_info.borrow_debug_buffer(),
                     crate_src_path,
+                    show_timings,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -242,6 +307,9 @@ fn analyze_macho(
             })
         }
     };
+    if show_timings {
+        eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
+    }
 
     // Create the root node for the call tree
     let mut root = CallTreeNode::new_root(demangled.clone());
@@ -251,23 +319,44 @@ fn analyze_macho(
     visited.insert(target_addr);
 
     // Build the call tree in parallel
+    let step_start = Instant::now();
     root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
+    if show_timings {
+        eprintln!("  [timing] Build call tree: {:?}", step_start.elapsed());
+    }
 
     // Prune to only show paths leading to user code
+    let step_start = Instant::now();
     if let Some(crate_path) = crate_src_path {
         prune_call_tree(&mut root, crate_path);
     }
+    if show_timings {
+        eprintln!("  [timing] Prune call tree: {:?}", step_start.elapsed());
+    }
 
-    // Print output based on --tree flag
-    if show_tree {
+    // Print output based on flags
+    let step_start = Instant::now();
+    let result = if summary_only {
+        // Silent mode - just count without printing
+        crate_src_path.map_or(AnalysisSummary::default(), |cp| {
+            count_crate_code_points_summary(&root, cp, config)
+        })
+    } else if show_tree {
         println!("Full call tree:");
         print_call_tree(&root, 0);
-        crate_src_path.map_or(0, |cp| count_crate_code_points(&root, cp))
+        crate_src_path.map_or(AnalysisSummary::default(), |cp| {
+            count_crate_code_points_summary(&root, cp, config)
+        })
     } else if let Some(crate_path) = crate_src_path {
         print_crate_code_points(&root, crate_path, project_root, config)
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);
-        0
+        AnalysisSummary::default()
+    };
+    if show_timings {
+        eprintln!("  [timing] Collect/output: {:?}", step_start.elapsed());
+        eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
+    result
 }

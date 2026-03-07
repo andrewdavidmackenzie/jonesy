@@ -7,6 +7,10 @@ pub(crate) struct Args {
     pub binaries: Vec<PathBuf>,
     /// Whether to show the full call tree (--tree flag)
     pub show_tree: bool,
+    /// Whether to only show summary output (--summary-only flag)
+    pub summary_only: bool,
+    /// Whether to show timing information (--show-timings flag)
+    pub show_timings: bool,
     /// Maximum number of threads to use for parallel analysis
     pub max_threads: usize,
     /// Optional path to config file (--config flag)
@@ -26,11 +30,14 @@ pub(crate) struct Args {
 ///
 /// Optional flags:
 /// --tree           Show the full call tree instead of just crate code points
+/// --summary-only   Only show summary output, not detailed panic points
 /// --max-threads N  Maximum threads for parallel analysis (default: number of CPUs)
 /// --config <path>  Path to a TOML config file for allow/deny rules
 pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     // Check for flags
     let show_tree = args.iter().any(|a| a == "--tree");
+    let summary_only = args.iter().any(|a| a == "--summary-only");
+    let show_timings = args.iter().any(|a| a == "--show-timings");
 
     // Parse --max-threads option
     let max_threads = parse_max_threads(args)?;
@@ -44,6 +51,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         .enumerate()
         .filter(|(i, a)| {
             *a != "--tree"
+                && *a != "--summary-only"
+                && *a != "--show-timings"
                 && *a != "--max-threads"
                 && *a != "--config"
                 && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--max-threads"))
@@ -68,6 +77,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     Ok(Args {
         binaries,
         show_tree,
+        summary_only,
+        show_timings,
         max_threads,
         config_path,
     })
@@ -119,6 +130,8 @@ fn usage() -> String {
      directory and analyzes all binary targets found in target/debug/.\n\n\
      Options:\n  \
      --tree             Show full call tree instead of just crate code points\n  \
+     --summary-only     Only show summary, not detailed panic points\n  \
+     --show-timings     Show timing information for each analysis step\n  \
      --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
      --config <path>    Path to TOML config file for allow/deny rules"
         .to_string()
