@@ -7,10 +7,13 @@ use crate::config::Config;
 use crate::panic_cause::{PanicCause, detect_panic_cause};
 use crate::sym::CallGraph;
 use dashmap::DashSet;
+use is_terminal::IsTerminal;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use url::Url;
 
 /// A node in the call tree representing a function that can lead to the target symbol
 #[derive(Debug)]
@@ -470,16 +473,22 @@ fn print_crate_point(
         absolute_path.clone()
     };
 
-    // Format location - use OSC 8 hyperlinks by default for short display with clickable links
-    let location = if no_hyperlinks {
-        // Plain absolute path (works in all terminals)
-        format!("{}:{}:1", absolute_path, point.line)
-    } else {
+    // Format location - use OSC 8 hyperlinks when stdout is a TTY and not disabled
+    let use_hyperlinks = !no_hyperlinks && io::stdout().is_terminal();
+    let location = if use_hyperlinks {
         // OSC 8 hyperlink: \x1b]8;;URL\x1b\\DISPLAY\x1b]8;;\x1b\\
-        // URL uses file:// protocol for local files
-        let url = format!("file://{}#L{}", absolute_path, point.line);
-        let display = format!("{}:{}:1", display_path, point.line);
-        format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, display)
+        // Use url crate for proper percent-encoding of paths with spaces/special chars
+        if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
+            file_url.set_fragment(Some(&format!("L{}", point.line)));
+            let display = format!("{}:{}:1", display_path, point.line);
+            format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
+        } else {
+            // Fallback to plain path if URL conversion fails
+            format!("{}:{}:1", absolute_path, point.line)
+        }
+    } else {
+        // Plain absolute path (works in all terminals, or when redirected/piped)
+        format!("{}:{}:1", absolute_path, point.line)
     };
 
     // Only show cause and help on leaf nodes (no children)

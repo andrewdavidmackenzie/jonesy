@@ -157,9 +157,11 @@ Summary:
 
 ### `--no-hyperlinks`
 
-By default, jones outputs source file locations as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), making paths clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full file path while displaying a shorter relative path.
+When stdout is a terminal, jones outputs source file locations as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), making paths clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full file path while displaying a shorter relative path.
 
-If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and the output will still be readable. However, if you prefer plain absolute paths without any escape sequences, use this flag:
+When output is piped or redirected (e.g., `jones > file.txt`), plain absolute paths are used automatically to avoid escape sequences in logs or files.
+
+If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this flag:
 
 ```bash
 jones --no-hyperlinks
