@@ -497,22 +497,28 @@ fn print_crate_point(
     // Print the current node - location on its own line for clickability
     if is_root {
         println!(" --> {}{}", location, cause_str);
-        // Print suggestion if we have a cause (only for leaf nodes)
+        // Print suggestion and warning if we have a cause (only for leaf nodes)
         if is_leaf && let Some(cause) = primary_cause {
             let suggestion = cause.suggestion();
             if !suggestion.is_empty() {
                 println!("     = help: {}", suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                println!("     = warning: {}", warning);
             }
         }
     } else {
         let connector = if is_last { "└── " } else { "├── " };
         // Indent to align with parent, show tree connector, then clickable location
         println!("     {}{} --> {}{}", prefix, connector, location, cause_str);
-        // Print suggestion if we have a cause (only for leaf nodes)
+        // Print suggestion and warning if we have a cause (only for leaf nodes)
         if is_leaf && let Some(cause) = primary_cause {
             let suggestion = cause.suggestion();
             if !suggestion.is_empty() {
                 println!("     {}     = help: {}", prefix, suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                println!("     {}     = warning: {}", prefix, warning);
             }
         }
     }

@@ -171,6 +171,29 @@ impl PanicCause {
             PanicCause::Unknown => "",
         }
     }
+
+    /// Returns true if this panic cause only occurs in debug builds.
+    /// In release builds, these conditions result in undefined behavior instead of panics.
+    pub fn is_debug_only(&self) -> bool {
+        matches!(
+            self,
+            PanicCause::ArithmeticOverflow(_)
+                | PanicCause::ShiftOverflow(_)
+                | PanicCause::DivisionByZero
+                | PanicCause::BoundsCheck
+                | PanicCause::DebugAssertFailed
+        )
+    }
+
+    /// Get a warning message for debug-only panics.
+    /// Returns None if this panic occurs in both debug and release builds.
+    pub fn release_warning(&self) -> Option<&'static str> {
+        if self.is_debug_only() {
+            Some("In release builds, this becomes undefined behavior (no panic)")
+        } else {
+            None
+        }
+    }
 }
 
 /// Detect panic cause from a function name in the call chain
