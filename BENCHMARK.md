@@ -312,6 +312,42 @@ The graph shows two views of the parallelization behavior:
     - Use `--max-threads N` to limit resource usage in constrained environments
     - No benefit to requesting more threads than physical cores
 
+## CrateLineTable Optimization
+
+Date: 2026-03-07
+System: macOS ARM64 (Apple Silicon) with 10 cores
+Build: Release
+
+### Problem
+
+The `get_crate_line_at_address` function was called ~2,800 times per analysis, each traversing
+~320,000 DWARF line entries. This O(n) lookup dominated processing time.
+
+### Solution
+
+Pre-build a sorted table containing ONLY line entries from crate source files during call graph
+construction. This table is typically ~100x smaller than the full DWARF line table (2,910 vs 321,008
+entries for flowc). Use binary search for O(log n) lookups.
+
+### Results
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Process instructions (single-threaded) | ~30s | ~30s | N/A |
+| Process instructions (10 cores) | ~30s | ~4.5s | **6.7x** |
+| Total time (parallel) | ~30s | ~4.8s | **6.3x** |
+| Accuracy | 109 points | 109 points | **100%** |
+
+### Key Insight
+
+Unlike the failed "Pre-built Line Table" approach, this optimization:
+1. Only pre-builds entries for crate source files (much smaller table)
+2. Uses the pre-built table for `get_crate_line_at_address` lookups specifically
+3. Maintains the original DWARF traversal for `get_source_location` (which is cached separately)
+
+This avoids the semantic issues with full DWARF line table binary search while still achieving
+significant speedup for the crate-specific lookups that were the bottleneck.
+
 ## Failed Optimizations
 
 This section documents optimization approaches that were attempted but abandoned due to accuracy issues.
