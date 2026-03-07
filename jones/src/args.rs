@@ -11,6 +11,8 @@ pub(crate) struct Args {
     pub summary_only: bool,
     /// Whether to show timing information (--show-timings flag)
     pub show_timings: bool,
+    /// Whether to suppress progress messages (--quiet flag)
+    pub quiet: bool,
     /// Maximum number of threads to use for parallel analysis
     pub max_threads: usize,
     /// Optional path to config file (--config flag)
@@ -38,6 +40,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let show_tree = args.iter().any(|a| a == "--tree");
     let summary_only = args.iter().any(|a| a == "--summary-only");
     let show_timings = args.iter().any(|a| a == "--show-timings");
+    let quiet = args.iter().any(|a| a == "--quiet");
 
     // Parse --max-threads option
     let max_threads = parse_max_threads(args)?;
@@ -53,6 +56,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
             *a != "--tree"
                 && *a != "--summary-only"
                 && *a != "--show-timings"
+                && *a != "--quiet"
                 && *a != "--max-threads"
                 && *a != "--config"
                 && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--max-threads"))
@@ -79,6 +83,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         show_tree,
         summary_only,
         show_timings,
+        quiet,
         max_threads,
         config_path,
     })
@@ -131,6 +136,7 @@ fn usage() -> String {
      Options:\n  \
      --tree             Show full call tree instead of just crate code points\n  \
      --summary-only     Only show summary, not detailed panic points\n  \
+     --quiet            Suppress progress messages (keeps panic points and summary)\n  \
      --show-timings     Show timing information for each analysis step\n  \
      --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
      --config <path>    Path to TOML config file for allow/deny rules"

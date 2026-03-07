@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let binary_path = binary_path
             .canonicalize()
             .unwrap_or_else(|_| binary_path.clone());
-        if !parsed_args.summary_only {
+        if !parsed_args.summary_only && !parsed_args.quiet {
             println!("Processing {}", binary_path.display());
         }
 
@@ -94,6 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
         if !parsed_args.summary_only
+            && !parsed_args.quiet
             && is_dylib
             && let Some(lib_type) = detect_library_type(&binary_path)
         {
@@ -136,6 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     parsed_args.show_tree,
                     parsed_args.summary_only,
                     parsed_args.show_timings,
+                    parsed_args.quiet,
                     &config,
                     project_root.as_deref(),
                 );
@@ -171,6 +173,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             parsed_args.show_tree,
                             parsed_args.summary_only,
                             parsed_args.show_timings,
+                            parsed_args.quiet,
                             &config,
                             project_root.as_deref(),
                         );
@@ -180,7 +183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if !parsed_args.summary_only {
+        if !parsed_args.summary_only && !parsed_args.quiet {
             println!();
         }
     }
@@ -224,12 +227,18 @@ fn analyze_macho(
     show_tree: bool,
     summary_only: bool,
     show_timings: bool,
+    quiet: bool,
     config: &Config,
     project_root: Option<&Path>,
 ) -> AnalysisSummary {
+    // Helper to print progress messages (respects quiet and summary_only flags)
+    let show_progress = !quiet && !summary_only;
     let total_start = Instant::now();
 
     // Try each panic symbol pattern until we find one
+    if show_progress {
+        eprintln!("  Finding panic entry point...");
+    }
     let step_start = Instant::now();
     let mut panic_symbol = None;
     let mut demangled = String::new();
@@ -254,14 +263,20 @@ fn analyze_macho(
         return AnalysisSummary::default();
     };
 
+    if show_progress {
+        eprintln!("  Loading debug information...");
+    }
     let step_start = Instant::now();
-    let debug_info = load_debug_info(macho, binary_path, summary_only);
+    let debug_info = load_debug_info(macho, binary_path, summary_only || quiet);
     if show_timings {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
 
     // Pre-compute call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
+    if show_progress {
+        eprintln!("  Scanning for function calls...");
+    }
     let step_start = Instant::now();
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
@@ -319,6 +334,9 @@ fn analyze_macho(
     visited.insert(target_addr);
 
     // Build the call tree in parallel
+    if show_progress {
+        eprintln!("  Building call tree...");
+    }
     let step_start = Instant::now();
     root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
     if show_timings {
@@ -326,6 +344,9 @@ fn analyze_macho(
     }
 
     // Prune to only show paths leading to user code
+    if show_progress {
+        eprintln!("  Pruning to crate code...");
+    }
     let step_start = Instant::now();
     if let Some(crate_path) = crate_src_path {
         prune_call_tree(&mut root, crate_path);

@@ -1445,11 +1445,11 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
             let dsym_stale = is_dsym_stale(binary_path, dsym_path);
             if dsym_stale {
                 if !quiet {
-                    println!("dSYM is stale, will regenerate");
+                    println!("  dSYM is stale, will regenerate");
                 }
             } else {
                 if !quiet {
-                    println!("Using .dSYM bundle for debug info");
+                    println!("  Using .dSYM bundle for debug info");
                 }
                 let debug_buffer = fs::read(dsym_path).unwrap();
                 let dsym_info = DSymInfoBuilder {
@@ -1464,7 +1464,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
 
     if !get_dwarf_sections(macho).is_empty() {
         if !quiet {
-            println!("Using embedded DWARF debugging info");
+            println!("  Using embedded DWARF debugging info");
         }
         return DebugInfo::Embedded;
     }
@@ -1480,7 +1480,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
     }
 
     if !quiet {
-        println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
+        println!("  No debug info found (no dSYM, embedded DWARF, or debug map)");
         println!(
             "Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols",
             binary_path.display()
@@ -1519,7 +1519,7 @@ fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
     for dwarf_path in &dwarf_paths {
         if dwarf_path.exists() {
             if !quiet {
-                println!("Generated .dSYM bundle for debug info");
+                println!("  Generated .dSYM bundle for debug info");
             }
             let debug_buffer = fs::read(dwarf_path).ok()?;
             let dsym_info = DSymInfoBuilder {
