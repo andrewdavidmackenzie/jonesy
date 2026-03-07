@@ -312,6 +312,46 @@ The graph shows two views of the parallelization behavior:
     - Use `--max-threads N` to limit resource usage in constrained environments
     - No benefit to requesting more threads than physical cores
 
+## Failed Optimizations
+
+This section documents optimization approaches that were attempted but abandoned due to accuracy issues.
+
+### Pre-built Line Table with Binary Search (Abandoned)
+
+**Date**: 2026-03-07
+
+**Goal**: Reduce `process instructions` time from ~39s to <1s by replacing O(n) DWARF traversals with
+O(log n) binary searches.
+
+**Approach**:
+1. Pre-build a sorted line table from all DWARF compilation units during call graph construction
+2. Use binary search instead of linear DWARF traversal for `get_source_location()` lookups
+3. Use binary search for function address lookups (sort functions by start_address)
+
+**Results**:
+- **Speedup achieved**: ~90x (39.1s → 0.43s on flowc)
+- **Accuracy loss**: ~14% (92 vs 107 panic points found)
+
+**Why it failed**:
+
+The original DWARF line table lookup algorithm has subtle behavior that's difficult to replicate:
+
+1. **Compilation unit ordering matters**: The original iterates through compilation units in order and
+   returns the FIRST match found. When code is inlined across compilation units, this returns the
+   "original" source location rather than possibly better matches from later units.
+
+2. **Match semantics**: The original requires finding a row where `address > target` and returns the
+   previous row. Simply sorting all entries by address and doing binary search loses the per-unit
+   semantics.
+
+3. **Per-unit vs global**: Merging all line entries into a single sorted list loses compilation unit
+   boundaries. Even keeping per-unit tables and searching them in order didn't fully replicate the
+   original behavior.
+
+**Conclusion**: The DWARF line table structure has semantics that don't map well to simple binary
+search. A correct optimization would require deeper understanding of DWARF semantics or using
+gimli's built-in address lookup facilities.
+
 ## Notes
 
 - The `dylib` example benefits most from parallelization due to its size (includes std library)

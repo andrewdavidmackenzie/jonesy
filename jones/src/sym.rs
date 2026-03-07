@@ -553,13 +553,20 @@ impl CallGraph {
         }
 
         // Process bl instructions in parallel
+        // Cache source location lookups since many instructions are in the same function
         let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+        let source_cache: DashMap<u64, (Option<String>, Option<u32>)> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
-                && let Some((target, caller_info)) =
-                    process_instruction_data_with_debug(data, &functions, &dwarf, crate_src_path)
+                && let Some((target, caller_info)) = process_instruction_data_with_debug_cached(
+                    data,
+                    &functions,
+                    &dwarf,
+                    crate_src_path,
+                    &source_cache,
+                )
             {
                 edges.entry(target).or_default().push(caller_info);
             }
@@ -633,6 +640,50 @@ fn process_instruction_data_with_debug(
     let mut line = func.line.or(func_line);
 
     // For functions in the crate source, find actual call line
+    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
+        && f.contains(crate_path)
+        && let Ok(Some(crate_line)) =
+            get_crate_line_at_address(dwarf, func.start_address, data.address, crate_path)
+    {
+        line = Some(crate_line);
+    }
+
+    Some((
+        call_target,
+        CallerInfo {
+            caller: func.clone(),
+            call_site_addr: data.address,
+            file,
+            line,
+        },
+    ))
+}
+
+/// Process extracted instruction data with cached source lookups.
+/// Caches get_source_location results since many instructions share the same function.
+fn process_instruction_data_with_debug_cached(
+    data: &InsnData,
+    functions: &[FunctionInfo],
+    dwarf: &Dwarf<DwarfReader>,
+    crate_src_path: Option<&str>,
+    source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
+) -> Option<(u64, CallerInfo)> {
+    let call_target = data.call_target?;
+
+    // Find the function containing this call
+    let func = find_function_at_address(functions, data.address)?;
+
+    // Get source info from cache or compute it
+    let (func_file, func_line) = source_cache
+        .entry(func.start_address)
+        .or_insert_with(|| get_source_location(dwarf, func.start_address).unwrap_or((None, None)))
+        .clone();
+
+    let file = func.file.clone().or(func_file);
+    let mut line = func.line.or(func_line);
+
+    // For functions in the crate source, find actual call line
+    // Note: This can't be cached as it depends on the specific call_site address
     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
         && f.contains(crate_path)
         && let Ok(Some(crate_line)) =
