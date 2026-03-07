@@ -39,6 +39,12 @@ pub enum PanicCause {
     PanicInDrop,
     /// Panic in no-unwind context (e.g., extern "C" function)
     CannotUnwind,
+    /// Formatting error (format!, write!, Display/Debug impl panic)
+    FormattingError,
+    /// Capacity/allocation overflow
+    CapacityOverflow,
+    /// String/slice encoding or bounds error
+    StringSliceError,
     /// Unknown cause
     Unknown,
 }
@@ -64,6 +70,9 @@ impl PanicCause {
             PanicCause::Todo => "todo",
             PanicCause::PanicInDrop => "drop",
             PanicCause::CannotUnwind => "unwind",
+            PanicCause::FormattingError => "format",
+            PanicCause::CapacityOverflow => "capacity",
+            PanicCause::StringSliceError => "str_slice",
             PanicCause::Unknown => "unknown",
         }
     }
@@ -84,6 +93,9 @@ impl PanicCause {
             "todo",
             "drop",
             "unwind",
+            "format",
+            "capacity",
+            "str_slice",
             "unknown",
         ]
     }
@@ -107,6 +119,9 @@ impl PanicCause {
             PanicCause::Todo => "todo!() reached",
             PanicCause::PanicInDrop => "panic during drop",
             PanicCause::CannotUnwind => "panic in no-unwind context",
+            PanicCause::FormattingError => "formatting error",
+            PanicCause::CapacityOverflow => "capacity overflow",
+            PanicCause::StringSliceError => "string/slice error",
             PanicCause::Unknown => "unknown cause",
         }
     }
@@ -135,6 +150,15 @@ impl PanicCause {
             }
             PanicCause::CannotUnwind => {
                 "Avoid panicking in extern functions; use catch_unwind at FFI boundaries"
+            }
+            PanicCause::FormattingError => {
+                "Ensure Display/Debug impls don't panic; validate format arguments"
+            }
+            PanicCause::CapacityOverflow => {
+                "Check collection size before allocation; use try_reserve for fallible allocation"
+            }
+            PanicCause::StringSliceError => {
+                "Use str::get() for safe slicing; validate UTF-8 boundaries"
             }
             PanicCause::Unknown => "",
         }
@@ -205,13 +229,50 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     if func_name.contains("unreachable") && func_name.contains("panic") {
         return Some(PanicCause::Unreachable);
     }
-    // panic_fmt is the core panic function used by MANY things:
-    // - explicit panic!() calls
-    // - format string errors in write!/format!/etc.
-    // - bail!() and similar error macros when formatting fails
-    // We don't classify it as "explicit panic" because that would be misleading
-    // for the common case where it's reached through formatting code.
-    // Instead, leave cause as None (unknown) to avoid incorrect labeling.
 
+    // ============================================================
+    // Stdlib domain detection - detect panics from specific domains
+    // ============================================================
+
+    // Formatting domain (core::fmt::, alloc::fmt::)
+    // These functions are in the call chain when format!/write!/Display/Debug panic
+    if func_name.contains("core::fmt::") || func_name.contains("alloc::fmt::") {
+        return Some(PanicCause::FormattingError);
+    }
+    if func_name.contains("format_inner") || func_name.contains("write_fmt") {
+        return Some(PanicCause::FormattingError);
+    }
+    // Display/Debug trait formatting
+    if func_name.contains("::fmt") && (func_name.contains("Display") || func_name.contains("Debug"))
+    {
+        return Some(PanicCause::FormattingError);
+    }
+
+    // Capacity/allocation domain
+    if func_name.contains("capacity_overflow") {
+        return Some(PanicCause::CapacityOverflow);
+    }
+    if func_name.contains("handle_alloc_error") {
+        return Some(PanicCause::CapacityOverflow);
+    }
+    if func_name.contains("raw_vec") && func_name.contains("grow") {
+        return Some(PanicCause::CapacityOverflow);
+    }
+
+    // String/slice domain
+    if func_name.contains("slice_error_fail") {
+        return Some(PanicCause::StringSliceError);
+    }
+    if func_name.contains("str_index_overflow_fail") {
+        return Some(PanicCause::StringSliceError);
+    }
+    if func_name.contains("slice_start_index_overflow")
+        || func_name.contains("slice_end_index_overflow")
+    {
+        return Some(PanicCause::StringSliceError);
+    }
+
+    // panic_fmt is the core panic function - if we reach here without a more
+    // specific match, leave cause as None (unknown) to avoid incorrect labeling.
     None
 }
