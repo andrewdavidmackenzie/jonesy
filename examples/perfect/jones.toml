@@ -1,0 +1,3 @@
+# Perfect example config - allow formatting panics from println!
+# since those are inherent to using formatting macros, not user bugs
+allow = ["format"]
