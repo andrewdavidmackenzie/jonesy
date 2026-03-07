@@ -50,10 +50,10 @@ pub fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
 /// Note: Allowed cause filtering is done during code point collection, not here,
 /// to avoid incorrectly pruning shared subtrees that are reachable via denied causes.
 /// Returns true if this node should be kept.
-pub fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str, config: &Config) -> bool {
+pub fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str) -> bool {
     // Recursively prune children first
     node.callers
-        .retain_mut(|caller| prune_call_tree(caller, crate_src_path, config));
+        .retain_mut(|caller| prune_call_tree(caller, crate_src_path));
 
     // Keep this node if:
     // 1. It's a leaf AND in the crate source, OR

@@ -255,7 +255,7 @@ fn analyze_macho(
 
     // Prune to only show paths leading to user code
     if let Some(crate_path) = crate_src_path {
-        prune_call_tree(&mut root, crate_path, config);
+        prune_call_tree(&mut root, crate_path);
     }
 
     // Print output based on --tree flag

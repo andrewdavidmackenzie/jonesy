@@ -41,8 +41,10 @@ pub enum PanicCause {
     CannotUnwind,
     /// Formatting error (format!, write!, Display/Debug impl panic)
     FormattingError,
-    /// Capacity/allocation overflow
+    /// Capacity overflow (collection too large)
     CapacityOverflow,
+    /// Out of memory (allocation failed)
+    OutOfMemory,
     /// String/slice encoding or bounds error
     StringSliceError,
     /// Unknown cause
@@ -72,6 +74,7 @@ impl PanicCause {
             PanicCause::CannotUnwind => "unwind",
             PanicCause::FormattingError => "format",
             PanicCause::CapacityOverflow => "capacity",
+            PanicCause::OutOfMemory => "oom",
             PanicCause::StringSliceError => "str_slice",
             PanicCause::Unknown => "unknown",
         }
@@ -95,6 +98,7 @@ impl PanicCause {
             "unwind",
             "format",
             "capacity",
+            "oom",
             "str_slice",
             "unknown",
         ]
@@ -121,6 +125,7 @@ impl PanicCause {
             PanicCause::CannotUnwind => "panic in no-unwind context",
             PanicCause::FormattingError => "formatting error",
             PanicCause::CapacityOverflow => "capacity overflow",
+            PanicCause::OutOfMemory => "out of memory",
             PanicCause::StringSliceError => "string/slice error",
             PanicCause::Unknown => "unknown cause",
         }
@@ -156,6 +161,9 @@ impl PanicCause {
             }
             PanicCause::CapacityOverflow => {
                 "Check collection size before allocation; use try_reserve for fallible allocation"
+            }
+            PanicCause::OutOfMemory => {
+                "Handle allocation failures; consider system memory limits or fallible allocation"
             }
             PanicCause::StringSliceError => {
                 "Use str::get() for safe slicing; validate UTF-8 boundaries"
@@ -253,7 +261,7 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
         return Some(PanicCause::CapacityOverflow);
     }
     if func_name.contains("handle_alloc_error") {
-        return Some(PanicCause::CapacityOverflow);
+        return Some(PanicCause::OutOfMemory);
     }
     if func_name.contains("raw_vec") && func_name.contains("grow") {
         return Some(PanicCause::CapacityOverflow);
