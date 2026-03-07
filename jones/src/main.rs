@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 total_summary.add(&summary);
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
-                if !parsed_args.summary_only && !parsed_args.quiet {
+                if !parsed_args.summary_only {
                     println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
                 }
             }
