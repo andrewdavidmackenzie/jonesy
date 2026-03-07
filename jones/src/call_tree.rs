@@ -313,11 +313,13 @@ pub fn count_crate_code_points_summary(
 /// Returns a summary with count of panic points and affected files.
 /// The project_root is used to make relative paths absolute for clickable links.
 /// The config is used to filter out code points with allowed (not denied) causes.
+/// When no_hyperlinks is false, uses OSC 8 terminal hyperlinks for clickable short paths.
 pub fn print_crate_code_points(
     node: &CallTreeNode,
     crate_src_path: &str,
     project_root: Option<&Path>,
     config: &Config,
+    no_hyperlinks: bool,
 ) -> AnalysisSummary {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
 
@@ -350,7 +352,7 @@ pub fn print_crate_code_points(
         }
         println!();
         for point in &roots {
-            print_crate_point(point, "", true, true, project_root, crate_root.as_deref());
+            print_crate_point(point, "", true, true, project_root, no_hyperlinks);
         }
     }
     summary
@@ -434,14 +436,15 @@ fn collect_unique_point_keys_and_files(
 }
 
 /// Print a crate code point with tree-style indentation
-/// Uses rustc-style " --> file:line:column" format for terminal-clickable links
+/// Uses rustc-style " --> file:line:column" format for terminal-clickable links.
+/// When no_hyperlinks is false, uses OSC 8 terminal hyperlinks for shorter display.
 fn print_crate_point(
     point: &CrateCodePoint,
     prefix: &str,
     is_last: bool,
     is_root: bool,
     project_root: Option<&Path>,
-    crate_root: Option<&Path>,
+    no_hyperlinks: bool,
 ) {
     // Make path absolute for clickable terminal links
     let absolute_path = if point.file.starts_with('/') {
@@ -455,10 +458,10 @@ fn print_crate_point(
         point.file.clone()
     };
 
-    // For display, use relative path if we have a crate root
-    let display_path = if let Some(root) = crate_root {
+    // Compute short display path (just the relative part like "src/main.rs")
+    let display_path = if let Some(root) = project_root {
         let root_str = root.to_string_lossy();
-        // Strip crate root prefix for shorter display (keep leading "src/")
+        // Strip project root prefix to get shorter display path
         absolute_path
             .strip_prefix(&format!("{}/", root_str))
             .unwrap_or(&absolute_path)
@@ -467,11 +470,17 @@ fn print_crate_point(
         absolute_path.clone()
     };
 
-    // Use the shorter display path (relative to crate root when available)
-    let file_path = display_path;
-
-    // Format like rustc/clippy: " --> file:line:column" which is widely recognized as clickable
-    let location = format!("{}:{}:1", file_path, point.line);
+    // Format location - use OSC 8 hyperlinks by default for short display with clickable links
+    let location = if no_hyperlinks {
+        // Plain absolute path (works in all terminals)
+        format!("{}:{}:1", absolute_path, point.line)
+    } else {
+        // OSC 8 hyperlink: \x1b]8;;URL\x1b\\DISPLAY\x1b]8;;\x1b\\
+        // URL uses file:// protocol for local files
+        let url = format!("file://{}#L{}", absolute_path, point.line);
+        let display = format!("{}:{}:1", display_path, point.line);
+        format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, display)
+    };
 
     // Only show cause and help on leaf nodes (no children)
     let is_leaf = point.children.is_empty();
@@ -544,7 +553,7 @@ fn print_crate_point(
             is_last_child,
             false,
             project_root,
-            crate_root,
+            no_hyperlinks,
         );
     }
 }

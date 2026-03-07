@@ -163,7 +163,8 @@ fn run_jones_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet
 /// Run jones on an example and parse the output
 /// Returns (exit_code, detected_panic_points)
 fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
-    run_jones_with_args(example_dir, &[])
+    // Use --no-hyperlinks for tests since we parse plain-text output
+    run_jones_with_args(example_dir, &["--no-hyperlinks"])
 }
 
 /// Parse jones output to extract panic points
@@ -355,7 +356,8 @@ fn test_dylib_example() {
 /// Run jones with a custom config file and return the output
 fn run_jones_with_config(example_dir: &Path, config_path: &Path) -> (i32, HashSet<PanicPoint>) {
     let config_str = config_path.to_string_lossy();
-    run_jones_with_args(example_dir, &["--config", &config_str])
+    // Use --no-hyperlinks for tests since we parse plain-text output
+    run_jones_with_args(example_dir, &["--no-hyperlinks", "--config", &config_str])
 }
 
 #[test]

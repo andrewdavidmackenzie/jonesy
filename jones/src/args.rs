@@ -17,6 +17,8 @@ pub(crate) struct Args {
     pub max_threads: usize,
     /// Optional path to config file (--config flag)
     pub config_path: Option<PathBuf>,
+    /// Whether to disable hyperlinks in output (--no-hyperlinks flag)
+    pub no_hyperlinks: bool,
 }
 
 /// Parse command line arguments.
@@ -41,6 +43,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let summary_only = args.iter().any(|a| a == "--summary-only");
     let show_timings = args.iter().any(|a| a == "--show-timings");
     let quiet = args.iter().any(|a| a == "--quiet");
+    let no_hyperlinks = args.iter().any(|a| a == "--no-hyperlinks");
 
     // Parse --max-threads option
     let max_threads = parse_max_threads(args)?;
@@ -57,6 +60,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
                 && *a != "--summary-only"
                 && *a != "--show-timings"
                 && *a != "--quiet"
+                && *a != "--no-hyperlinks"
                 && *a != "--max-threads"
                 && *a != "--config"
                 && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--max-threads"))
@@ -86,6 +90,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         quiet,
         max_threads,
         config_path,
+        no_hyperlinks,
     })
 }
 
@@ -139,7 +144,8 @@ fn usage() -> String {
      --quiet            Suppress progress messages (keeps panic points and summary)\n  \
      --show-timings     Show timing information for each analysis step\n  \
      --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
-     --config <path>    Path to TOML config file for allow/deny rules"
+     --config <path>    Path to TOML config file for allow/deny rules\n  \
+     --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)"
         .to_string()
 }
 
