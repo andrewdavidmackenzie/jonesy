@@ -319,7 +319,7 @@ pub fn count_crate_code_points(node: &CallTreeNode, crate_src_path: &str) -> usi
 }
 
 /// Print only the crate code points without the full tree.
-/// Returns the number of unique panic code points found.
+/// Returns a summary with count of panic points and affected files.
 /// The project_root is used to make relative paths absolute for clickable links.
 /// The config is used to filter out code points with allowed (not denied) causes.
 pub fn print_crate_code_points(
@@ -327,7 +327,7 @@ pub fn print_crate_code_points(
     crate_src_path: &str,
     project_root: Option<&Path>,
     config: &Config,
-) -> usize {
+) -> AnalysisSummary {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
 
     // Filter out code points with allowed causes
@@ -339,8 +339,8 @@ pub fn print_crate_code_points(
     // Sort roots by file then line number
     roots.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
 
-    let count = count_crate_points(&roots);
-    if count == 0 {
+    let summary = count_crate_points_and_files(&roots);
+    if summary.panic_points == 0 {
         println!("\nNo panics in crate");
     } else {
         println!("\nPanic code points in crate:");
@@ -348,7 +348,7 @@ pub fn print_crate_code_points(
             print_crate_point(point, "", true, true, project_root);
         }
     }
-    count
+    summary
 }
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config.
@@ -370,18 +370,44 @@ fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
     });
 }
 
-/// Count unique crate code points in the hierarchy
-fn count_crate_points(points: &[CrateCodePoint]) -> usize {
-    let mut seen = HashSet::new();
-    collect_unique_point_keys(points, &mut seen);
-    seen.len()
+/// Summary of analysis results
+#[derive(Debug, Default, Clone)]
+pub struct AnalysisSummary {
+    /// Number of unique panic code points
+    pub panic_points: usize,
+    /// Number of unique files with panic points
+    pub files_affected: usize,
 }
 
-/// Collect unique (file, line) keys from the hierarchy
-fn collect_unique_point_keys(points: &[CrateCodePoint], seen: &mut HashSet<(String, u32)>) {
+impl AnalysisSummary {
+    /// Add another summary to this one
+    pub fn add(&mut self, other: &AnalysisSummary) {
+        self.panic_points += other.panic_points;
+        self.files_affected += other.files_affected;
+    }
+}
+
+/// Count unique crate code points and files in the hierarchy
+fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
+    let mut seen_points = HashSet::new();
+    let mut seen_files = HashSet::new();
+    collect_unique_point_keys_and_files(points, &mut seen_points, &mut seen_files);
+    AnalysisSummary {
+        panic_points: seen_points.len(),
+        files_affected: seen_files.len(),
+    }
+}
+
+/// Collect unique (file, line) keys and unique files from the hierarchy
+fn collect_unique_point_keys_and_files(
+    points: &[CrateCodePoint],
+    seen_points: &mut HashSet<(String, u32)>,
+    seen_files: &mut HashSet<String>,
+) {
     for p in points {
-        seen.insert((p.file.clone(), p.line));
-        collect_unique_point_keys(&p.children, seen);
+        seen_points.insert((p.file.clone(), p.line));
+        seen_files.insert(p.file.clone());
+        collect_unique_point_keys_and_files(&p.children, seen_points, seen_files);
     }
 }
 

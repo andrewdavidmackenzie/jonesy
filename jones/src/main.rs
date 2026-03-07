@@ -1,7 +1,7 @@
 use crate::args::parse_args;
 use crate::call_tree::{
-    CallTreeNode, build_call_tree_parallel, count_crate_code_points, print_call_tree,
-    print_crate_code_points, prune_call_tree,
+    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points,
+    print_call_tree, print_crate_code_points, prune_call_tree,
 };
 use crate::cargo::{derive_crate_src_path, detect_library_type, find_project_root};
 use crate::config::Config;
@@ -39,7 +39,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_global()
         .ok(); // Ignore error if pool already initialized
 
-    let mut total_panic_points: usize = 0;
+    let mut total_summary = AnalysisSummary::default();
+    let mut project_name: Option<String> = None;
+    let mut project_root_path: Option<String> = None;
 
     for binary_path in &parsed_args.binaries {
         // Canonicalize the binary path to ensure absolute paths for clickable links
@@ -99,10 +101,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let binary_buffer = fs::read(&binary_path)?;
         let symbols = read_symbols(&binary_buffer)?;
 
+        // Capture project info from the first binary processed
+        if project_name.is_none() {
+            project_name = binary_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string());
+            project_root_path = project_root
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+        }
+
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
                 let crate_src_path = derive_crate_src_path(&binary_path);
-                total_panic_points += analyze_macho(
+                let summary = analyze_macho(
                     &macho,
                     &binary_buffer,
                     &binary_path,
@@ -111,6 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &config,
                     project_root.as_deref(),
                 );
+                total_summary.add(&summary);
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
@@ -132,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     // Parse the object file as Mach-O
                     if let Ok(obj_macho) = MachO::parse(member_data, 0) {
-                        total_panic_points += analyze_macho(
+                        let summary = analyze_macho(
                             &obj_macho,
                             member_data,
                             &binary_path,
@@ -141,6 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &config,
                             project_root.as_deref(),
                         );
+                        total_summary.add(&summary);
                     }
                 }
             }
@@ -149,9 +163,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!();
     }
 
+    // Print summary
+    println!("Summary:");
+    if let Some(name) = &project_name {
+        println!("  Project: {}", name);
+    }
+    if let Some(root) = &project_root_path {
+        println!("  Root: {}", root);
+    }
+    println!(
+        "  Panic points: {} in {} file(s)",
+        total_summary.panic_points, total_summary.files_affected
+    );
+
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
-    std::process::exit(total_panic_points as i32);
+    std::process::exit(total_summary.panic_points as i32);
 }
 
 /// Panic symbol patterns to search for, in order of preference.
@@ -164,7 +191,7 @@ const PANIC_SYMBOL_PATTERNS: &[&str] = &[
 ];
 
 /// Analyze a single MachO binary/object for panic points.
-/// Returns the number of panic code points found.
+/// Returns a summary of panic code points found.
 fn analyze_macho(
     macho: &MachO,
     buffer: &[u8],
@@ -173,7 +200,7 @@ fn analyze_macho(
     show_tree: bool,
     config: &Config,
     project_root: Option<&Path>,
-) -> usize {
+) -> AnalysisSummary {
     // Try each panic symbol pattern until we find one
     let mut panic_symbol = None;
     let mut demangled = String::new();
@@ -192,7 +219,7 @@ fn analyze_macho(
 
     let Some(_) = panic_symbol else {
         // No panic symbols found in this object
-        return 0;
+        return AnalysisSummary::default();
     };
 
     let debug_info = load_debug_info(macho, binary_path);
@@ -262,12 +289,18 @@ fn analyze_macho(
     if show_tree {
         println!("Full call tree:");
         print_call_tree(&root, 0);
-        crate_src_path.map_or(0, |cp| count_crate_code_points(&root, cp))
+        crate_src_path.map_or(AnalysisSummary::default(), |cp| {
+            let count = count_crate_code_points(&root, cp);
+            AnalysisSummary {
+                panic_points: count,
+                files_affected: 0, // Not tracked in tree mode
+            }
+        })
     } else if let Some(crate_path) = crate_src_path {
         print_crate_code_points(&root, crate_path, project_root, config)
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);
-        0
+        AnalysisSummary::default()
     }
 }
