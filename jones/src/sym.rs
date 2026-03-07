@@ -1210,7 +1210,7 @@ pub fn find_callers_with_debug_map(
 
 /// Load debug map from the binary's symbol table
 /// This reads OSO entries and loads DWARF from the referenced object files
-fn load_debug_map(macho: &MachO) -> Option<DebugMapInfo> {
+fn load_debug_map(macho: &MachO, quiet: bool) -> Option<DebugMapInfo> {
     let oso_paths = get_oso_paths(macho);
 
     if oso_paths.is_empty() {
@@ -1256,10 +1256,12 @@ fn load_debug_map(macho: &MachO) -> Option<DebugMapInfo> {
         return None;
     }
 
-    println!(
-        "Using debug map: loaded {} object files with DWARF",
-        loaded_count
-    );
+    if !quiet {
+        println!(
+            "Using debug map: loaded {} object files with DWARF",
+            loaded_count
+        );
+    }
 
     Some(DebugMapInfo { object_files })
 }
@@ -1345,7 +1347,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
     }
 
     // Fall back to debug map (reading DWARF from object files)
-    if let Some(debug_map) = load_debug_map(macho) {
+    if let Some(debug_map) = load_debug_map(macho, quiet) {
         return DebugInfo::DebugMap(Box::new(debug_map));
     }
 
