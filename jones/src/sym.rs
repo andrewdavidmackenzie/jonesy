@@ -33,6 +33,101 @@ pub enum SymbolTable<'a> {
     Archive(Archive<'a>),
 }
 
+/// A line entry for crate source code, used for fast lookups
+#[derive(Debug, Clone)]
+pub struct CrateLineEntry {
+    pub address: u64,
+    pub line: u32,
+}
+
+/// Pre-built line table containing only crate source entries, sorted by address.
+/// Used for fast binary search in get_crate_line_at_address.
+#[derive(Debug)]
+pub struct CrateLineTable {
+    entries: Vec<CrateLineEntry>,
+}
+
+impl CrateLineTable {
+    /// Build a line table with only entries from crate source files.
+    pub fn build<R: Reader>(dwarf: &Dwarf<R>, crate_src_path: &str) -> Result<Self, gimli::Error> {
+        let mut entries = Vec::new();
+
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+
+            if let Some(program) = &unit.line_program {
+                let mut rows = program.clone().rows();
+
+                while let Some((header, row)) = rows.next_row()? {
+                    if let Some(file_entry) = row.file(header) {
+                        let file_name = dwarf
+                            .attr_string(&unit, file_entry.path_name())?
+                            .to_string_lossy()?
+                            .into_owned();
+
+                        let full_path = if let Some(dir) = file_entry.directory(header) {
+                            let dir_str = dwarf
+                                .attr_string(&unit, dir)?
+                                .to_string_lossy()?
+                                .into_owned();
+                            if dir_str.is_empty() {
+                                file_name
+                            } else {
+                                format!("{}/{}", dir_str, file_name)
+                            }
+                        } else {
+                            file_name
+                        };
+
+                        // Only include entries from crate source
+                        if full_path.contains(crate_src_path)
+                            && let Some(line) = row.line()
+                        {
+                            entries.push(CrateLineEntry {
+                                address: row.address(),
+                                line: line.get() as u32,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by address for binary search
+        entries.sort_by_key(|e| e.address);
+
+        Ok(Self { entries })
+    }
+
+    /// Find the crate line at a specific address within a function.
+    /// Returns the line of the last entry in [func_start, call_site_addr].
+    pub fn get_line(&self, func_start: u64, call_site_addr: u64) -> Option<u32> {
+        // Find entries in range [func_start, call_site_addr]
+        let start_idx = self.entries.partition_point(|e| e.address < func_start);
+        let end_idx = self
+            .entries
+            .partition_point(|e| e.address <= call_site_addr);
+
+        // Return the last entry in range (highest address)
+        if end_idx > start_idx {
+            Some(self.entries[end_idx - 1].line)
+        } else {
+            None
+        }
+    }
+
+    /// Get the number of entries
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true if the table has no entries
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Function info extracted from DWARF of the calling function
 #[derive(Debug, Clone, Default)]
 pub struct FunctionInfo {
@@ -552,20 +647,47 @@ impl CallGraph {
             );
         }
 
+        // Pre-build crate line table for fast lookups (if crate_src_path is provided)
+        let step = Instant::now();
+        let crate_line_table = crate_src_path
+            .map(|path| CrateLineTable::build(&dwarf, path))
+            .transpose()?;
+        if show_timings {
+            if let Some(ref table) = crate_line_table {
+                eprintln!(
+                    "    [cg timing] build crate line table: {:?} ({} entries)",
+                    step.elapsed(),
+                    table.len()
+                );
+            }
+        }
+
         // Process bl instructions in parallel
+        // Cache source location lookups since many instructions are in the same function
         let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+        let source_cache: DashMap<u64, (Option<String>, Option<u32>)> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
-                && let Some((target, caller_info)) =
-                    process_instruction_data_with_debug(data, &functions, &dwarf, crate_src_path)
+                && let Some((target, caller_info)) = process_instruction_data_with_crate_table(
+                    data,
+                    &functions,
+                    &dwarf,
+                    crate_src_path,
+                    &source_cache,
+                    crate_line_table.as_ref(),
+                )
             {
                 edges.entry(target).or_default().push(caller_info);
             }
         });
         if show_timings {
-            eprintln!("    [cg timing] process instructions: {:?}", step.elapsed());
+            eprintln!(
+                "    [cg timing] process instructions: {:?} (source_cache: {} entries)",
+                step.elapsed(),
+                source_cache.len(),
+            );
         }
 
         Ok(Self {
@@ -612,33 +734,39 @@ fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, 
     ))
 }
 
-/// Process extracted instruction data and enrich with debug info.
-/// Returns (call_target, CallerInfo) if successful, None otherwise.
-fn process_instruction_data_with_debug(
+/// Process instruction data using pre-built crate line table for fast lookups.
+fn process_instruction_data_with_crate_table(
     data: &InsnData,
     functions: &[FunctionInfo],
     dwarf: &Dwarf<DwarfReader>,
     crate_src_path: Option<&str>,
+    source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
+    crate_line_table: Option<&CrateLineTable>,
 ) -> Option<(u64, CallerInfo)> {
     let call_target = data.call_target?;
 
-    // Find the function containing this call using DWARF info
+    // Find the function containing this call
     let func = find_function_at_address(functions, data.address)?;
 
-    // Get source info
-    let (func_file, func_line) =
-        get_source_location(dwarf, func.start_address).unwrap_or((None, None));
+    // Get source info from cache or compute it
+    let (func_file, func_line) = source_cache
+        .entry(func.start_address)
+        .or_insert_with(|| get_source_location(dwarf, func.start_address).unwrap_or((None, None)))
+        .clone();
 
     let file = func.file.clone().or(func_file);
     let mut line = func.line.or(func_line);
 
-    // For functions in the crate source, find actual call line
+    // For functions in the crate source, find actual call line using pre-built table
     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
         && f.contains(crate_path)
-        && let Ok(Some(crate_line)) =
-            get_crate_line_at_address(dwarf, func.start_address, data.address, crate_path)
     {
-        line = Some(crate_line);
+        // Use pre-built crate line table for O(log n) lookup
+        if let Some(table) = crate_line_table
+            && let Some(crate_line) = table.get_line(func.start_address, data.address)
+        {
+            line = Some(crate_line);
+        }
     }
 
     Some((
