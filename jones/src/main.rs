@@ -16,6 +16,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 mod args;
 mod call_tree;
@@ -126,6 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     crate_src_path.as_deref(),
                     parsed_args.show_tree,
                     parsed_args.summary_only,
+                    parsed_args.show_timings,
                     &config,
                     project_root.as_deref(),
                 );
@@ -160,6 +162,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             crate_src_path.as_deref(),
                             parsed_args.show_tree,
                             parsed_args.summary_only,
+                            parsed_args.show_timings,
                             &config,
                             project_root.as_deref(),
                         );
@@ -211,10 +214,14 @@ fn analyze_macho(
     crate_src_path: Option<&str>,
     show_tree: bool,
     summary_only: bool,
+    show_timings: bool,
     config: &Config,
     project_root: Option<&Path>,
 ) -> AnalysisSummary {
+    let total_start = Instant::now();
+
     // Try each panic symbol pattern until we find one
+    let step_start = Instant::now();
     let mut panic_symbol = None;
     let mut demangled = String::new();
     let mut target_addr = 0u64;
@@ -229,19 +236,27 @@ fn analyze_macho(
             break;
         }
     }
+    if show_timings {
+        eprintln!("  [timing] Find panic symbol: {:?}", step_start.elapsed());
+    }
 
     let Some(_) = panic_symbol else {
         // No panic symbols found in this object
         return AnalysisSummary::default();
     };
 
+    let step_start = Instant::now();
     let debug_info = load_debug_info(macho, binary_path);
+    if show_timings {
+        eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
+    }
 
     // Pre-compute call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
+    let step_start = Instant::now();
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
-            CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path)
+            CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path, show_timings)
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
                     CallGraph::build(macho, buffer)
@@ -259,6 +274,7 @@ fn analyze_macho(
                     debug_mach,
                     dsym_info.borrow_debug_buffer(),
                     crate_src_path,
+                    show_timings,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -282,6 +298,9 @@ fn analyze_macho(
             })
         }
     };
+    if show_timings {
+        eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
+    }
 
     // Create the root node for the call tree
     let mut root = CallTreeNode::new_root(demangled.clone());
@@ -291,15 +310,24 @@ fn analyze_macho(
     visited.insert(target_addr);
 
     // Build the call tree in parallel
+    let step_start = Instant::now();
     root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
+    if show_timings {
+        eprintln!("  [timing] Build call tree: {:?}", step_start.elapsed());
+    }
 
     // Prune to only show paths leading to user code
+    let step_start = Instant::now();
     if let Some(crate_path) = crate_src_path {
         prune_call_tree(&mut root, crate_path);
     }
+    if show_timings {
+        eprintln!("  [timing] Prune call tree: {:?}", step_start.elapsed());
+    }
 
     // Print output based on flags
-    if summary_only {
+    let step_start = Instant::now();
+    let result = if summary_only {
         // Silent mode - just count without printing
         crate_src_path.map_or(AnalysisSummary::default(), |cp| {
             count_crate_code_points_summary(&root, cp, config)
@@ -320,5 +348,10 @@ fn analyze_macho(
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);
         AnalysisSummary::default()
+    };
+    if show_timings {
+        eprintln!("  [timing] Collect/output: {:?}", step_start.elapsed());
+        eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
+    result
 }

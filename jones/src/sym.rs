@@ -503,25 +503,60 @@ impl CallGraph {
         debug_macho: &MachO,
         debug_buffer: &[u8],
         crate_src_path: Option<&str>,
+        show_timings: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+
         // Pre-load DWARF info once (shared across threads)
+        let step = Instant::now();
         let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        if show_timings {
+            eprintln!(
+                "    [cg timing] get_functions_from_dwarf: {:?} ({} functions)",
+                step.elapsed(),
+                functions.len()
+            );
+        }
+
+        let step = Instant::now();
         let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+        if show_timings {
+            eprintln!("    [cg timing] load_dwarf_sections: {:?}", step.elapsed());
+        }
 
         let Some((text_addr, text_data)) = get_text_section(binary_macho, binary_buffer) else {
             return Ok(Self {
                 edges: HashMap::new(),
             });
         };
+        if show_timings {
+            eprintln!(
+                "    [cg timing] text section size: {} bytes",
+                text_data.len()
+            );
+        }
 
         // Parallel disassembly - divides text section into chunks (ARM64 only)
+        let step = Instant::now();
         #[cfg(target_arch = "aarch64")]
         let insn_data = parallel_disassemble_arm64(text_data, text_addr);
 
         #[cfg(not(target_arch = "aarch64"))]
         let insn_data = sequential_disassemble_arm64(text_data, text_addr);
+        if show_timings {
+            eprintln!(
+                "    [cg timing] disassemble: {:?} ({} instructions)",
+                step.elapsed(),
+                insn_data.len()
+            );
+
+            // Count bl instructions
+            let bl_count = insn_data.iter().filter(|d| d.call_target.is_some()).count();
+            eprintln!("    [cg timing] bl instructions: {}", bl_count);
+        }
 
         // Process bl instructions in parallel
+        let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
@@ -532,6 +567,9 @@ impl CallGraph {
                 edges.entry(target).or_default().push(caller_info);
             }
         });
+        if show_timings {
+            eprintln!("    [cg timing] process instructions: {:?}", step.elapsed());
+        }
 
         Ok(Self {
             edges: edges.into_iter().collect(),
