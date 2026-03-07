@@ -355,7 +355,16 @@ pub fn print_crate_code_points(
         }
         println!();
         for point in &roots {
-            print_crate_point(point, "", true, true, project_root, no_hyperlinks);
+            // project_root: for making absolute paths, crate_root: for shorter display paths
+            print_crate_point(
+                point,
+                "",
+                true,
+                true,
+                project_root,
+                crate_root.as_deref(),
+                no_hyperlinks,
+            );
         }
     }
     summary
@@ -441,12 +450,15 @@ fn collect_unique_point_keys_and_files(
 /// Print a crate code point with tree-style indentation
 /// Uses rustc-style " --> file:line:column" format for terminal-clickable links.
 /// When no_hyperlinks is false, uses OSC 8 terminal hyperlinks for shorter display.
+/// - `project_root`: Used to make relative paths absolute for clickable links
+/// - `crate_root`: Used to compute shorter display paths (strips this prefix)
 fn print_crate_point(
     point: &CrateCodePoint,
     prefix: &str,
     is_last: bool,
     is_root: bool,
     project_root: Option<&Path>,
+    crate_root: Option<&Path>,
     no_hyperlinks: bool,
 ) {
     // Make path absolute for clickable terminal links
@@ -454,7 +466,7 @@ fn print_crate_point(
         // Already absolute
         point.file.clone()
     } else if let Some(root) = project_root {
-        // Make relative path absolute
+        // Make relative path absolute (point.file is relative to project root)
         root.join(&point.file).to_string_lossy().to_string()
     } else {
         // No project root, use as-is
@@ -462,9 +474,11 @@ fn print_crate_point(
     };
 
     // Compute short display path (just the relative part like "src/main.rs")
-    let display_path = if let Some(root) = project_root {
+    // Use crate_root if available for shorter paths, otherwise use project_root
+    let display_root = crate_root.or(project_root);
+    let display_path = if let Some(root) = display_root {
         let root_str = root.to_string_lossy();
-        // Strip project root prefix to get shorter display path
+        // Strip root prefix to get shorter display path
         absolute_path
             .strip_prefix(&format!("{}/", root_str))
             .unwrap_or(&absolute_path)
@@ -562,6 +576,7 @@ fn print_crate_point(
             is_last_child,
             false,
             project_root,
+            crate_root,
             no_hyperlinks,
         );
     }
