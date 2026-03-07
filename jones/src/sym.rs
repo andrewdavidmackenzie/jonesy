@@ -121,6 +121,11 @@ impl CrateLineTable {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Returns true if the table has no entries
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Function info extracted from DWARF of the calling function
@@ -769,75 +774,6 @@ fn process_instruction_data_with_debug(
     ))
 }
 
-/// Process extracted instruction data with cached source lookups.
-/// Caches get_source_location results since many instructions share the same function.
-fn process_instruction_data_with_debug_cached(
-    data: &InsnData,
-    functions: &[FunctionInfo],
-    dwarf: &Dwarf<DwarfReader>,
-    crate_src_path: Option<&str>,
-    source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
-) -> Option<(u64, CallerInfo)> {
-    process_instruction_data_with_debug_cached_stats(
-        data,
-        functions,
-        dwarf,
-        crate_src_path,
-        source_cache,
-    )
-    .map(|(target, info, _)| (target, info))
-}
-
-/// Process extracted instruction data with cached source lookups and stats.
-/// Returns (call_target, CallerInfo, did_crate_line_lookup) if successful.
-fn process_instruction_data_with_debug_cached_stats(
-    data: &InsnData,
-    functions: &[FunctionInfo],
-    dwarf: &Dwarf<DwarfReader>,
-    crate_src_path: Option<&str>,
-    source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
-) -> Option<(u64, CallerInfo, bool)> {
-    let call_target = data.call_target?;
-
-    // Find the function containing this call
-    let func = find_function_at_address(functions, data.address)?;
-
-    // Get source info from cache or compute it
-    let (func_file, func_line) = source_cache
-        .entry(func.start_address)
-        .or_insert_with(|| get_source_location(dwarf, func.start_address).unwrap_or((None, None)))
-        .clone();
-
-    let file = func.file.clone().or(func_file);
-    let mut line = func.line.or(func_line);
-    let mut did_crate_lookup = false;
-
-    // For functions in the crate source, find actual call line
-    // Note: This can't be cached as it depends on the specific call_site address
-    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-        && f.contains(crate_path)
-    {
-        did_crate_lookup = true;
-        if let Ok(Some(crate_line)) =
-            get_crate_line_at_address(dwarf, func.start_address, data.address, crate_path)
-        {
-            line = Some(crate_line);
-        }
-    }
-
-    Some((
-        call_target,
-        CallerInfo {
-            caller: func.clone(),
-            call_site_addr: data.address,
-            file,
-            line,
-        },
-        did_crate_lookup,
-    ))
-}
-
-/// Process instruction data using pre-built crate line table for fast lookups.
 /// Process instruction data using pre-built crate line table for fast lookups.
 fn process_instruction_data_with_crate_table(
     data: &InsnData,
