@@ -734,46 +734,6 @@ fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, 
     ))
 }
 
-/// Process extracted instruction data and enrich with debug info.
-/// Returns (call_target, CallerInfo) if successful, None otherwise.
-fn process_instruction_data_with_debug(
-    data: &InsnData,
-    functions: &[FunctionInfo],
-    dwarf: &Dwarf<DwarfReader>,
-    crate_src_path: Option<&str>,
-) -> Option<(u64, CallerInfo)> {
-    let call_target = data.call_target?;
-
-    // Find the function containing this call using DWARF info
-    let func = find_function_at_address(functions, data.address)?;
-
-    // Get source info
-    let (func_file, func_line) =
-        get_source_location(dwarf, func.start_address).unwrap_or((None, None));
-
-    let file = func.file.clone().or(func_file);
-    let mut line = func.line.or(func_line);
-
-    // For functions in the crate source, find actual call line
-    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-        && f.contains(crate_path)
-        && let Ok(Some(crate_line)) =
-            get_crate_line_at_address(dwarf, func.start_address, data.address, crate_path)
-    {
-        line = Some(crate_line);
-    }
-
-    Some((
-        call_target,
-        CallerInfo {
-            caller: func.clone(),
-            call_site_addr: data.address,
-            file,
-            line,
-        },
-    ))
-}
-
 /// Process instruction data using pre-built crate line table for fast lookups.
 fn process_instruction_data_with_crate_table(
     data: &InsnData,
