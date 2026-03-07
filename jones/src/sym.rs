@@ -544,15 +544,12 @@ impl CallGraph {
         #[cfg(not(target_arch = "aarch64"))]
         let insn_data = sequential_disassemble_arm64(text_data, text_addr);
         if show_timings {
+            // insn_data contains only BL instructions (not all instructions)
             eprintln!(
-                "    [cg timing] disassemble: {:?} ({} instructions)",
+                "    [cg timing] scan for bl instructions: {:?} ({} found)",
                 step.elapsed(),
                 insn_data.len()
             );
-
-            // Count bl instructions
-            let bl_count = insn_data.iter().filter(|d| d.call_target.is_some()).count();
-            eprintln!("    [cg timing] bl instructions: {}", bl_count);
         }
 
         // Process bl instructions in parallel
@@ -1286,7 +1283,7 @@ fn is_dsym_stale(binary_path: &Path, dsym_path: &Path) -> bool {
 // 2) No embedded debug info, dSYM
 // 3) Embedded debug info, no dSYM
 // 4) Embedded debug info, dSYM
-pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
+pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugInfo {
     // Look for dSYM symbol directory
     // Try both with and without extension since dsymutil behavior varies
     let file_name = binary_path.file_name().unwrap().to_str().unwrap();
@@ -1317,9 +1314,13 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
             // Check if dSYM is stale (binary is newer than dSYM)
             let dsym_stale = is_dsym_stale(binary_path, dsym_path);
             if dsym_stale {
-                println!("dSYM is stale, will regenerate");
+                if !quiet {
+                    println!("dSYM is stale, will regenerate");
+                }
             } else {
-                println!("Using .dSYM bundle for debug info");
+                if !quiet {
+                    println!("Using .dSYM bundle for debug info");
+                }
                 let debug_buffer = fs::read(dsym_path).unwrap();
                 let dsym_info = DSymInfoBuilder {
                     debug_buffer,
@@ -1332,12 +1333,14 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
     }
 
     if !get_dwarf_sections(macho).is_empty() {
-        println!("Using embedded DWARF debugging info");
+        if !quiet {
+            println!("Using embedded DWARF debugging info");
+        }
         return DebugInfo::Embedded;
     }
 
     // Try to auto-generate dSYM using dsymutil
-    if let Some(dsym_info) = auto_generate_dsym(binary_path) {
+    if let Some(dsym_info) = auto_generate_dsym(binary_path, quiet) {
         return DebugInfo::DSym(Box::new(dsym_info));
     }
 
@@ -1346,16 +1349,18 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path) -> DebugInfo {
         return DebugInfo::DebugMap(Box::new(debug_map));
     }
 
-    println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
-    println!(
-        "Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols",
-        binary_path.display()
-    );
+    if !quiet {
+        println!("No debug info found (no dSYM, embedded DWARF, or debug map)");
+        println!(
+            "Tip: Install dsymutil or run 'dsymutil {}' to generate debug symbols",
+            binary_path.display()
+        );
+    }
     DebugInfo::None
 }
 
 /// Auto-generate dSYM by running dsymutil
-fn auto_generate_dsym(binary_path: &Path) -> Option<DSymInfo> {
+fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
     use std::process::Command;
 
     let dsym_path = binary_path.with_extension("dSYM");
@@ -1383,7 +1388,9 @@ fn auto_generate_dsym(binary_path: &Path) -> Option<DSymInfo> {
 
     for dwarf_path in &dwarf_paths {
         if dwarf_path.exists() {
-            println!("Generated .dSYM bundle for debug info");
+            if !quiet {
+                println!("Generated .dSYM bundle for debug info");
+            }
             let debug_buffer = fs::read(dwarf_path).ok()?;
             let dsym_info = DSymInfoBuilder {
                 debug_buffer,

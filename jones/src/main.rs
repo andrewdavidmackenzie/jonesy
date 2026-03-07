@@ -1,9 +1,11 @@
 use crate::args::parse_args;
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points,
-    count_crate_code_points_summary, print_call_tree, print_crate_code_points, prune_call_tree,
+    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
+    print_call_tree, print_crate_code_points, prune_call_tree,
 };
-use crate::cargo::{derive_crate_src_path, detect_library_type, find_project_root};
+use crate::cargo::{
+    derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
+};
 use crate::config::Config;
 use crate::sym::{
     CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
@@ -109,9 +111,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Capture project info from the first binary processed
         if project_name.is_none() {
-            project_name = binary_path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string());
+            // Prefer project name from Cargo manifest, fall back to binary filename
+            project_name = project_root
+                .as_ref()
+                .and_then(|root| get_project_name(root))
+                .or_else(|| {
+                    binary_path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                });
             project_root_path = project_root
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string());
@@ -187,12 +195,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!(
         "  Panic points: {} in {} file(s)",
-        total_summary.panic_points, total_summary.files_affected
+        total_summary.panic_points(),
+        total_summary.files_affected()
     );
 
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
-    std::process::exit(total_summary.panic_points as i32);
+    std::process::exit(total_summary.panic_points() as i32);
 }
 
 /// Panic symbol patterns to search for, in order of preference.
@@ -246,7 +255,7 @@ fn analyze_macho(
     };
 
     let step_start = Instant::now();
-    let debug_info = load_debug_info(macho, binary_path);
+    let debug_info = load_debug_info(macho, binary_path, summary_only);
     if show_timings {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
@@ -336,11 +345,7 @@ fn analyze_macho(
         println!("Full call tree:");
         print_call_tree(&root, 0);
         crate_src_path.map_or(AnalysisSummary::default(), |cp| {
-            let count = count_crate_code_points(&root, cp);
-            AnalysisSummary {
-                panic_points: count,
-                files_affected: 0, // Not tracked in tree mode
-            }
+            count_crate_code_points_summary(&root, cp, config)
         })
     } else if let Some(crate_path) = crate_src_path {
         print_crate_code_points(&root, crate_path, project_root, config)

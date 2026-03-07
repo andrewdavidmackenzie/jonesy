@@ -147,7 +147,7 @@ jones --summary-only
 
 Example output:
 
-```
+```text
 Summary:
   Project: my-app
   Root: /path/to/project
@@ -261,7 +261,7 @@ jones || echo "Found potential panics!"
 
 For a crate with multiple panic paths:
 
-```
+```text
 Processing /path/to/target/debug/my-app
 Using .dSYM bundle for debug info
 
@@ -282,7 +282,7 @@ Summary:
 
 For a panic-free crate:
 
-```
+```text
 Processing /path/to/target/debug/perfect
 Using .dSYM bundle for debug info
 
