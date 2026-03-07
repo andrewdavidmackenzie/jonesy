@@ -552,10 +552,12 @@ impl CallGraph {
             }
         });
 
-        // Convert DashMap to HashMap
-        Ok(Self {
-            edges: edges.into_iter().collect(),
-        })
+        // Convert DashMap to HashMap and sort each caller list for deterministic ordering
+        let mut edges: HashMap<u64, Vec<CallerInfo>> = edges.into_iter().collect();
+        for callers in edges.values_mut() {
+            callers.sort_by_key(|c| c.call_site_addr);
+        }
+        Ok(Self { edges })
     }
 
     /// Build a call graph by scanning all instructions once (no debug info).
@@ -690,9 +692,12 @@ impl CallGraph {
             );
         }
 
-        Ok(Self {
-            edges: edges.into_iter().collect(),
-        })
+        // Convert DashMap to HashMap and sort each caller list for deterministic ordering
+        let mut edges: HashMap<u64, Vec<CallerInfo>> = edges.into_iter().collect();
+        for callers in edges.values_mut() {
+            callers.sort_by_key(|c| c.call_site_addr);
+        }
+        Ok(Self { edges })
     }
 
     /// Get all callers of a target address.
