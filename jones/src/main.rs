@@ -138,6 +138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     parsed_args.summary_only,
                     parsed_args.show_timings,
                     parsed_args.quiet,
+                    parsed_args.no_hyperlinks,
                     &config,
                     project_root.as_deref(),
                 );
@@ -174,6 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             parsed_args.summary_only,
                             parsed_args.show_timings,
                             parsed_args.quiet,
+                            parsed_args.no_hyperlinks,
                             &config,
                             project_root.as_deref(),
                         );
@@ -228,6 +230,7 @@ fn analyze_macho(
     summary_only: bool,
     show_timings: bool,
     quiet: bool,
+    no_hyperlinks: bool,
     config: &Config,
     project_root: Option<&Path>,
 ) -> AnalysisSummary {
@@ -369,7 +372,7 @@ fn analyze_macho(
             count_crate_code_points_summary(&root, cp, config)
         })
     } else if let Some(crate_path) = crate_src_path {
-        print_crate_code_points(&root, crate_path, project_root, config)
+        print_crate_code_points(&root, crate_path, project_root, config, no_hyperlinks)
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);

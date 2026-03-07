@@ -163,11 +163,12 @@ fn run_jones_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet
 /// Run jones on an example and parse the output
 /// Returns (exit_code, detected_panic_points)
 fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
-    run_jones_with_args(example_dir, &[])
+    // Use --no-hyperlinks for tests since we parse plain-text output
+    run_jones_with_args(example_dir, &["--no-hyperlinks"])
 }
 
 /// Parse jones output to extract panic points
-/// Output format: "  examples/panic/src/main.rs:9 in 'main'"
+/// Output format: "├──> filename:line:col" or " --> filename:line:col"
 fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
     let mut points = HashSet::new();
 
@@ -180,10 +181,21 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             .trim_start_matches("│   ")
             .trim_start_matches("│");
 
-        // Look for lines with " --> " followed by file:line:column
-        // Format: " --> examples/panic/src/main.rs:9:1" or "└──  --> path:line:col"
-        if let Some(arrow_pos) = line.find(" --> ") {
-            let location = &line[arrow_pos + 5..]; // Skip " --> "
+        // Look for arrow patterns and extract the location part
+        // Use split_once to safely handle UTF-8 characters
+        let location = if let Some((_, rest)) = line.split_once(" --> ") {
+            Some(rest)
+        } else if let Some((_, rest)) = line.split_once("├──> ") {
+            Some(rest)
+        } else if let Some((_, rest)) = line.split_once("└──> ") {
+            Some(rest)
+        } else if line.starts_with("-->") {
+            Some(line.trim_start_matches("-->").trim())
+        } else {
+            None
+        };
+
+        if let Some(location) = location {
             // Parse file:line:column format
             let parts: Vec<&str> = location.rsplitn(3, ':').collect();
             if parts.len() >= 2
@@ -191,19 +203,8 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             {
                 // parts[0] is column, parts[1] is line, parts[2..] is file path
                 let file = if parts.len() > 2 { parts[2] } else { "" };
-                points.insert(PanicPoint {
-                    file: file.to_string(),
-                    line: line_num,
-                });
-            }
-        } else if line.starts_with("-->") {
-            // Handle " --> path:line:col" at start (after trim)
-            let location = line.trim_start_matches("-->").trim();
-            let parts: Vec<&str> = location.rsplitn(3, ':').collect();
-            if parts.len() >= 2
-                && let Ok(line_num) = parts[1].parse::<u32>()
-            {
-                let file = if parts.len() > 2 { parts[2] } else { "" };
+                // Strip any trailing description like " [capacity overflow]"
+                let file = file.split('[').next().unwrap_or(file).trim();
                 points.insert(PanicPoint {
                     file: file.to_string(),
                     line: line_num,
@@ -355,7 +356,8 @@ fn test_dylib_example() {
 /// Run jones with a custom config file and return the output
 fn run_jones_with_config(example_dir: &Path, config_path: &Path) -> (i32, HashSet<PanicPoint>) {
     let config_str = config_path.to_string_lossy();
-    run_jones_with_args(example_dir, &["--config", &config_str])
+    // Use --no-hyperlinks for tests since we parse plain-text output
+    run_jones_with_args(example_dir, &["--no-hyperlinks", "--config", &config_str])
 }
 
 #[test]

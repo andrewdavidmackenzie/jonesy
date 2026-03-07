@@ -7,10 +7,13 @@ use crate::config::Config;
 use crate::panic_cause::{PanicCause, detect_panic_cause};
 use crate::sym::CallGraph;
 use dashmap::DashSet;
+use is_terminal::IsTerminal;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use url::Url;
 
 /// A node in the call tree representing a function that can lead to the target symbol
 #[derive(Debug)]
@@ -313,11 +316,15 @@ pub fn count_crate_code_points_summary(
 /// Returns a summary with count of panic points and affected files.
 /// The project_root is used to make relative paths absolute for clickable links.
 /// The config is used to filter out code points with allowed (not denied) causes.
+/// When no_hyperlinks is false and stdout is a TTY, uses OSC 8 terminal hyperlinks
+/// with a directory-grouped tree format. Otherwise, uses a flat format with absolute
+/// paths which most terminals auto-detect as clickable file:line:column references.
 pub fn print_crate_code_points(
     node: &CallTreeNode,
     crate_src_path: &str,
     project_root: Option<&Path>,
     config: &Config,
+    no_hyperlinks: bool,
 ) -> AnalysisSummary {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
 
@@ -348,12 +355,354 @@ pub fn print_crate_code_points(
         } else {
             println!("\nPanic code points in crate:");
         }
-        println!();
-        for point in &roots {
-            print_crate_point(point, "", true, true, project_root, crate_root.as_deref());
+
+        // Use tree format only when OSC 8 hyperlinks are available
+        // (stdout is TTY and --no-hyperlinks not set)
+        let use_tree_format = !no_hyperlinks && io::stdout().is_terminal();
+
+        if use_tree_format {
+            println!();
+            // Directory-grouped tree format with OSC 8 hyperlinks
+            print_directory_tree(&roots, project_root, crate_root.as_deref(), no_hyperlinks);
+        } else {
+            // Flat format with absolute paths for terminal auto-detection
+            print_flat_format(&roots, project_root);
         }
     }
     summary
+}
+
+/// Print panic points grouped by directory in a tree format.
+/// Groups consecutive files in the same directory under a directory header.
+fn print_directory_tree(
+    points: &[CrateCodePoint],
+    project_root: Option<&Path>,
+    crate_root: Option<&Path>,
+    no_hyperlinks: bool,
+) {
+    // Group points by directory
+    let mut dir_groups: Vec<(String, Vec<&CrateCodePoint>)> = Vec::new();
+
+    for point in points {
+        // Get the display path (relative to crate root)
+        let display_path = get_display_path(&point.file, project_root, crate_root);
+
+        // Extract directory from display path
+        let dir = if let Some(pos) = display_path.rfind('/') {
+            display_path[..pos].to_string()
+        } else {
+            String::new() // File is in root directory
+        };
+
+        // Add to existing group or create new one
+        if let Some((last_dir, files)) = dir_groups.last_mut() {
+            if last_dir == &dir {
+                files.push(point);
+                continue;
+            }
+        }
+        dir_groups.push((dir, vec![point]));
+    }
+
+    // Print each directory group
+    let group_count = dir_groups.len();
+    for (i, (dir, files)) in dir_groups.iter().enumerate() {
+        let is_last_dir = i == group_count - 1;
+        let dir_connector = if is_last_dir {
+            "└── "
+        } else {
+            "├── "
+        };
+        let child_prefix = if is_last_dir { "    " } else { "│   " };
+
+        // Print directory header if not empty
+        if !dir.is_empty() {
+            println!("{}{}/", dir_connector, dir);
+        }
+
+        // Print files in this directory
+        let file_count = files.len();
+        for (j, point) in files.iter().enumerate() {
+            let is_last_file = j == file_count - 1;
+            print_file_entry(
+                point,
+                if dir.is_empty() { "" } else { child_prefix },
+                is_last_file,
+                dir.is_empty(),
+                project_root,
+                crate_root,
+                no_hyperlinks,
+            );
+        }
+    }
+}
+
+/// Print panic points in a flat format with absolute paths.
+/// Used when OSC 8 hyperlinks aren't available, so terminals can auto-detect
+/// the file:line:column pattern as clickable links.
+fn print_flat_format(points: &[CrateCodePoint], project_root: Option<&Path>) {
+    for point in points {
+        print_flat_point(point, project_root);
+    }
+}
+
+/// Print a single point in flat format with its children.
+fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
+    // Use absolute path for terminal clickability
+    let display_path = get_clickable_path(&point.file, project_root);
+
+    let location = format!("{}:{}:1", display_path, point.line);
+
+    // Get primary cause for display (only for leaf nodes)
+    let is_leaf = point.children.is_empty();
+    let primary_cause: Option<&PanicCause> = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().copied()
+    };
+
+    let cause_str = if is_leaf {
+        if let Some(cause) = primary_cause {
+            format!(" [{}]", cause.description())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Print the location
+    println!(" --> {}{}", location, cause_str);
+
+    // Print help and warning for leaf nodes
+    if is_leaf {
+        if let Some(cause) = primary_cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                println!("     = help: {}", suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                println!("     = warning: {}", warning);
+            }
+        }
+    }
+
+    // Print children with indentation
+    if !point.children.is_empty() {
+        let mut children = point.children.clone();
+        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
+        for child in &children {
+            print_flat_child(child, project_root, "     ");
+        }
+    }
+}
+
+/// Print a child point in flat format with indentation.
+fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent: &str) {
+    // Use absolute path for terminal clickability
+    let display_path = get_clickable_path(&point.file, project_root);
+
+    let location = format!("{}:{}:1", display_path, point.line);
+
+    // Get primary cause for display (only for leaf nodes)
+    let is_leaf = point.children.is_empty();
+    let primary_cause: Option<&PanicCause> = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().copied()
+    };
+
+    let cause_str = if is_leaf {
+        if let Some(cause) = primary_cause {
+            format!(" [{}]", cause.description())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Print with tree connector
+    println!("{}└──  --> {}{}", indent, location, cause_str);
+
+    // Print help and warning for leaf nodes
+    if is_leaf {
+        if let Some(cause) = primary_cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                println!("{}     = help: {}", indent, suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                println!("{}     = warning: {}", indent, warning);
+            }
+        }
+    }
+
+    // Print children with deeper indentation
+    if !point.children.is_empty() {
+        let mut children = point.children.clone();
+        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
+        let child_indent = format!("{}     ", indent);
+        for child in &children {
+            print_flat_child(child, project_root, &child_indent);
+        }
+    }
+}
+
+/// Get a clickable path for terminal output.
+/// Returns an absolute path for maximum terminal compatibility.
+fn get_clickable_path(file: &str, project_root: Option<&Path>) -> String {
+    if file.starts_with('/') {
+        file.to_string()
+    } else if let Some(root) = project_root {
+        root.join(file).to_string_lossy().to_string()
+    } else {
+        file.to_string()
+    }
+}
+
+/// Get the display path for a file (relative to crate root).
+fn get_display_path(file: &str, project_root: Option<&Path>, crate_root: Option<&Path>) -> String {
+    // Make path absolute first
+    let absolute_path = if file.starts_with('/') {
+        file.to_string()
+    } else if let Some(root) = project_root {
+        root.join(file).to_string_lossy().to_string()
+    } else {
+        file.to_string()
+    };
+
+    // Strip crate root to get display path
+    let display_root = crate_root.or(project_root);
+    if let Some(root) = display_root {
+        let root_str = root.to_string_lossy();
+        absolute_path
+            .strip_prefix(&format!("{}/", root_str))
+            .unwrap_or(&absolute_path)
+            .to_string()
+    } else {
+        absolute_path
+    }
+}
+
+/// Print a single file entry within a directory group.
+fn print_file_entry(
+    point: &CrateCodePoint,
+    prefix: &str,
+    is_last: bool,
+    is_root_level: bool,
+    project_root: Option<&Path>,
+    crate_root: Option<&Path>,
+    no_hyperlinks: bool,
+) {
+    let display_path = get_display_path(&point.file, project_root, crate_root);
+
+    // Extract just the filename for display within directory
+    let filename = if let Some(pos) = display_path.rfind('/') {
+        &display_path[pos + 1..]
+    } else {
+        &display_path
+    };
+
+    // Make absolute path for hyperlinks
+    let absolute_path = if point.file.starts_with('/') {
+        point.file.clone()
+    } else if let Some(root) = project_root {
+        root.join(&point.file).to_string_lossy().to_string()
+    } else {
+        point.file.clone()
+    };
+
+    // Format location with hyperlinks if enabled
+    let use_hyperlinks = !no_hyperlinks && io::stdout().is_terminal();
+    let location = if use_hyperlinks {
+        if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
+            file_url.set_fragment(Some(&format!("L{}", point.line)));
+            let display = format!("{}:{}:1", filename, point.line);
+            format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
+        } else {
+            // Fallback to absolute path if URL conversion fails
+            format!("{}:{}:1", absolute_path, point.line)
+        }
+    } else {
+        // Plain absolute path for terminal auto-detection of clickable links
+        format!("{}:{}:1", absolute_path, point.line)
+    };
+
+    // Get primary cause for display
+    let primary_cause: Option<&PanicCause> = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().copied()
+    };
+
+    let is_leaf = point.children.is_empty();
+    let cause_str = if is_leaf {
+        if let Some(cause) = primary_cause {
+            format!(" [{}]", cause.description())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Print the entry with --> prefix for consistent format
+    // Use └──> and ├──> to create arrow-like connectors
+    let connector = if is_root_level {
+        " -->"
+    } else if is_last {
+        "└──>"
+    } else {
+        "├──>"
+    };
+
+    println!("{}{} {}{}", prefix, connector, location, cause_str);
+
+    // Print help and warning for leaf nodes
+    if is_leaf {
+        if let Some(cause) = primary_cause {
+            let suggestion = cause.suggestion();
+            if !suggestion.is_empty() {
+                let help_prefix = if is_root_level { "     " } else { prefix };
+                println!("{}    = help: {}", help_prefix, suggestion);
+            }
+            if let Some(warning) = cause.release_warning() {
+                let warn_prefix = if is_root_level { "     " } else { prefix };
+                println!("{}    = warning: {}", warn_prefix, warning);
+            }
+        }
+    }
+
+    // Print children (call chain)
+    if !point.children.is_empty() {
+        let mut children = point.children.clone();
+        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
+        let child_prefix = if is_root_level {
+            "     ".to_string()
+        } else if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+
+        let child_count = children.len();
+        for (k, child) in children.iter().enumerate() {
+            let is_last_child = k == child_count - 1;
+            print_crate_point(
+                child,
+                &child_prefix,
+                is_last_child,
+                false,
+                project_root,
+                crate_root,
+                no_hyperlinks,
+            );
+        }
+    }
 }
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config.
@@ -434,7 +783,10 @@ fn collect_unique_point_keys_and_files(
 }
 
 /// Print a crate code point with tree-style indentation
-/// Uses rustc-style " --> file:line:column" format for terminal-clickable links
+/// Uses rustc-style " --> file:line:column" format for terminal-clickable links.
+/// When no_hyperlinks is false, uses OSC 8 terminal hyperlinks for shorter display.
+/// - `project_root`: Used to make relative paths absolute for clickable links
+/// - `crate_root`: Used to compute shorter display paths (strips this prefix)
 fn print_crate_point(
     point: &CrateCodePoint,
     prefix: &str,
@@ -442,23 +794,26 @@ fn print_crate_point(
     is_root: bool,
     project_root: Option<&Path>,
     crate_root: Option<&Path>,
+    no_hyperlinks: bool,
 ) {
     // Make path absolute for clickable terminal links
     let absolute_path = if point.file.starts_with('/') {
         // Already absolute
         point.file.clone()
     } else if let Some(root) = project_root {
-        // Make relative path absolute
+        // Make relative path absolute (point.file is relative to project root)
         root.join(&point.file).to_string_lossy().to_string()
     } else {
         // No project root, use as-is
         point.file.clone()
     };
 
-    // For display, use relative path if we have a crate root
-    let display_path = if let Some(root) = crate_root {
+    // Compute short display path (just the relative part like "src/main.rs")
+    // Use crate_root if available for shorter paths, otherwise use project_root
+    let display_root = crate_root.or(project_root);
+    let display_path = if let Some(root) = display_root {
         let root_str = root.to_string_lossy();
-        // Strip crate root prefix for shorter display (keep leading "src/")
+        // Strip root prefix to get shorter display path
         absolute_path
             .strip_prefix(&format!("{}/", root_str))
             .unwrap_or(&absolute_path)
@@ -467,11 +822,23 @@ fn print_crate_point(
         absolute_path.clone()
     };
 
-    // Use the shorter display path (relative to crate root when available)
-    let file_path = display_path;
-
-    // Format like rustc/clippy: " --> file:line:column" which is widely recognized as clickable
-    let location = format!("{}:{}:1", file_path, point.line);
+    // Format location - use OSC 8 hyperlinks when stdout is a TTY and not disabled
+    let use_hyperlinks = !no_hyperlinks && io::stdout().is_terminal();
+    let location = if use_hyperlinks {
+        // OSC 8 hyperlink: \x1b]8;;URL\x1b\\DISPLAY\x1b]8;;\x1b\\
+        // Use url crate for proper percent-encoding of paths with spaces/special chars
+        if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
+            file_url.set_fragment(Some(&format!("L{}", point.line)));
+            let display = format!("{}:{}:1", display_path, point.line);
+            format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
+        } else {
+            // Fallback to absolute path if URL conversion fails
+            format!("{}:{}:1", absolute_path, point.line)
+        }
+    } else {
+        // Plain absolute path for terminal auto-detection of clickable links
+        format!("{}:{}:1", absolute_path, point.line)
+    };
 
     // Only show cause and help on leaf nodes (no children)
     let is_leaf = point.children.is_empty();
@@ -495,6 +862,7 @@ fn print_crate_point(
     };
 
     // Print the current node - location on its own line for clickability
+    // Use └──> and ├──> to create arrow-like connectors
     if is_root {
         println!(" --> {}{}", location, cause_str);
         // Print suggestion and warning if we have a cause (only for leaf nodes)
@@ -508,17 +876,17 @@ fn print_crate_point(
             }
         }
     } else {
-        let connector = if is_last { "└── " } else { "├── " };
-        // Indent to align with parent, show tree connector, then clickable location
-        println!("     {}{} --> {}{}", prefix, connector, location, cause_str);
+        let connector = if is_last { "└──>" } else { "├──>" };
+        // Show tree connector as arrow (prefix already contains proper indentation)
+        println!("{}{} {}{}", prefix, connector, location, cause_str);
         // Print suggestion and warning if we have a cause (only for leaf nodes)
         if is_leaf && let Some(cause) = primary_cause {
             let suggestion = cause.suggestion();
             if !suggestion.is_empty() {
-                println!("     {}     = help: {}", prefix, suggestion);
+                println!("{}    = help: {}", prefix, suggestion);
             }
             if let Some(warning) = cause.release_warning() {
-                println!("     {}     = warning: {}", prefix, warning);
+                println!("{}    = warning: {}", prefix, warning);
             }
         }
     }
@@ -545,6 +913,7 @@ fn print_crate_point(
             false,
             project_root,
             crate_root,
+            no_hyperlinks,
         );
     }
 }

@@ -112,6 +112,7 @@ Options:
   --summary-only     Only show summary, not detailed panic points
   --config <path>    Path to a TOML config file for allow/deny rules
   --max-threads N    Maximum threads for parallel analysis (default: CPU count)
+  --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)
   --bin              Analyze a specific binary file
   --lib              Analyze a specific library object file
 ```
@@ -153,6 +154,20 @@ Summary:
   Root: /path/to/project
   Panic points: 5 in 2 file(s)
 ```
+
+### `--no-hyperlinks`
+
+When stdout is a terminal, jones outputs source file locations as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), making paths clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full file path while displaying a shorter relative path.
+
+When output is piped or redirected (e.g., `jones > file.txt`), plain absolute paths are used automatically to avoid escape sequences in logs or files.
+
+If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this flag:
+
+```bash
+jones --no-hyperlinks
+```
+
+This outputs paths like `/Users/me/project/src/main.rs:42:1` instead of clickable hyperlinks.
 
 ### `--config`
 
