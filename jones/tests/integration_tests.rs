@@ -65,19 +65,17 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
 }
 
 /// Check if two file paths match (handles absolute vs relative paths)
-/// Returns true if they're equal or if the absolute path ends with the relative path
+/// Returns true if they're equal or if one path ends with the other
 fn paths_match(detected_path: &str, marker_path: &str) -> bool {
     if detected_path == marker_path {
         return true;
     }
-    // Handle absolute vs relative: check if absolute ends with relative
-    if detected_path.starts_with('/') && !marker_path.starts_with('/') {
-        detected_path.ends_with(&format!("/{}", marker_path))
-    } else if marker_path.starts_with('/') && !detected_path.starts_with('/') {
-        marker_path.ends_with(&format!("/{}", detected_path))
-    } else {
-        false
-    }
+    // Handle various relative path scenarios:
+    // - detected: "src/main.rs", marker: "examples/panic/src/main.rs"
+    // - detected: "/abs/path/src/main.rs", marker: "examples/panic/src/main.rs"
+    // Check if either path ends with the other (requiring path boundary with '/')
+    marker_path.ends_with(&format!("/{}", detected_path))
+        || detected_path.ends_with(&format!("/{}", marker_path))
 }
 
 /// Check if a detected panic point has an expected marker nearby

@@ -334,9 +334,23 @@ pub fn print_crate_code_points(
     if summary.panic_points() == 0 {
         println!("\nNo panics in crate");
     } else {
-        println!("\nPanic code points in crate:");
+        // Compute crate root for display (absolute path to crate directory)
+        let crate_root = project_root.map(|root| {
+            // crate_src_path is like "flowc/src/" - we want just "flowc/"
+            let crate_dir = crate_src_path
+                .strip_suffix("src/")
+                .unwrap_or(crate_src_path);
+            root.join(crate_dir.trim_end_matches('/'))
+        });
+
+        if let Some(ref root) = crate_root {
+            println!("\nPanic code points in crate {}:", root.display());
+        } else {
+            println!("\nPanic code points in crate:");
+        }
+        println!();
         for point in &roots {
-            print_crate_point(point, "", true, true, project_root);
+            print_crate_point(point, "", true, true, project_root, crate_root.as_deref());
         }
     }
     summary
@@ -344,20 +358,25 @@ pub fn print_crate_code_points(
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config.
 /// A point is kept if ANY of its causes is denied.
+/// Also removes allowed causes from the causes set so only denied causes are displayed.
 /// If a point has no causes, it's kept (conservative - assume denied).
 fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
     points.retain_mut(|point| {
-        // Keep if no causes (conservative) or if ANY cause is denied
-        let should_keep =
-            point.causes.is_empty() || point.causes.iter().any(|cause| config.is_denied(cause));
+        // Track if we originally had no causes (conservative - keep these)
+        let originally_empty = point.causes.is_empty();
+
+        // Remove allowed causes from the set - only keep denied ones
+        point.causes.retain(|cause| config.is_denied(cause));
+
+        // Keep if originally empty (conservative) or if any denied causes remain
+        let should_keep = originally_empty || !point.causes.is_empty();
 
         if should_keep {
             // Recursively filter children
             filter_allowed_causes(&mut point.children, config);
-            true
-        } else {
-            false
         }
+
+        should_keep
     });
 }
 
@@ -422,9 +441,10 @@ fn print_crate_point(
     is_last: bool,
     is_root: bool,
     project_root: Option<&Path>,
+    crate_root: Option<&Path>,
 ) {
     // Make path absolute for clickable terminal links
-    let file_path = if point.file.starts_with('/') {
+    let absolute_path = if point.file.starts_with('/') {
         // Already absolute
         point.file.clone()
     } else if let Some(root) = project_root {
@@ -434,6 +454,21 @@ fn print_crate_point(
         // No project root, use as-is
         point.file.clone()
     };
+
+    // For display, use relative path if we have a crate root
+    let display_path = if let Some(root) = crate_root {
+        let root_str = root.to_string_lossy();
+        // Strip crate root prefix for shorter display (keep leading "src/")
+        absolute_path
+            .strip_prefix(&format!("{}/", root_str))
+            .unwrap_or(&absolute_path)
+            .to_string()
+    } else {
+        absolute_path.clone()
+    };
+
+    // Use the shorter display path (relative to crate root when available)
+    let file_path = display_path;
 
     // Format like rustc/clippy: " --> file:line:column" which is widely recognized as clickable
     let location = format!("{}:{}:1", file_path, point.line);
@@ -497,7 +532,14 @@ fn print_crate_point(
         } else {
             format!("{}│   ", prefix)
         };
-        print_crate_point(child, &child_prefix, is_last_child, false, project_root);
+        print_crate_point(
+            child,
+            &child_prefix,
+            is_last_child,
+            false,
+            project_root,
+            crate_root,
+        );
     }
 }
 
