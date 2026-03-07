@@ -501,8 +501,8 @@ fn print_crate_point(
             format!("{}:{}:1", absolute_path, point.line)
         }
     } else {
-        // Plain absolute path (works in all terminals, or when redirected/piped)
-        format!("{}:{}:1", absolute_path, point.line)
+        // Plain short path (relative to crate root for readability)
+        format!("{}:{}:1", display_path, point.line)
     };
 
     // Only show cause and help on leaf nodes (no children)
