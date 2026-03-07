@@ -73,11 +73,9 @@ fn paths_match(detected_path: &str, marker_path: &str) -> bool {
     // Handle various relative path scenarios:
     // - detected: "src/main.rs", marker: "examples/panic/src/main.rs"
     // - detected: "/abs/path/src/main.rs", marker: "examples/panic/src/main.rs"
-    // Check if either path ends with the other
+    // Check if either path ends with the other (requiring path boundary with '/')
     marker_path.ends_with(&format!("/{}", detected_path))
-        || marker_path.ends_with(detected_path)
         || detected_path.ends_with(&format!("/{}", marker_path))
-        || detected_path.ends_with(marker_path)
 }
 
 /// Check if a detected panic point has an expected marker nearby

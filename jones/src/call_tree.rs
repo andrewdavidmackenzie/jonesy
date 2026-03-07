@@ -358,20 +358,25 @@ pub fn print_crate_code_points(
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config.
 /// A point is kept if ANY of its causes is denied.
+/// Also removes allowed causes from the causes set so only denied causes are displayed.
 /// If a point has no causes, it's kept (conservative - assume denied).
 fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
     points.retain_mut(|point| {
-        // Keep if no causes (conservative) or if ANY cause is denied
-        let should_keep =
-            point.causes.is_empty() || point.causes.iter().any(|cause| config.is_denied(cause));
+        // Track if we originally had no causes (conservative - keep these)
+        let originally_empty = point.causes.is_empty();
+
+        // Remove allowed causes from the set - only keep denied ones
+        point.causes.retain(|cause| config.is_denied(cause));
+
+        // Keep if originally empty (conservative) or if any denied causes remain
+        let should_keep = originally_empty || !point.causes.is_empty();
 
         if should_keep {
             // Recursively filter children
             filter_allowed_causes(&mut point.children, config);
-            true
-        } else {
-            false
         }
+
+        should_keep
     });
 }
 
@@ -462,8 +467,7 @@ fn print_crate_point(
         absolute_path.clone()
     };
 
-    // Use absolute path for the actual link (clickable), but could display shorter
-    // For now, we'll use display_path for both to keep links working with relative paths
+    // Use the shorter display path (relative to crate root when available)
     let file_path = display_path;
 
     // Format like rustc/clippy: " --> file:line:column" which is widely recognized as clickable
