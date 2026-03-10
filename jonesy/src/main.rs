@@ -1,15 +1,15 @@
 use crate::args::parse_args;
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
-    print_call_tree, print_crate_code_points, prune_call_tree,
+    build_call_tree_parallel, count_crate_code_points_summary, print_call_tree, print_crate_code_points,
+    prune_call_tree, AnalysisSummary, CallTreeNode,
 };
 use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use crate::config::Config;
 use crate::sym::{
-    CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
-    load_debug_info, read_symbols,
+    find_symbol_address, find_symbol_containing, load_debug_info, read_symbols, CallGraph,
+    DebugInfo, SymbolTable,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Processing {}", binary_path.display());
         }
 
-        // Find project/workspace root from binary path
+        // Find project/workspace root from the binary path
         let project_root = find_project_root(&binary_path);
 
         // Find the member crate directory for config loading
@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 if !parsed_args.summary_only {
-                    println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+                    println!("FAT: {:?} architectures", multi_arch.arches()?);
                 }
             }
             SymbolTable::Archive(archive) => {
@@ -275,7 +275,7 @@ fn analyze_macho(
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
 
-    // Pre-compute call graph by scanning all instructions once
+    // Pre-compute the call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
     if show_progress {
         eprintln!("  Scanning for function calls...");

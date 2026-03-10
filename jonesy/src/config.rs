@@ -2,8 +2,8 @@
 //!
 //! Configuration is loaded in order of precedence (later overrides earlier):
 //! 1. Application defaults (in code)
-//! 2. Cargo.toml `[package.metadata.jones]` section
-//! 3. `jones.toml` file in project root
+//! 2. Cargo.toml `[package.metadata.jonesy]` section
+//! 3. `jonesy.toml` file in project root
 //! 4. `--config <path>` command line option
 
 use crate::panic_cause::PanicCause;
@@ -21,7 +21,7 @@ pub struct Config {
     denied: HashSet<String>,
 }
 
-/// TOML configuration structure for jones
+/// TOML configuration structure for jonesy
 #[derive(Debug, Deserialize, Default)]
 struct TomlConfig {
     /// Panic causes to allow (not report)
@@ -152,7 +152,7 @@ impl Config {
         }
     }
 
-    /// Load configuration from a jones.toml file.
+    /// Load configuration from a jonesy.toml file.
     pub fn load_from_jones_toml(&mut self, jones_toml_path: &Path) {
         match fs::read_to_string(jones_toml_path) {
             Ok(content) => match toml::from_str::<TomlConfig>(&content) {
@@ -190,7 +190,7 @@ impl Config {
     }
 
     /// Load full configuration by searching for config files.
-    /// Looks for Cargo.toml and jones.toml starting from the given directory.
+    /// Looks for Cargo.toml and jonesy.toml starting from the given directory.
     /// Returns an error if an explicit config_override is provided and fails to load.
     pub fn load_for_project(
         project_dir: &Path,
@@ -204,8 +204,8 @@ impl Config {
             config.load_from_cargo_toml(&cargo_toml);
         }
 
-        // Look for jones.toml
-        let jones_toml = project_dir.join("jones.toml");
+        // Look for jonesy.toml
+        let jones_toml = project_dir.join("jonesy.toml");
         if jones_toml.exists() {
             config.load_from_jones_toml(&jones_toml);
         }

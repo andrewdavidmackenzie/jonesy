@@ -6,10 +6,10 @@ mod module;
 #[unsafe(no_mangle)]
 pub fn library_function() {
     if std::env::args().len() > 1 {
-        // jones: expect panic -
+        // jonesy: expect panic -
         panic!("{}", PANIC_STR);
     }
 
-    // jones: expect panic -
+    // jonesy: expect panic -
     module::cause_a_panic();
 }

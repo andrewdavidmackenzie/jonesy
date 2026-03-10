@@ -10,19 +10,19 @@ cross-platform and multi-architecture in the future, but will probably need help
 ## Installation
 
 ```bash
-cargo install --path jones
+cargo install --path jonesy
 ```
 
 ## Usage
 
 ### From a Crate Directory
 
-Run jones from the root of any Rust crate (where `Cargo.toml` is located):
+Run jonesy from the root of any Rust crate (where `Cargo.toml` is located):
 
 ```bash
 cd my-crate
 cargo build
-jones
+jonesy
 ```
 
 Jones will parse `Cargo.toml` to find the package name and binary targets, then analyze all binaries found in
@@ -30,12 +30,12 @@ Jones will parse `Cargo.toml` to find the package name and binary targets, then 
 
 ### From a Workspace Root
 
-When run from a workspace root, jones analyzes all workspace member binaries:
+When run from a workspace root, jonesyanalyzes all workspace member binaries:
 
 ```bash
 cd my-workspace
 cargo build
-jones
+jonesy
 ```
 
 ### Analyzing a Specific Binary
@@ -43,7 +43,7 @@ jones
 Use `--bin` to analyze a specific binary file:
 
 ```bash
-jones --bin target/debug/my-binary
+jonesy --bin target/debug/my-binary
 ```
 
 ### Analyzing Libraries
@@ -51,12 +51,12 @@ jones --bin target/debug/my-binary
 Jones can analyze Rust libraries built as dynamic libraries (`.dylib`):
 
 ```bash
-jones --lib target/debug/libmy_lib.dylib
+jonesy --lib target/debug/libmy_lib.dylib
 ```
 
 **Library Setup Requirements:**
 
-For jones to analyze a library, it must be built as a `cdylib` with exported symbols:
+For jonesyto analyze a library, it must be built as a `cdylib` with exported symbols:
 
 1. Add `cdylib` to your crate types in `Cargo.toml`:
    ```toml
@@ -103,9 +103,9 @@ There are two ways to build a Rust dynamic library:
 
 ```
 Usage:
-  jones [OPTIONS]
-  jones [OPTIONS] --bin <path_to_binary>
-  jones [OPTIONS] --lib <path_to_lib_object>
+  jonesy[OPTIONS]
+  jonesy[OPTIONS] --bin <path_to_binary>
+  jonesy[OPTIONS] --lib <path_to_lib_object>
 
 Options:
   --tree             Show full call tree instead of just crate code points
@@ -119,11 +119,11 @@ Options:
 
 ### `--tree`
 
-By default, jones shows only the panic code points in your crate's source code. Use `--tree` to see the full call tree
+By default, jonesyshows only the panic code points in your crate's source code. Use `--tree` to see the full call tree
 from `rust_panic` up to your code:
 
 ```bash
-jones --tree
+jonesy --tree
 ```
 
 Example output with `--tree`:
@@ -143,7 +143,7 @@ Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
 Show only the summary without detailed panic point locations. Useful for CI pipelines or quick checks:
 
 ```bash
-jones --summary-only
+jonesy --summary-only
 ```
 
 Example output:
@@ -157,14 +157,20 @@ Summary:
 
 ### `--no-hyperlinks`
 
-When stdout is a terminal, jones outputs source file locations as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), making paths clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full file path while displaying a shorter relative path.
+When stdout is a terminal, jonesy outputs source file locations
+as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), making paths
+clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full
+file path while displaying a shorter relative path.
 
-When output is piped or redirected (e.g., `jones > file.txt`), plain absolute paths are used automatically to avoid escape sequences in logs or files.
+When output is piped or redirected (e.g., `jonesy> file.txt`), plain absolute paths are used automatically to avoid
+escape sequences in logs or files.
 
-If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this flag:
+If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and
+the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this
+flag:
 
 ```bash
-jones --no-hyperlinks
+jonesy --no-hyperlinks
 ```
 
 This outputs paths like `/Users/me/project/src/main.rs:42:1` instead of clickable hyperlinks.
@@ -174,7 +180,7 @@ This outputs paths like `/Users/me/project/src/main.rs:42:1` instead of clickabl
 Specify a custom TOML configuration file for allow/deny rules:
 
 ```bash
-jones --config my-config.toml
+jonesy --config my-config.toml
 ```
 
 See the [Configuration](#configuration) section for details on the config file format.
@@ -246,7 +252,7 @@ deny = ["todo"]
 To report all panic causes including drops:
 
 ```toml
-# jones.toml
+# jonesy.toml
 deny = ["drop", "unwind"]
 ```
 
@@ -255,7 +261,7 @@ deny = ["drop", "unwind"]
 To allow common development panics:
 
 ```toml
-# jones.toml
+# jonesy.toml
 allow = ["todo", "unimplemented", "debug_assert"]
 ```
 
@@ -266,10 +272,10 @@ Jones exits with the number of panic code points found:
 - `0` - No panics found (code "passed")
 - `N` - N panic code points found
 
-This makes it easy to use jones in CI pipelines:
+This makes it easy to use jonesy in CI pipelines:
 
 ```bash
-jones || echo "Found potential panics!"
+jonesy || echo "Found potential panics!"
 ```
 
 ## Example Output
@@ -328,7 +334,7 @@ in your project run:
 
 ```bash
 cargo build
-jones
+jonesy
 ```
 
 Jones will output "Generated .dSYM bundle for debug info" when it creates one.
