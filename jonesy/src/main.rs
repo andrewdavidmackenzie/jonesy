@@ -55,14 +55,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Processing {}", binary_path.display());
         }
 
-        // Find project/workspace root from binary path
+        // Find the project/workspace root from the binary path
         let project_root = find_project_root(&binary_path);
 
         // Find the member crate directory for config loading
         // In workspaces, derive_crate_src_path returns paths like "flowc/src/" or "examples/panic/src/"
         // We want the crate directory (parent of src/) for config loading
         let crate_dir = derive_crate_src_path(&binary_path).and_then(|src_path| {
-            // Strip trailing "src/" to get crate directory
+            // Strip trailing "src/" to get the crate directory
             let crate_rel = src_path.strip_suffix("src/").unwrap_or(&src_path);
             project_root
                 .as_ref()
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let config = if let Some(ref crate_path) = crate_dir
             && crate_path.join("Cargo.toml").exists()
         {
-            // Load from member crate directory
+            // Load from the member crate directory
             Config::load_for_project(crate_path, parsed_args.config_path.as_deref())
         } else if let Some(ref root) = project_root {
             // Fall back to workspace/project root
@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Capture project info from the first binary processed
         if project_name.is_none() {
-            // Prefer project name from Cargo manifest, fall back to binary filename
+            // Prefer project name from Cargo manifest, fall back to the binary filename
             project_name = project_root
                 .as_ref()
                 .and_then(|root| get_project_name(root))
@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 if !parsed_args.summary_only {
-                    println!("FAT: {:?} architectures", multi_arch.arches().unwrap());
+                    println!("FAT: {:?} architectures", multi_arch.arches()?);
                 }
             }
             SymbolTable::Archive(archive) => {
@@ -275,7 +275,7 @@ fn analyze_macho(
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
 
-    // Pre-compute call graph by scanning all instructions once
+    // Pre-compute the call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
     if show_progress {
         eprintln!("  Scanning for function calls...");

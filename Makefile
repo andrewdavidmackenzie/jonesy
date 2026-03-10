@@ -12,4 +12,4 @@ build:
 	cargo build
 
 test:
-	cargo test -p jones
+	cargo test -p jonesy

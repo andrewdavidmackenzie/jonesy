@@ -1,7 +1,7 @@
 //! Integration tests for Jones
 //!
 //! These tests verify that Jones correctly identifies panic points in example crates
-//! by comparing the output against `// jones: expect panic -` comments in source files.
+//! by comparing the output against `// jonesy: expect panic` comments in source files.
 
 use std::collections::HashSet;
 use std::fs;
@@ -13,7 +13,7 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 /// Marker comment that indicates an expected panic on the next line
-const PANIC_MARKER: &str = "// jones: expect panic -";
+const PANIC_MARKER: &str = "// jonesy: expect panic";
 
 /// Represents a panic point location
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -49,7 +49,7 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
 
         for (i, line) in content.lines().enumerate() {
             if line.trim().starts_with(PANIC_MARKER) {
-                // Get relative path from workspace root for matching
+                // Get the relative path from the workspace root for matching
                 let rel_path = file_path
                     .strip_prefix(&workspace_root)
                     .unwrap_or(file_path)
@@ -113,31 +113,31 @@ where
     }
 }
 
-/// Timeout for running jones on each example (10 minutes)
+/// Timeout for running jonesy on each example (10 minutes)
 const JONES_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Run jones with optional extra arguments and parse the output
+/// Run jonesy with optional extra arguments and parse the output
 /// Returns (exit_code, detected_panic_points)
-fn run_jones_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet<PanicPoint>) {
+fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet<PanicPoint>) {
     let workspace_root = find_workspace_root();
-    // Use Cargo-provided path if available, otherwise fall back to platform-safe path
+    // Use the Cargo-provided path if available, otherwise fall back to the platform-safe path
     let jones_binary = std::env::var_os("CARGO_BIN_EXE_jones")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             workspace_root
                 .join("target")
                 .join("debug")
-                .join(format!("jones{}", std::env::consts::EXE_SUFFIX))
+                .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
         });
 
-    // Run jones from the example directory with timeout
+    // Run jonesy from the example directory with timeout
     let mut child = Command::new(&jones_binary)
         .args(extra_args)
         .current_dir(example_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("Failed to spawn jones");
+        .expect("Failed to spawn jonesy");
 
     match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
         Some(status) => {
@@ -149,7 +149,7 @@ fn run_jones_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet
         }
         None => {
             child.kill().expect("Failed to kill timed-out process");
-            // Wait for child to be reaped to avoid zombie process
+            // Wait for the child to be reaped to avoid a zombie process
             let _ = child.wait();
             panic!(
                 "Jones timed out after {:?} on {}",
@@ -160,14 +160,14 @@ fn run_jones_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet
     }
 }
 
-/// Run jones on an example and parse the output
+/// Run jonesy on an example and parse the output
 /// Returns (exit_code, detected_panic_points)
 fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
     // Use --no-hyperlinks for tests since we parse plain-text output
-    run_jones_with_args(example_dir, &["--no-hyperlinks"])
+    run_jonesy_with_args(example_dir, &["--no-hyperlinks"])
 }
 
-/// Parse jones output to extract panic points
+/// Parse jonesy output to extract panic points
 /// Output format: "├──> filename:line:col" or " --> filename:line:col"
 fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
     let mut points = HashSet::new();
@@ -201,7 +201,7 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             if parts.len() >= 2
                 && let Ok(line_num) = parts[1].parse::<u32>()
             {
-                // parts[0] is column, parts[1] is line, parts[2..] is file path
+                // parts[0] is the column, parts[1] is the line, parts[2] is the file path
                 let file = if parts.len() > 2 { parts[2] } else { "" };
                 // Strip any trailing description like " [capacity overflow]"
                 let file = file.split('[').next().unwrap_or(file).trim();
@@ -219,17 +219,17 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
 /// One-time setup initialization
 static SETUP: Once = Once::new();
 
-/// Build the jones binary and all examples (runs only once)
+/// Build the jonesy binary and all examples (runs only once)
 fn setup() {
     SETUP.call_once(|| {
         let workspace_root = find_workspace_root();
 
-        // Build jones
+        // Build jonesy
         let status = Command::new("cargo")
-            .args(["build", "-p", "jones"])
+            .args(["build", "-p", "jonesy"])
             .current_dir(&workspace_root)
             .status()
-            .expect("Failed to build jones");
+            .expect("Failed to build jonesy");
         assert!(status.success(), "Failed to build jones");
 
         // Build all examples
@@ -251,10 +251,10 @@ fn test_example(example_name: &str) {
     // Get expected panic markers from source comments
     let markers = find_expected_panic_markers(&src_dir);
 
-    // Run jones and get detected panics
+    // Run jonesy and get detected panics
     let (exit_code, detected) = run_jones_on_example(&example_dir);
 
-    // Verify exit code matches expected marker count
+    // Verify the exit code matches the expected marker count
     let expected_count = markers.len() as i32;
     assert_eq!(
         exit_code, expected_count,
@@ -353,11 +353,11 @@ fn test_dylib_example() {
     test_example("dylib");
 }
 
-/// Run jones with a custom config file and return the output
-fn run_jones_with_config(example_dir: &Path, config_path: &Path) -> (i32, HashSet<PanicPoint>) {
+/// Run jonesy with a custom config file and return the output
+fn run_jonesy_with_config(example_dir: &Path, config_path: &Path) -> (i32, HashSet<PanicPoint>) {
     let config_str = config_path.to_string_lossy();
     // Use --no-hyperlinks for tests since we parse plain-text output
-    run_jones_with_args(example_dir, &["--no-hyperlinks", "--config", &config_str])
+    run_jonesy_with_args(example_dir, &["--no-hyperlinks", "--config", &config_str])
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn test_config_allow_panic() {
     let workspace_root = find_workspace_root();
     let example_dir = workspace_root.join("examples").join("panic");
     let config_path = workspace_root
-        .join("jones")
+        .join("jonesy")
         .join("tests")
         .join("test_allow_panic.toml");
 
@@ -374,7 +374,7 @@ fn test_config_allow_panic() {
     let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
     // Run with config that allows explicit panic
-    let (config_exit_code, config_detected) = run_jones_with_config(&example_dir, &config_path);
+    let (config_exit_code, config_detected) = run_jonesy_with_config(&example_dir, &config_path);
 
     // The config should result in fewer detected panics (since panic! is now allowed)
     assert!(

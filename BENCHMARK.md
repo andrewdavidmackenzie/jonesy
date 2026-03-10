@@ -218,7 +218,7 @@ System: macOS ARM64 (Apple Silicon M1 Pro) with 10 physical cores.
 ### Benchmark Commands
 
 ```bash
-# Build release binary (jones itself)
+# Build release binary (jonesy itself)
 cargo build --release
 
 # Build debug example libraries (what we're analyzing)
@@ -226,11 +226,11 @@ cargo build -p dylib_example
 
 # Run with specific thread count
 # Note: We analyze debug-built libraries (more symbols/debug info to process)
-# using the release-built jones binary (optimized analyzer)
-time ./target/release/jones --lib target/debug/libdylib_example.dylib --max-threads N
+# using the release-built jonesy binary (optimized analyzer)
+time ./target/release/jonesy --lib target/debug/libdylib_example.dylib --max-threads N
 
 # Default (uses all available cores)
-time ./target/release/jones --lib target/debug/libdylib_example.dylib
+time ./target/release/jonesy --lib target/debug/libdylib_example.dylib
 ```
 
 ## Comprehensive Scaling Analysis
@@ -331,16 +331,17 @@ entries for flowc). Use binary search for O(log n) lookups.
 
 ### Results
 
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Process instructions (single-threaded) | ~30s | ~30s | N/A |
-| Process instructions (10 cores) | ~30s | ~4.5s | **6.7x** |
-| Total time (parallel) | ~30s | ~4.8s | **6.3x** |
-| Accuracy | 109 points | 109 points | **100%** |
+| Metric                                 | Before     | After      | Improvement |
+|----------------------------------------|------------|------------|-------------|
+| Process instructions (single-threaded) | ~30s       | ~30s       | N/A         |
+| Process instructions (10 cores)        | ~30s       | ~4.5s      | **6.7x**    |
+| Total time (parallel)                  | ~30s       | ~4.8s      | **6.3x**    |
+| Accuracy                               | 109 points | 109 points | **100%**    |
 
 ### Key Insight
 
 Unlike the failed "Pre-built Line Table" approach, this optimization:
+
 1. Only pre-builds entries for crate source files (much smaller table)
 2. Uses the pre-built table for `get_crate_line_at_address` lookups specifically
 3. Maintains the original DWARF traversal for `get_source_location` (which is cached separately)
@@ -360,11 +361,13 @@ This section documents optimization approaches that were attempted but abandoned
 O(log n) binary searches.
 
 **Approach**:
+
 1. Pre-build a sorted line table from all DWARF compilation units during call graph construction
 2. Use binary search instead of linear DWARF traversal for `get_source_location()` lookups
 3. Use binary search for function address lookups (sort functions by start_address)
 
 **Results**:
+
 - **Speedup achieved**: ~90x (39.1s → 0.43s on flowc)
 - **Accuracy loss**: ~14% (92 vs 107 panic points found)
 

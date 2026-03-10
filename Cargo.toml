@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "jones",
+    "jonesy",
     "examples/array_access",
     "examples/cdylib",
     "examples/dylib",

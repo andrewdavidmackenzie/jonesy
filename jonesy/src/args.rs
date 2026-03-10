@@ -133,10 +133,10 @@ fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
 
 fn usage() -> String {
     "Usage:\n  \
-     jones [OPTIONS]\n  \
-     jones [OPTIONS] --bin <path_to_binary>\n  \
-     jones [OPTIONS] --lib <path_to_lib_object>\n\n\
-     When run without --bin or --lib, jones looks for Cargo.toml in the current\n\
+     jonesy [OPTIONS]\n  \
+     jonesy [OPTIONS] --bin <path_to_binary>\n  \
+     jonesy [OPTIONS] --lib <path_to_lib_object>\n\n\
+     When run without --bin or --lib, jonesy looks for Cargo.toml in the current\n\
      directory and analyzes all binary targets found in target/debug/.\n\n\
      Options:\n  \
      --tree             Show full call tree instead of just crate code points\n  \
@@ -263,7 +263,7 @@ fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
     let cargo_toml_path = PathBuf::from("Cargo.toml");
     if !cargo_toml_path.exists() {
         return Err("No Cargo.toml found in current directory. \
-                    Run jones from a crate root or use --bin <path>."
+                    Run jonesy from a crate root or use --bin <path>."
             .to_string());
     }
 
