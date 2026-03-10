@@ -1,8 +1,8 @@
-# Jonesy Technical Documentation
+# Jonesyy Technical Documentation
 
 ## macOS Debug Info Cases
 
-On macOS, Rust/Cargo uses Apple's "lazy" DWARF scheme by default. This section documents the debug info configurations and how Jonesy handles them.
+On macOS, Rust/Cargo uses Apple's "lazy" DWARF scheme by default. This section documents the debug info configurations and how Jonesyy handles them.
 
 ### The Problem
 
@@ -12,7 +12,7 @@ By default, macOS Rust builds do not embed DWARF debug info in the final binary:
 2. **Final binary** contains only a "debug map" - stab entries (`OSO`, `SO`) pointing to object files
 3. **No embedded DWARF** in the final binary itself
 
-This is why Jonesy requires a `.dSYM` bundle or the `dsymutil` step - the binary alone doesn't contain the debug information needed to map addresses to source locations.
+This is why Jonesyy requires a `.dSYM` bundle or the `dsymutil` step - the binary alone doesn't contain the debug information needed to map addresses to source locations.
 
 ### Debug Map Explained
 
@@ -71,7 +71,7 @@ This is faster for development since you only create the dSYM when needed for an
 
 #### Option 3: Default (unpacked) with Debug Map Reading
 
-Currently not supported by Jones, but debuggers like `lldb` can read debug info directly from object files using the debug map in the binary. This would eliminate all extra steps.
+Currently not supported by Jonesyy, but debuggers like `lldb` can read debug info directly from object files using the debug map in the binary. This would eliminate all extra steps.
 
 ### Profile Options Affecting Debug Info
 
@@ -85,27 +85,27 @@ Currently not supported by Jones, but debuggers like `lldb` can read debug info 
 | `split-debuginfo = "unpacked"` | Keep in object files (macOS default) |
 | `split-debuginfo = "packed"` | Create `.dSYM` bundle automatically |
 
-### Current Jonesy Behavior
+### Current Jonesyy Behavior
 
-Jonesy looks for debug info in this order:
+Jonesyy looks for debug info in this order:
 
 1. **dSYM bundle** at `<binary>.dSYM/Contents/Resources/DWARF/<binary_name>`
 2. **Embedded DWARF** in the binary itself (`.debug_info` section)
 3. **Auto-generate dSYM** by running `dsymutil` automatically
-4. **Debug map fallback** - if `dsymutil` is not available or fails, Jonesy reads DWARF directly from object files referenced in the binary's debug map
+4. **Debug map fallback** - if `dsymutil` is not available or fails, Jonesyy reads DWARF directly from object files referenced in the binary's debug map
 5. **Falls back** to symbol table only (no source locations)
 
-The auto-generation of dSYM bundles means Jonesy "just works" with default Cargo builds - no manual `dsymutil` step required. If `dsymutil` is unavailable, the debug map fallback provides partial functionality (source locations may be less accurate).
+The auto-generation of dSYM bundles means Jonesyy "just works" with default Cargo builds - no manual `dsymutil` step required. If `dsymutil` is unavailable, the debug map fallback provides partial functionality (source locations may be less accurate).
 
 ### Future Improvements
 
-Potential enhancements for Jones:
+Potential enhancements for Jonesy:
 
 1. **Read debug map directly** - Parse `OSO`/`SO` stabs and read DWARF from object files, like `lldb` does. This would avoid the `dsymutil` step entirely, though it requires complex address translation and parsing of `.rlib` archives.
 
 ## Parallel Analysis Architecture
 
-Jonesy uses parallel processing to achieve ~8x speedup on multi-core systems. This section explains how the parallelization works.
+Jonesyy uses parallel processing to achieve ~8x speedup on multi-core systems. This section explains how the parallelization works.
 
 ### The Challenge
 
@@ -120,7 +120,7 @@ Both operations are O(n) where n is the number of instructions or call edges, an
 
 #### Phase 1: Parallel CallGraph Construction
 
-Instead of querying callers on-demand (which would scan all instructions for each query), Jonesy pre-computes a complete call graph:
+Instead of querying callers on-demand (which would scan all instructions for each query), Jonesyy pre-computes a complete call graph:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -241,7 +241,7 @@ The speedup is nearly linear with core count because:
 
 ## Panic Cause Detection
 
-Jonesy identifies the **cause** of potential panics by analyzing function names in the call chain between the panic symbol and user code. This allows it to provide helpful descriptions and suggestions.
+Jonesyy identifies the **cause** of potential panics by analyzing function names in the call chain between the panic symbol and user code. This allows it to provide helpful descriptions and suggestions.
 
 ### How It Works
 
@@ -257,7 +257,7 @@ panic_fmt
 rust_panic
 ```
 
-Jonesy walks this call tree from `rust_panic` upward, examining each function name for known patterns that indicate specific panic causes.
+Jonesyy walks this call tree from `rust_panic` upward, examining each function name for known patterns that indicate specific panic causes.
 
 ### Pattern Matching
 

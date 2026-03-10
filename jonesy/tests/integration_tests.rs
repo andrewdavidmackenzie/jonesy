@@ -1,6 +1,6 @@
-//! Integration tests for Jones
+//! Integration tests for Jonesy
 //!
-//! These tests verify that Jonesy correctly identifies panic points in example crates
+//! These tests verify that Jonesyy correctly identifies panic points in example crates
 //! by comparing the output against `// jonesy: expect panic` comments in source files.
 
 use std::collections::HashSet;
@@ -141,7 +141,7 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
 
     match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
         Some(status) => {
-            // Jonesy exits with the number of panic points found (0 = no panics)
+            // Jonesyy exits with the number of panic points found (0 = no panics)
             let exit_code = status.code().unwrap_or(-1);
             let output = child.wait_with_output().expect("Failed to get output");
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -152,7 +152,7 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
             // Wait for the child to be reaped to avoid a zombie process
             let _ = child.wait();
             panic!(
-                "Jonesy timed out after {:?} on {}",
+                "Jonesyy timed out after {:?} on {}",
                 JONES_TIMEOUT,
                 example_dir.display()
             );

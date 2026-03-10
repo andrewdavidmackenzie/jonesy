@@ -1,6 +1,6 @@
-# Jonesy: "Don't Panic!"
+# Jonesyy: "Don't Panic!"
 
-Jonesy analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
+Jonesyy analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
 can originate in their code.
 
 Focus is currently on getting something useful working. I work on macOS and ARM64, so that's what implemented, but I
@@ -25,7 +25,7 @@ cargo build
 jonesy
 ```
 
-Jonesy will parse `Cargo.toml` to find the package name and binary targets, then analyze all binaries found in
+Jonesyy will parse `Cargo.toml` to find the package name and binary targets, then analyze all binaries found in
 `target/debug/`.
 
 ### From a Workspace Root
@@ -48,7 +48,7 @@ jonesy --bin target/debug/my-binary
 
 ### Analyzing Libraries
 
-Jonesy can analyze Rust libraries built as dynamic libraries (`.dylib`):
+Jonesyy can analyze Rust libraries built as dynamic libraries (`.dylib`):
 
 ```bash
 jonesy --lib target/debug/libmy_lib.dylib
@@ -187,7 +187,7 @@ See the [Configuration](#configuration) section for details on the config file f
 
 ## Configuration
 
-Jonesy supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
+Jonesyy supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
 
 - Suppressing known-acceptable panics in your codebase
 - Enforcing stricter rules (e.g. reporting drop panics)
@@ -267,7 +267,7 @@ allow = ["todo", "unimplemented", "debug_assert"]
 
 ## Exit Status
 
-Jonesy exits with the number of panic code points found:
+Jonesyy exits with the number of panic code points found:
 
 - `0` - No panics found (code "passed")
 - `N` - N panic code points found
@@ -322,12 +322,12 @@ Summary:
 
 ## Using on macOS
 
-Jonesy needs DWARF debug information to map code addresses to source file locations. On macOS, Jonesy automatically
+Jonesyy needs DWARF debug information to map code addresses to source file locations. On macOS, Jonesyy automatically
 handles this for you:
 
 ### Automatic dSYM Generation
 
-When no `.dSYM` bundle exists, Jonesy automatically runs `dsymutil` (if it is present) to generate one, if not it will
+When no `.dSYM` bundle exists, Jonesyy automatically runs `dsymutil` (if it is present) to generate one, if not it will
 attempt (on macOS) to fall back to the "Debug Map" method.
 
 in your project run:
@@ -337,7 +337,7 @@ cargo build
 jonesy
 ```
 
-Jonesy will output "Generated .dSYM bundle for debug info" when it creates one.
+Jonesyy will output "Generated .dSYM bundle for debug info" when it creates one.
 
 ### Why is this needed?
 
@@ -347,11 +347,11 @@ By default, macOS Rust builds use Apple's "lazy" DWARF scheme:
 - The final binary only contains a "debug map" pointing to those files
 - `dsymutil` combines everything into a `.dSYM` bundle
 
-Jonesy automatically runs `dsymutil` when needed, so you don't have to.
+Jonesyy automatically runs `dsymutil` when needed, so you don't have to.
 
 ### Optional: Pre-generate dSYM in Cargo
 
-If you want Cargo to create dSYM bundles during build (avoiding Jones's auto-generation), add to `Cargo.toml`:
+If you want Cargo to create dSYM bundles during build (avoiding Jonesy's auto-generation), add to `Cargo.toml`:
 
 ```toml
 [profile.dev]
