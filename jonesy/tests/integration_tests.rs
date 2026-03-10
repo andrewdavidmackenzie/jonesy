@@ -254,7 +254,7 @@ fn test_example(example_name: &str) {
     // Run jonesy and get detected panics
     let (exit_code, detected) = run_jones_on_example(&example_dir);
 
-    // Verify exit code matches expected marker count
+    // Verify the exit code matches the expected marker count
     let expected_count = markers.len() as i32;
     assert_eq!(
         exit_code, expected_count,

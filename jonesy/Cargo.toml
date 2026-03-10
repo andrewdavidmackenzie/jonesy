@@ -9,6 +9,10 @@ repository = "https://github.com/andrewdavidmackenzie/jones"
 readme = "../README.md"
 license = "Apache-2.0"
 
+[[bin]]
+name = "jonesy"
+path = "src/main.rs"
+
 [dependencies]
 goblin = "0.10.4"
 gimli = "0.32.3"

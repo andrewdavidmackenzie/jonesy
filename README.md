@@ -30,7 +30,7 @@ Jones will parse `Cargo.toml` to find the package name and binary targets, then 
 
 ### From a Workspace Root
 
-When run from a workspace root, jonesyanalyzes all workspace member binaries:
+When run from a workspace root, jonesy analyzes all workspace member binaries:
 
 ```bash
 cd my-workspace

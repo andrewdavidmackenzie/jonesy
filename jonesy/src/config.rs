@@ -3,7 +3,7 @@
 //! Configuration is loaded in order of precedence (later overrides earlier):
 //! 1. Application defaults (in code)
 //! 2. Cargo.toml `[package.metadata.jonesy]` section
-//! 3. `jonesy.toml` file in project root
+//! 3. `jonesy.toml` file in the project root
 //! 4. `--config <path>` command line option
 
 use crate::panic_cause::PanicCause;
@@ -85,7 +85,7 @@ impl Config {
             return true;
         }
 
-        // Explicit allow means not denied
+        // An explicit "allow" means not denied
         if self.allowed.contains(id) {
             return false;
         }
@@ -96,7 +96,7 @@ impl Config {
 
     /// Apply a TOML configuration, overriding current settings.
     fn apply_toml_config(&mut self, config: &TomlConfig) {
-        // Validate and apply allow list
+        // Validate and apply the allow list
         for id in &config.allow {
             if PanicCause::all_ids().contains(&id.as_str()) {
                 self.allowed.insert(id.clone());
@@ -106,7 +106,7 @@ impl Config {
             }
         }
 
-        // Validate and apply deny list
+        // Validate and apply the deny list
         for id in &config.deny {
             if PanicCause::all_ids().contains(&id.as_str()) {
                 self.denied.insert(id.clone());
@@ -189,7 +189,7 @@ impl Config {
         Ok(())
     }
 
-    /// Load full configuration by searching for config files.
+    /// Load the full configuration by searching for config files.
     /// Looks for Cargo.toml and jonesy.toml starting from the given directory.
     /// Returns an error if an explicit config_override is provided and fails to load.
     pub fn load_for_project(
