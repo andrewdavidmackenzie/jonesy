@@ -1,15 +1,15 @@
 use crate::args::parse_args;
 use crate::call_tree::{
-    build_call_tree_parallel, count_crate_code_points_summary, print_call_tree, print_crate_code_points,
-    prune_call_tree, AnalysisSummary, CallTreeNode,
+    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
+    print_call_tree, print_crate_code_points, prune_call_tree,
 };
 use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use crate::config::Config;
 use crate::sym::{
-    find_symbol_address, find_symbol_containing, load_debug_info, read_symbols, CallGraph,
-    DebugInfo, SymbolTable,
+    CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
+    load_debug_info, read_symbols,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
