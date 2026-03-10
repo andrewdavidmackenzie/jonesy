@@ -1,6 +1,6 @@
-//! Integration tests for Jones
+//! Integration tests for Jonesy
 //!
-//! These tests verify that Jones correctly identifies panic points in example crates
+//! These tests verify that Jonesy correctly identifies panic points in example crates
 //! by comparing the output against `// jonesy: expect panic` comments in source files.
 
 use std::collections::HashSet;
@@ -121,7 +121,7 @@ const JONES_TIMEOUT: Duration = Duration::from_secs(600);
 fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet<PanicPoint>) {
     let workspace_root = find_workspace_root();
     // Use the Cargo-provided path if available, otherwise fall back to the platform-safe path
-    let jones_binary = std::env::var_os("CARGO_BIN_EXE_jones")
+    let jones_binary = std::env::var_os("CARGO_BIN_EXE_jonesy")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             workspace_root
@@ -141,7 +141,7 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
 
     match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
         Some(status) => {
-            // Jones exits with the number of panic points found (0 = no panics)
+            // Jonesy exits with the number of panic points found (0 = no panics)
             let exit_code = status.code().unwrap_or(-1);
             let output = child.wait_with_output().expect("Failed to get output");
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -152,7 +152,7 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
             // Wait for the child to be reaped to avoid a zombie process
             let _ = child.wait();
             panic!(
-                "Jones timed out after {:?} on {}",
+                "Jonesy timed out after {:?} on {}",
                 JONES_TIMEOUT,
                 example_dir.display()
             );
@@ -230,7 +230,7 @@ fn setup() {
             .current_dir(&workspace_root)
             .status()
             .expect("Failed to build jonesy");
-        assert!(status.success(), "Failed to build jones");
+        assert!(status.success(), "Failed to build jonesy");
 
         // Build all examples
         let status = Command::new("cargo")

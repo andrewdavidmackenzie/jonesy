@@ -1,4 +1,4 @@
-# Jones Performance Benchmarks
+# Jonesy Performance Benchmarks
 
 ## Baseline Timing (With CallGraph Pre-computation, Single-threaded)
 
@@ -82,12 +82,12 @@ The most expensive operation is scanning millions of instructions to find `bl` (
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight**: Looking up which function contains each call site (symbol table search + DWARF enrichment)
-is independent per instruction - perfect for parallelization.
+**Key insight**: Looking up which function contains each call site (symbol table search and DWARF enrichment)
+is independent per instruction—perfect for parallelization.
 
 ### Phase 2: Parallel Call Tree Building
 
-Once the CallGraph is built, finding callers is O(1). The tree building parallelizes exploration of
+Once the CallGraph is built, finding callers is O(1). The tree building parallelizes the exploration of
 independent branches:
 
 ```text
@@ -186,12 +186,12 @@ fn decode_bl_target(insn_bytes: u32, pc: u64) -> u64 {
 
 - Scans raw bytes directly without Capstone overhead
 - Checks each 4-byte instruction against BL opcode mask
-- Decodes the 26-bit signed offset to compute call target
-- Capstone-based implementation kept as reference for other architectures
+- Decodes the 26-bit signed offset to compute the call target
+- Capstone-based implementation is kept as a reference for other architectures
 
 ## Thread Scaling (--max-threads sweep)
 
-Tested with the `dylib` example (largest binary) to show scaling behavior.
+Tested with the `dylib` example (the largest binary) to show scaling behavior.
 System: macOS ARM64 (Apple Silicon M1 Pro) with 10 physical cores.
 
 | Threads | Time (s) | Speedup vs 1 | CPU Utilization |
@@ -210,7 +210,7 @@ System: macOS ARM64 (Apple Silicon M1 Pro) with 10 physical cores.
 
 **Observations**:
 
-- Near-linear scaling up to 8 threads
+- Near-linear scaling up to eight threads
 - Diminishing returns beyond physical core count (10 cores)
 - Oversubscription (>10 threads) provides no additional benefit
 - Maximum achievable speedup: ~8.5x on this 10-core system
@@ -242,7 +242,7 @@ time ./target/release/jonesy --lib target/debug/libdylib_example.dylib
 The graph shows two views of the parallelization behavior:
 
 - **Left panel**: Absolute execution time vs thread count for all examples
-- **Right panel**: Speedup relative to single-threaded execution, with ideal linear scaling shown as dashed line
+- **Right panel**: Speedup relative to single-threaded execution, with ideal linear scaling shown as the dashed line
 
 ### Detailed Results (All Examples)
 
@@ -275,20 +275,20 @@ The graph shows two views of the parallelization behavior:
 **Measurement Procedure:**
 
 1. Each configuration (threads × example) was timed using Python's `time.time()` for wall-clock accuracy
-2. The release-built `jones` binary analyzed debug-built example libraries
+2. The release-built `jonesy` binary analyzed debug-built example libraries
 3. Debug builds were used as analysis targets because they contain full symbol tables and DWARF debug info
 4. Thread count was controlled via `--max-threads N` command-line option
 
 **Examples Tested:**
 
-- `panic`, `array_access`, `oom`, `perfect`: Small example binaries (~2-3s single-threaded)
-- `cdylib`: C-compatible dynamic library (~2.5s single-threaded)
-- `dylib`: Rust dynamic library including std runtime (~22s single-threaded, largest workload)
+- `panic`, `array_access`, `oom`, `perfect`: Small example binaries (~2–3 s single-threaded)
+- `cdylib`: C-compatible dynamic library (~2.5 s single-threaded)
+- `dylib`: Rust dynamic library including std runtime (~22 s single-threaded, largest workload)
 
 ### Conclusions
 
 1. **Near-Linear Scaling to Physical Core Count**
-    - All examples show close to ideal speedup up to 8 threads
+    - All examples show close to ideal speedup up to eight threads
     - The larger the workload, the better the scaling efficiency
     - `dylib` achieves 8.5x speedup on 10 cores (85% parallel efficiency)
 
@@ -298,9 +298,9 @@ The graph shows two views of the parallelization behavior:
     - Slight performance variability at high thread counts due to scheduling overhead
 
 3. **Workload Size Matters**
-    - Larger binaries (`dylib`: 22s baseline) scale better than smaller ones
-    - Small binaries (~2-3s baseline) still achieve 6-7x speedup
-    - Minimum useful parallelization threshold is low enough for typical Rust projects
+    - Larger binaries (`dylib`: 22 s baseline) scale better than smaller ones
+    - Small binaries (~2–3 s baseline) still achieve 6-7x speedup
+    - The minimum useful parallelization threshold is low enough for typical Rust projects
 
 4. **Amdahl's Law in Practice**
     - Maximum speedup limited by sequential portions (disassembly setup, result collection)
@@ -357,7 +357,7 @@ This section documents optimization approaches that were attempted but abandoned
 
 **Date**: 2026-03-07
 
-**Goal**: Reduce `process instructions` time from ~39s to <1s by replacing O(n) DWARF traversals with
+**Goal**: Reduce `process instructions` time from ~39 s to <1 s by replacing O(n) DWARF traversals with
 O(log n) binary searches.
 
 **Approach**:
@@ -368,7 +368,7 @@ O(log n) binary searches.
 
 **Results**:
 
-- **Speedup achieved**: ~90x (39.1s → 0.43s on flowc)
+- **Speedup achieved**: ~90x (39.1 s → 0.43 s on flowc)
 - **Accuracy loss**: ~14% (92 vs 107 panic points found)
 
 **Why it failed**:

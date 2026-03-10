@@ -5,7 +5,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 authors = [" Andrew Mackenzie andrew@mackenzie-serres.net"]
-repository = "https://github.com/andrewdavidmackenzie/jones"
+repository = "https://github.com/andrewdavidmackenzie/jonesy"
 readme = "../README.md"
 license = "Apache-2.0"
 

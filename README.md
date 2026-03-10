@@ -1,6 +1,6 @@
-# Jones: "Don't Panic!"
+# Jonesy: "Don't Panic!"
 
-Jones analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
+Jonesy analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
 can originate in their code.
 
 Focus is currently on getting something useful working. I work on macOS and ARM64, so that's what implemented, but I
@@ -25,7 +25,7 @@ cargo build
 jonesy
 ```
 
-Jones will parse `Cargo.toml` to find the package name and binary targets, then analyze all binaries found in
+Jonesy will parse `Cargo.toml` to find the package name and binary targets, then analyze all binaries found in
 `target/debug/`.
 
 ### From a Workspace Root
@@ -48,7 +48,7 @@ jonesy --bin target/debug/my-binary
 
 ### Analyzing Libraries
 
-Jones can analyze Rust libraries built as dynamic libraries (`.dylib`):
+Jonesy can analyze Rust libraries built as dynamic libraries (`.dylib`):
 
 ```bash
 jonesy --lib target/debug/libmy_lib.dylib
@@ -56,7 +56,7 @@ jonesy --lib target/debug/libmy_lib.dylib
 
 **Library Setup Requirements:**
 
-For jonesyto analyze a library, it must be built as a `cdylib` with exported symbols:
+For jonesy to analyze a library, it must be built as a `cdylib` with exported symbols:
 
 1. Add `cdylib` to your crate types in `Cargo.toml`:
    ```toml
@@ -119,7 +119,7 @@ Options:
 
 ### `--tree`
 
-By default, jonesyshows only the panic code points in your crate's source code. Use `--tree` to see the full call tree
+By default, jonesy shows only the panic code points in your crate's source code. Use `--tree` to see the full call tree
 from `rust_panic` up to your code:
 
 ```bash
@@ -165,7 +165,7 @@ file path while displaying a shorter relative path.
 When output is piped or redirected (e.g., `jonesy> file.txt`), plain absolute paths are used automatically to avoid
 escape sequences in logs or files.
 
-If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and
+If your terminal doesn't support OSC 8 hyperlinks (e.g. macOS Terminal.app), the escape sequences will be invisible and
 the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this
 flag:
 
@@ -187,10 +187,10 @@ See the [Configuration](#configuration) section for details on the config file f
 
 ## Configuration
 
-Jones supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
+Jonesy supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
 
 - Suppressing known-acceptable panics in your codebase
-- Enforcing stricter rules (e.g., reporting drop panics)
+- Enforcing stricter rules (e.g. reporting drop panics)
 - Per-project customization
 
 ### Configuration Cascade
@@ -199,7 +199,7 @@ Configuration is loaded in order of precedence (later overrides earlier):
 
 1. **Code defaults** - `drop` and `unwind` panics are allowed; all others are denied
 2. **Cargo.toml** - `[package.metadata.jonesy]` section
-3. **jones.toml** - Project root config file
+3. **jonesy.toml** - Project root config file
 4. **`--config`** - Command-line override
 
 ### Panic Cause Identifiers
@@ -267,7 +267,7 @@ allow = ["todo", "unimplemented", "debug_assert"]
 
 ## Exit Status
 
-Jones exits with the number of panic code points found:
+Jonesy exits with the number of panic code points found:
 
 - `0` - No panics found (code "passed")
 - `N` - N panic code points found
@@ -322,12 +322,12 @@ Summary:
 
 ## Using on macOS
 
-Jones needs DWARF debug information to map code addresses to source file locations. On macOS, Jones automatically
+Jonesy needs DWARF debug information to map code addresses to source file locations. On macOS, Jonesy automatically
 handles this for you:
 
 ### Automatic dSYM Generation
 
-When no `.dSYM` bundle exists, Jones automatically runs `dsymutil` (if it is present) to generate one, if not it will
+When no `.dSYM` bundle exists, Jonesy automatically runs `dsymutil` (if it is present) to generate one, if not it will
 attempt (on macOS) to fall back to the "Debug Map" method.
 
 in your project run:
@@ -337,7 +337,7 @@ cargo build
 jonesy
 ```
 
-Jones will output "Generated .dSYM bundle for debug info" when it creates one.
+Jonesy will output "Generated .dSYM bundle for debug info" when it creates one.
 
 ### Why is this needed?
 
@@ -347,11 +347,11 @@ By default, macOS Rust builds use Apple's "lazy" DWARF scheme:
 - The final binary only contains a "debug map" pointing to those files
 - `dsymutil` combines everything into a `.dSYM` bundle
 
-Jones automatically runs `dsymutil` when needed, so you don't have to.
+Jonesy automatically runs `dsymutil` when needed, so you don't have to.
 
 ### Optional: Pre-generate dSYM in Cargo
 
-If you want Cargo to create dSYM bundles during build (avoiding Jones's auto-generation), add to `Cargo.toml`:
+If you want Cargo to create dSYM bundles during build (avoiding Jonesy's auto-generation), add to `Cargo.toml`:
 
 ```toml
 [profile.dev]
