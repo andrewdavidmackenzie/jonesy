@@ -121,7 +121,7 @@ const JONES_TIMEOUT: Duration = Duration::from_secs(600);
 fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSet<PanicPoint>) {
     let workspace_root = find_workspace_root();
     // Use the Cargo-provided path if available, otherwise fall back to the platform-safe path
-    let jones_binary = std::env::var_os("CARGO_BIN_EXE_jones")
+    let jones_binary = std::env::var_os("CARGO_BIN_EXE_jonesy")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             workspace_root
@@ -230,7 +230,7 @@ fn setup() {
             .current_dir(&workspace_root)
             .status()
             .expect("Failed to build jonesy");
-        assert!(status.success(), "Failed to build jones");
+        assert!(status.success(), "Failed to build jonesy");
 
         // Build all examples
         let status = Command::new("cargo")
