@@ -56,7 +56,7 @@ jonesy --lib target/debug/libmy_lib.dylib
 
 **Library Setup Requirements:**
 
-For jonesyto analyze a library, it must be built as a `cdylib` with exported symbols:
+For jonesy to analyze a library, it must be built as a `cdylib` with exported symbols:
 
 1. Add `cdylib` to your crate types in `Cargo.toml`:
    ```toml
@@ -119,7 +119,7 @@ Options:
 
 ### `--tree`
 
-By default, jonesyshows only the panic code points in your crate's source code. Use `--tree` to see the full call tree
+By default, jonesy shows only the panic code points in your crate's source code. Use `--tree` to see the full call tree
 from `rust_panic` up to your code:
 
 ```bash
@@ -165,7 +165,7 @@ file path while displaying a shorter relative path.
 When output is piped or redirected (e.g., `jonesy> file.txt`), plain absolute paths are used automatically to avoid
 escape sequences in logs or files.
 
-If your terminal doesn't support OSC 8 hyperlinks (e.g., macOS Terminal.app), the escape sequences will be invisible and
+If your terminal doesn't support OSC 8 hyperlinks (e.g. macOS Terminal.app), the escape sequences will be invisible and
 the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this
 flag:
 
@@ -190,7 +190,7 @@ See the [Configuration](#configuration) section for details on the config file f
 Jonesy supports configuring which panic causes to report (deny) or suppress (allow). This is useful for:
 
 - Suppressing known-acceptable panics in your codebase
-- Enforcing stricter rules (e.g., reporting drop panics)
+- Enforcing stricter rules (e.g. reporting drop panics)
 - Per-project customization
 
 ### Configuration Cascade
@@ -199,7 +199,7 @@ Configuration is loaded in order of precedence (later overrides earlier):
 
 1. **Code defaults** - `drop` and `unwind` panics are allowed; all others are denied
 2. **Cargo.toml** - `[package.metadata.jonesy]` section
-3. **jones.toml** - Project root config file
+3. **jonesy.toml** - Project root config file
 4. **`--config`** - Command-line override
 
 ### Panic Cause Identifiers
