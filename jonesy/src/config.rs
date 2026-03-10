@@ -36,7 +36,7 @@ struct TomlConfig {
 #[derive(Debug, Deserialize, Default)]
 struct CargoMetadata {
     #[serde(default)]
-    jones: Option<TomlConfig>,
+    jonesy: Option<TomlConfig>,
 }
 
 /// Cargo.toml package structure
@@ -146,7 +146,7 @@ impl Config {
 
         if let Some(package) = cargo.package
             && let Some(metadata) = package.metadata
-            && let Some(jones_config) = metadata.jones
+            && let Some(jones_config) = metadata.jonesy
         {
             self.apply_toml_config(&jones_config);
         }

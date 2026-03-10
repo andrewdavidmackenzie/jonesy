@@ -198,7 +198,7 @@ Jones supports configuring which panic causes to report (deny) or suppress (allo
 Configuration is loaded in order of precedence (later overrides earlier):
 
 1. **Code defaults** - `drop` and `unwind` panics are allowed; all others are denied
-2. **Cargo.toml** - `[package.metadata.jones]` section
+2. **Cargo.toml** - `[package.metadata.jonesy]` section
 3. **jones.toml** - Project root config file
 4. **`--config`** - Command-line override
 
@@ -235,14 +235,14 @@ deny = ["todo", "unimplemented"]
 
 ### Cargo.toml Format
 
-Add configuration to your `Cargo.toml` under `[package.metadata.jones]`:
+Add configuration to your `Cargo.toml` under `[package.metadata.jonesy]`:
 
 ```toml
 [package]
 name = "my-crate"
 version = "0.1.0"
 
-[package.metadata.jones]
+[package.metadata.jonesy]
 allow = ["drop", "unwind"]
 deny = ["todo"]
 ```
