@@ -1,6 +1,6 @@
 [package]
 name = "jonesy"
-description = "Jonesyy is here to help you not panic!"
+description = "Jonesy is here to help you not panic!"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
