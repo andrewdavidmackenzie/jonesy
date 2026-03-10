@@ -5,40 +5,40 @@ mod module;
 
 fn main() {
     if std::env::args().len() > 1 {
-        // jonesy: expect panic - This is a potential panic at runtime, depending on args
+        // jonesy: expect panic This is a potential panic at runtime, depending on args
         panic!("{}", PANIC_STR);
     }
 
-    // jonesy: expect panic - This obviously causes a panic
+    // jonesy: expect panic This obviously causes a panic
     module::cause_a_panic();
 
-    // jonesy: expect panic - This obviously causes a panic
+    // jonesy: expect panic This obviously causes a panic
     module::cause_an_unwrap();
 
-    // jonesy: expect panic - unwrap on Err
+    // jonesy: expect panic unwrap on Err
     module::cause_unwrap_err();
 
-    // jonesy: expect panic - assert failed
+    // jonesy: expect panic assert failed
     module::cause_assert();
 
-    // jonesy: expect panic - debug_assert failed
+    // jonesy: expect panic debug_assert failed
     module::cause_debug_assert();
 
-    // jonesy: expect panic - unreachable
+    // jonesy: expect panic unreachable
     module::cause_unreachable();
 
-    // jonesy: expect panic - unimplemented
+    // jonesy: expect panic unimplemented
     module::cause_unimplemented();
 
-    // jonesy: expect panic - todo
+    // jonesy: expect panic todo
     module::cause_todo();
 
-    // jonesy: expect panic - division by zero
+    // jonesy: expect panic division by zero
     module::cause_divide_by_zero();
 
-    // jonesy: expect panic - arithmetic overflow
+    // jonesy: expect panic arithmetic overflow
     module::cause_arithmetic_overflow();
 
-    // jonesy: expect panic - shift overflow
+    // jonesy: expect panic shift overflow
     module::cause_shift_overflow();
 }

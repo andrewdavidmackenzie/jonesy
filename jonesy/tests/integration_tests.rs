@@ -1,7 +1,7 @@
 //! Integration tests for Jones
 //!
 //! These tests verify that Jones correctly identifies panic points in example crates
-//! by comparing the output against `// jonesy: expect panic -` comments in source files.
+//! by comparing the output against `// jonesy: expect panic` comments in source files.
 
 use std::collections::HashSet;
 use std::fs;
@@ -13,7 +13,7 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 /// Marker comment that indicates an expected panic on the next line
-const PANIC_MARKER: &str = "// jonesy: expect panic -";
+const PANIC_MARKER: &str = "// jonesy: expect panic";
 
 /// Represents a panic point location
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
