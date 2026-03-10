@@ -1,4 +1,4 @@
-# Jones Performance Benchmarks
+# Jonesy Performance Benchmarks
 
 ## Baseline Timing (With CallGraph Pre-computation, Single-threaded)
 
