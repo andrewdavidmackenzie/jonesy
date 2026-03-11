@@ -2,6 +2,30 @@
 //!
 //! This module identifies the source of potential panics by analyzing
 //! function names in the call chain and provides helpful suggestions.
+//!
+//! # Debug vs Release Build Behavior
+//!
+//! In Rust, most panic causes occur in both debug and release builds. Only a few
+//! are affected by build profile:
+//!
+//! | Panic Cause | Debug Build | Release Build |
+//! |-------------|-------------|---------------|
+//! | Arithmetic overflow | Panics | Wraps silently |
+//! | Shift overflow | Panics | Wraps silently |
+//! | `debug_assert!()` | Runs check | Compiled out |
+//! | Division by zero | Panics | Panics |
+//! | Index out of bounds | Panics | Panics |
+//! | All other causes | Panics | Panics |
+//!
+//! **Important**: Safe Rust never has undefined behavior, regardless of build profile.
+//! Bounds checking and division-by-zero checks are never removed in release builds.
+//!
+//! # References
+//!
+//! - [Cargo Profiles](https://doc.rust-lang.org/cargo/reference/profiles.html) -
+//!   Documents `overflow-checks` and `debug-assertions` settings
+//! - [Behavior Considered Undefined](https://doc.rust-lang.org/reference/behavior-considered-undefined.html) -
+//!   Confirms safe Rust never has UB
 
 /// Known panic causes with explanations and suggestions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -173,27 +197,51 @@ impl PanicCause {
     }
 
     /// Returns true if this panic cause only occurs in debug builds.
-    /// In release builds, these conditions have different behavior (wrapping, UB, or omitted).
+    /// In release builds, these conditions have different behavior (wrapping or omitted).
+    ///
+    /// # Debug vs Release Behavior
+    ///
+    /// Only arithmetic overflow is affected by build profile:
+    /// - `overflow-checks = true` (dev default): panics on overflow
+    /// - `overflow-checks = false` (release default): wraps silently
+    ///
+    /// Division by zero and bounds checking panic in BOTH debug and release builds.
+    /// Safe Rust never has undefined behavior.
+    ///
+    /// # References
+    /// - Cargo profiles: <https://doc.rust-lang.org/cargo/reference/profiles.html>
+    /// - Undefined behavior: <https://doc.rust-lang.org/reference/behavior-considered-undefined.html>
     #[allow(dead_code)] // May be useful for future filtering features
     pub fn is_debug_only(&self) -> bool {
         matches!(
             self,
             PanicCause::ArithmeticOverflow(_)
                 | PanicCause::ShiftOverflow(_)
-                | PanicCause::DivisionByZero
                 | PanicCause::DebugAssertFailed
         )
     }
 
     /// Get a warning message for debug-only panics.
     /// Returns None if this panic occurs in both debug and release builds.
+    ///
+    /// # Debug vs Release Behavior
+    ///
+    /// Only these cause different behavior between debug and release:
+    /// - **Arithmetic/shift overflow**: Controlled by `overflow-checks` in Cargo.toml.
+    ///   Panics in debug (default), wraps in release (default).
+    /// - **debug_assert!()**: Compiled out entirely in release builds.
+    ///
+    /// The following panic in BOTH debug and release builds:
+    /// - **Division by zero**: Always panics (safe Rust has no UB)
+    /// - **Index out of bounds**: Always panics (bounds checks are never removed)
+    ///
+    /// # References
+    /// - Cargo profiles: <https://doc.rust-lang.org/cargo/reference/profiles.html>
+    /// - Undefined behavior: <https://doc.rust-lang.org/reference/behavior-considered-undefined.html>
     pub fn release_warning(&self) -> Option<&'static str> {
         match self {
             PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_) => {
                 Some("In release builds, this wraps around silently (no panic)")
-            }
-            PanicCause::DivisionByZero => {
-                Some("In release builds, this is undefined behavior (no panic)")
             }
             PanicCause::DebugAssertFailed => {
                 Some("In release builds, debug_assert! is not compiled (no check)")
