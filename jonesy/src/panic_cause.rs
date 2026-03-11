@@ -6,16 +6,19 @@
 //! # Debug vs Release Build Behavior
 //!
 //! In Rust, most panic causes occur in both debug and release builds. Only a few
-//! are affected by build profile:
+//! are affected by Cargo profile settings:
 //!
-//! | Panic Cause | Debug Build | Release Build |
-//! |-------------|-------------|---------------|
-//! | Arithmetic overflow | Panics | Wraps silently |
-//! | Shift overflow | Panics | Wraps silently |
-//! | `debug_assert!()` | Runs check | Compiled out |
+//! | Panic Cause | Debug Build (default) | Release Build (default) |
+//! |-------------|----------------------|-------------------------|
+//! | Arithmetic overflow | Panics | Wraps (configurable via `overflow-checks`) |
+//! | Shift overflow | Panics | Wraps (configurable via `overflow-checks`) |
+//! | `debug_assert!()` | Runs check | Omitted (configurable via `debug-assertions`) |
 //! | Division by zero | Panics | Panics |
 //! | Index out of bounds | Panics | Panics |
 //! | All other causes | Panics | Panics |
+//!
+//! **Note**: The behaviors above are **defaults** that can be changed via Cargo profile
+//! settings. For example, you can enable `overflow-checks` in release builds.
 //!
 //! **Important**: Safe Rust never has undefined behavior, regardless of build profile.
 //! Bounds checking and division-by-zero checks are never removed in release builds.
@@ -196,14 +199,18 @@ impl PanicCause {
         }
     }
 
-    /// Returns true if this panic cause only occurs in debug builds.
+    /// Returns true if this panic cause only occurs in debug builds (by default).
     /// In release builds, these conditions have different behavior (wrapping or omitted).
     ///
-    /// # Debug vs Release Behavior
+    /// # Profile-Dependent Behavior
     ///
-    /// Only arithmetic overflow is affected by build profile:
-    /// - `overflow-checks = true` (dev default): panics on overflow
-    /// - `overflow-checks = false` (release default): wraps silently
+    /// These causes have different behavior based on Cargo profile settings:
+    /// - **Arithmetic/shift overflow**: Controlled by `overflow-checks`
+    ///   - `true` (dev default): panics on overflow
+    ///   - `false` (release default): wraps silently
+    /// - **`debug_assert!()`**: Controlled by `debug-assertions`
+    ///   - `true` (dev default): runs the assertion
+    ///   - `false` (release default): compiled out entirely
     ///
     /// Division by zero and bounds checking panic in BOTH debug and release builds.
     /// Safe Rust never has undefined behavior.
@@ -221,17 +228,18 @@ impl PanicCause {
         )
     }
 
-    /// Get a warning message for debug-only panics.
+    /// Get a warning message for profile-dependent panics.
     /// Returns None if this panic occurs in both debug and release builds.
     ///
-    /// # Debug vs Release Behavior
+    /// # Profile-Dependent Behavior
     ///
-    /// Only these cause different behavior between debug and release:
-    /// - **Arithmetic/shift overflow**: Controlled by `overflow-checks` in Cargo.toml.
-    ///   Panics in debug (default), wraps in release (default).
-    /// - **debug_assert!()**: Compiled out entirely in release builds.
+    /// These causes have different behavior based on Cargo profile settings:
+    /// - **Arithmetic/shift overflow**: Controlled by `overflow-checks` in Cargo profiles.
+    ///   Panics when enabled (dev default), wraps when disabled (release default).
+    /// - **`debug_assert!()`**: Controlled by `debug-assertions` in Cargo profiles.
+    ///   Runs when enabled (dev default), compiled out when disabled (release default).
     ///
-    /// The following panic in BOTH debug and release builds:
+    /// The following panic in BOTH debug and release builds regardless of settings:
     /// - **Division by zero**: Always panics (safe Rust has no UB)
     /// - **Index out of bounds**: Always panics (bounds checks are never removed)
     ///
@@ -241,10 +249,10 @@ impl PanicCause {
     pub fn release_warning(&self) -> Option<&'static str> {
         match self {
             PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_) => {
-                Some("In release builds, this wraps around silently (no panic)")
+                Some("With default release settings (overflow-checks=false), this wraps silently")
             }
             PanicCause::DebugAssertFailed => {
-                Some("In release builds, debug_assert! is not compiled (no check)")
+                Some("With default release settings (debug-assertions=false), this is not compiled")
             }
             _ => None,
         }
