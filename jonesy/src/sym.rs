@@ -679,6 +679,7 @@ impl CallGraph {
                     crate_src_path,
                     &source_cache,
                     crate_line_table.as_ref(),
+                    binary_macho,
                 )
             {
                 edges.entry(target).or_default().push(caller_info);
@@ -740,6 +741,7 @@ fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, 
 }
 
 /// Process instruction data using pre-built crate line table for fast lookups.
+/// Falls back to symbol table lookup if DWARF doesn't contain the function.
 fn process_instruction_data_with_crate_table(
     data: &InsnData,
     functions: &[FunctionInfo],
@@ -747,42 +749,71 @@ fn process_instruction_data_with_crate_table(
     crate_src_path: Option<&str>,
     source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
     crate_line_table: Option<&CrateLineTable>,
+    binary_macho: &MachO,
 ) -> Option<(u64, CallerInfo)> {
     let call_target = data.call_target?;
 
-    // Find the function containing this call
-    let func = find_function_at_address(functions, data.address)?;
+    // Find the function containing this call - try DWARF first, fall back to symbol table
+    if let Some(func) = find_function_at_address(functions, data.address) {
+        // Found in DWARF - use full debug info
+        let (func_file, func_line) = source_cache
+            .entry(func.start_address)
+            .or_insert_with(|| {
+                get_source_location(dwarf, func.start_address).unwrap_or((None, None))
+            })
+            .clone();
 
-    // Get source info from cache or compute it
-    let (func_file, func_line) = source_cache
-        .entry(func.start_address)
-        .or_insert_with(|| get_source_location(dwarf, func.start_address).unwrap_or((None, None)))
-        .clone();
+        let file = func.file.clone().or(func_file);
+        let mut line = func.line.or(func_line);
 
-    let file = func.file.clone().or(func_file);
-    let mut line = func.line.or(func_line);
-
-    // For functions in the crate source, find actual call line using pre-built table
-    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-        && f.contains(crate_path)
-    {
-        // Use pre-built crate line table for O(log n) lookup
-        if let Some(table) = crate_line_table
-            && let Some(crate_line) = table.get_line(func.start_address, data.address)
+        // For functions in the crate source, find actual call line using pre-built table
+        if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
+            && f.contains(crate_path)
         {
-            line = Some(crate_line);
+            // Use pre-built crate line table for O(log n) lookup
+            if let Some(table) = crate_line_table
+                && let Some(crate_line) = table.get_line(func.start_address, data.address)
+            {
+                line = Some(crate_line);
+            }
         }
-    }
 
-    Some((
-        call_target,
-        CallerInfo {
-            caller: func.clone(),
-            call_site_addr: data.address,
-            file,
-            line,
-        },
-    ))
+        Some((
+            call_target,
+            CallerInfo {
+                caller: func.clone(),
+                call_site_addr: data.address,
+                file,
+                line,
+            },
+        ))
+    } else if let Some((func_addr, func_name)) =
+        find_containing_function_with_addr(binary_macho, data.address)
+    {
+        // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
+        // Try to get source info from DWARF line tables
+        let (file, line) = source_cache
+            .entry(func_addr)
+            .or_insert_with(|| get_source_location(dwarf, func_addr).unwrap_or((None, None)))
+            .clone();
+
+        Some((
+            call_target,
+            CallerInfo {
+                caller: FunctionInfo {
+                    name: func_name,
+                    start_address: func_addr,
+                    ..Default::default()
+                },
+                call_site_addr: data.address,
+                file,
+                line,
+            },
+        ))
+    } else {
+        // Function not found in DWARF or symbol table - skip this edge
+        None
+    }
 }
 
 // TODO Note that the address passed in is an n_value or Symbol table offset,
