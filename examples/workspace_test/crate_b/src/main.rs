@@ -1,118 +1,127 @@
 //! Crate B - binary component, with all panic types
 
 fn main() {
-    // jonesy: expect panic explicit panic call
-    panic!("panic from crate_b binary");
+    // Dispatch based on argument to ensure all functions are linked
+    match std::env::args().nth(1).as_deref() {
+        Some("unwrap") => bin_unwrap_none(),
+        Some("unwrap_err") => bin_unwrap_err(),
+        Some("expect_none") => bin_expect_none(),
+        Some("expect_err") => bin_expect_err(),
+        Some("unwrap_err_ok") => bin_unwrap_err_on_ok(),
+        Some("expect_err_ok") => bin_expect_err_on_ok(),
+        Some("assert") => bin_assert_false(),
+        Some("assert_eq") => bin_assert_eq_fail(),
+        Some("assert_ne") => bin_assert_ne_fail(),
+        Some("debug_assert") => bin_debug_assert_false(),
+        Some("debug_assert_eq") => bin_debug_assert_eq_fail(),
+        Some("debug_assert_ne") => bin_debug_assert_ne_fail(),
+        Some("unreachable") => bin_unreachable_code(),
+        Some("unimplemented") => bin_unimplemented_code(),
+        Some("todo") => bin_todo_code(),
+        Some("div_zero") => bin_divide_by_zero(),
+        Some("overflow") => bin_arithmetic_overflow(),
+        Some("shift") => bin_shift_overflow(),
+        Some("slice") => bin_slice_index_oob(),
+        Some("string") => bin_string_index_panic(),
+        _ => {
+            // jonesy: expect panic explicit panic call
+            panic!("panic from crate_b binary");
+        }
+    }
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[allow(dead_code)]
 // jonesy: expect panic unwrap on None
 fn bin_unwrap_none() {
     let _: () = None.unwrap();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[allow(dead_code)]
 // jonesy: expect panic unwrap on Err
 fn bin_unwrap_err() {
     let _: () = Err("error").unwrap();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[allow(dead_code)]
 // jonesy: expect panic expect on None
 fn bin_expect_none() {
     let _: () = None.expect("expected a value");
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[allow(dead_code)]
 // jonesy: expect panic expect on Err
 fn bin_expect_err() {
     let _: () = Err("error").expect("expected ok");
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[allow(dead_code)]
 // jonesy: expect panic unwrap_err on Ok
 fn bin_unwrap_err_on_ok() {
     let _: &str = Ok::<i32, &str>(42).unwrap_err();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-#[allow(dead_code)]
 // jonesy: expect panic expect_err on Ok
 fn bin_expect_err_on_ok() {
     let _: &str = Ok::<i32, &str>(42).expect_err("expected an error");
 }
 
 #[allow(clippy::assertions_on_constants)]
-#[allow(dead_code)]
 // jonesy: expect panic assert failed
 fn bin_assert_false() {
     assert!(false);
 }
 
 #[allow(clippy::assertions_on_constants)]
-#[allow(dead_code)]
 // TODO: jonesy does not detect assert_eq yet
 fn bin_assert_eq_fail() {
     assert_eq!(1, 2);
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-#[allow(dead_code)]
 // TODO: jonesy does not detect assert_ne yet
 fn bin_assert_ne_fail() {
     assert_ne!(1, 1);
 }
 
-#[allow(dead_code)]
 // jonesy: expect panic debug_assert failed (debug builds only)
 fn bin_debug_assert_false() {
     debug_assert!(false);
 }
 
-#[allow(dead_code)]
 // TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
 fn bin_debug_assert_eq_fail() {
     debug_assert_eq!(1, 2);
 }
 
-#[allow(dead_code, clippy::eq_op)]
+#[allow(clippy::eq_op)]
 // TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
 fn bin_debug_assert_ne_fail() {
     debug_assert_ne!(1, 1);
 }
 
-#[allow(dead_code)]
 // jonesy: expect panic unreachable reached
 fn bin_unreachable_code() {
     unreachable!();
 }
 
-#[allow(dead_code)]
 // jonesy: expect panic unimplemented reached
 fn bin_unimplemented_code() {
     unimplemented!();
 }
 
-#[allow(dead_code)]
 // jonesy: expect panic todo reached
 fn bin_todo_code() {
     todo!();
 }
 
 #[allow(unconditional_panic)]
-#[allow(dead_code)]
 // jonesy: expect panic division by zero
 fn bin_divide_by_zero() {
     let _ = 1 / 0;
 }
 
 #[allow(arithmetic_overflow)]
-#[allow(dead_code)]
 fn bin_arithmetic_overflow() {
     let x: i32 = i32::MAX;
     // jonesy: expect panic arithmetic overflow (debug builds)
@@ -120,20 +129,18 @@ fn bin_arithmetic_overflow() {
 }
 
 #[allow(arithmetic_overflow)]
-#[allow(dead_code)]
 // jonesy: expect panic shift overflow
 fn bin_shift_overflow() {
     let _ = 1u32 << 33;
 }
 
-#[allow(dead_code, clippy::useless_vec)]
+#[allow(clippy::useless_vec)]
 // TODO: jonesy slice index detection is platform-specific
 fn bin_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
 }
 
-#[allow(dead_code)]
 // TODO: jonesy does not detect string index panic yet
 fn bin_string_index_panic() {
     let s = "hello 世界";
