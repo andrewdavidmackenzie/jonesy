@@ -4,7 +4,7 @@ mod module;
 
 /// A library function that can panic
 #[unsafe(no_mangle)]
-pub fn library_function() {
+pub extern "C" fn library_function() {
     if std::env::args().len() > 1 {
         // jonesy: expect panic runtime panic depending on args
         panic!("{}", PANIC_STR);
