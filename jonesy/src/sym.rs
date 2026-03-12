@@ -81,9 +81,11 @@ impl CrateLineTable {
                         };
 
                         // Only include entries from crate source
-                        if full_path.contains(crate_src_path)
-                            && let Some(line) = row.line()
-                        {
+                        // Handle multi-pattern format with "|" separator
+                        let matches = crate_src_path
+                            .split('|')
+                            .any(|pattern| !pattern.is_empty() && full_path.contains(pattern));
+                        if matches && let Some(line) = row.line() {
                             entries.push(CrateLineEntry {
                                 address: row.address(),
                                 line: line.get() as u32,
@@ -821,9 +823,15 @@ fn process_instruction_data_with_crate_table(
         let mut line = func.line.or(func_line);
 
         // For functions in the crate source, find actual call line using pre-built table
-        if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-            && f.contains(crate_path)
-        {
+        // Handle multi-pattern format with "|" separator (used in workspace mode)
+        let file_in_crate = file.as_ref().is_some_and(|f| {
+            crate_src_path.is_some_and(|crate_path| {
+                crate_path
+                    .split('|')
+                    .any(|pattern| !pattern.is_empty() && f.contains(pattern))
+            })
+        });
+        if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
             if let Some(table) = crate_line_table
                 && let Some(crate_line) = table.get_line(func.start_address, data.address)
@@ -1294,10 +1302,11 @@ fn get_crate_line_at_address<R: Reader>(
                     };
 
                     // Check if this line is in the crate source
-                    if full_path.contains(crate_src_path)
-                        && let Some(line) = row.line()
-                        && addr >= best_addr
-                    {
+                    // Handle multi-pattern format with "|" separator
+                    let matches = crate_src_path
+                        .split('|')
+                        .any(|pattern| !pattern.is_empty() && full_path.contains(pattern));
+                    if matches && let Some(line) = row.line() && addr >= best_addr {
                         best_addr = addr;
                         best_line = Some(line.get() as u32);
                     }

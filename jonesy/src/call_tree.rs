@@ -40,10 +40,14 @@ impl CallTreeNode {
     }
 }
 
-/// Returns true if the node's source file matches the crate source path
+/// Returns true if the node's source file matches the crate source path.
+/// For workspace mode (when crate_src_path contains "|"), checks against multiple paths.
 pub fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
     if let Some(file) = &node.file {
-        file.contains(crate_src_path)
+        // Check if any of the patterns match (patterns separated by "|")
+        crate_src_path
+            .split('|')
+            .any(|pattern| !pattern.is_empty() && file.contains(pattern))
     } else {
         false
     }
@@ -252,8 +256,15 @@ fn collect_crate_relationships(
     // Try to detect panic cause from this node's function name and file path
     let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
 
+    // Check if file matches any of the patterns (patterns separated by "|")
+    let file_matches = node.file.as_ref().is_some_and(|file| {
+        crate_src_path
+            .split('|')
+            .any(|pattern| !pattern.is_empty() && file.contains(pattern))
+    });
+
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
-        && file.contains(crate_src_path)
+        && file_matches
         && *line > 0
     {
         Some((file.clone(), *line))

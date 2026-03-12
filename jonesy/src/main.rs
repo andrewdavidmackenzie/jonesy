@@ -1,4 +1,4 @@
-use crate::args::parse_args;
+use crate::args::{parse_args, Args, WorkspaceMember};
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
     print_call_tree, print_crate_code_points, prune_call_tree,
@@ -41,6 +41,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .num_threads(parsed_args.max_threads)
         .build_global()
         .ok(); // Ignore error if pool already initialized
+
+    // Handle workspace mode differently
+    if let Some(ref workspace_members) = parsed_args.workspace_members {
+        return analyze_workspace(workspace_members, &parsed_args);
+    }
 
     let mut total_summary = AnalysisSummary::default();
     let mut project_name: Option<String> = None;
@@ -383,4 +388,157 @@ fn analyze_macho(
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
     result
+}
+
+/// Analyze a workspace with multiple member crates.
+/// Produces per-crate reports and an aggregate workspace summary.
+fn analyze_workspace(
+    members: &[WorkspaceMember],
+    args: &Args,
+) -> Result<(), Box<dyn Error>> {
+    let workspace_root = std::env::current_dir()?;
+
+    if !args.summary_only && !args.quiet {
+        println!(
+            "Analyzing workspace with {} member crate(s)...\n",
+            members.len()
+        );
+    }
+
+    let mut workspace_summary = AnalysisSummary::default();
+    let mut crate_summaries: Vec<(String, AnalysisSummary)> = Vec::new();
+
+    // Collect all member source paths for filtering
+    // File paths in debug info are relative like "crate_a/src/main.rs"
+    // Join patterns with "|" separator for is_in_crate to check
+    // Include trailing "/" to match the format used in non-workspace mode
+    let workspace_src_path = members
+        .iter()
+        .map(|m| format!("{}/src/", m.name))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    for member in members {
+        if !args.summary_only && !args.quiet {
+            println!("=== {} ===", member.name);
+        }
+
+        let mut member_summary = AnalysisSummary::default();
+
+        for binary_path in &member.binaries {
+            let binary_path = binary_path
+                .canonicalize()
+                .unwrap_or_else(|_| binary_path.clone());
+
+            if !args.summary_only && !args.quiet {
+                println!("Processing {}", binary_path.display());
+            }
+
+            // Load configuration for this member crate
+            let config = Config::load_for_project(&member.path, args.config_path.as_deref())
+                .unwrap_or_else(|e| {
+                    eprintln!("Warning: Failed to load config for {}: {}", member.name, e);
+                    Config::with_defaults()
+                });
+
+            // Check if this is a library and detect its type
+            let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
+            if !args.summary_only
+                && !args.quiet
+                && is_dylib
+                && let Some(lib_type) = detect_library_type(&binary_path)
+            {
+                println!("Library type: {}", lib_type);
+            }
+
+            let binary_buffer = fs::read(&binary_path)?;
+            let symbols = read_symbols(&binary_buffer)?;
+
+            match symbols {
+                SymbolTable::MachO(Binary(macho)) => {
+                    // Use workspace root path to include panics from all member crates
+                    let summary = analyze_macho(
+                        &macho,
+                        &binary_buffer,
+                        &binary_path,
+                        Some(&workspace_src_path),
+                        args.show_tree,
+                        args.summary_only,
+                        args.show_timings,
+                        args.quiet,
+                        args.no_hyperlinks,
+                        &config,
+                        Some(workspace_root.as_path()),
+                    );
+                    member_summary.add(&summary);
+                }
+                SymbolTable::MachO(Fat(multi_arch)) => {
+                    if !args.summary_only {
+                        println!("FAT: {:?} architectures", multi_arch.arches()?);
+                    }
+                }
+                SymbolTable::Archive(archive) => {
+                    for member_name in archive.members() {
+                        if !member_name.ends_with(".o") {
+                            continue;
+                        }
+
+                        let Ok(member_data) = archive.extract(member_name, &binary_buffer) else {
+                            continue;
+                        };
+
+                        if let Ok(obj_macho) = MachO::parse(member_data, 0) {
+                            // Use workspace root path to include panics from all member crates
+                            let summary = analyze_macho(
+                                &obj_macho,
+                                member_data,
+                                &binary_path,
+                                Some(&workspace_src_path),
+                                args.show_tree,
+                                args.summary_only,
+                                args.show_timings,
+                                args.quiet,
+                                args.no_hyperlinks,
+                                &config,
+                                Some(workspace_root.as_path()),
+                            );
+                            member_summary.add(&summary);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !args.summary_only && !args.quiet {
+            println!(
+                "Panic points: {} in {} file(s)\n",
+                member_summary.panic_points(),
+                member_summary.files_affected()
+            );
+        }
+
+        crate_summaries.push((member.name.clone(), member_summary.clone()));
+        workspace_summary.add(&member_summary);
+    }
+
+    // Print workspace summary
+    println!("=== Workspace Summary ===");
+    println!("  Root: {}", workspace_root.display());
+    println!("  Members analyzed: {}", members.len());
+    for (name, summary) in &crate_summaries {
+        println!(
+            "    {}: {} panic point(s) in {} file(s)",
+            name,
+            summary.panic_points(),
+            summary.files_affected()
+        );
+    }
+    println!(
+        "  Total panic points: {} across {} crate(s)",
+        workspace_summary.panic_points(),
+        members.len()
+    );
+
+    // Exit with the number of panic points found
+    std::process::exit(workspace_summary.panic_points() as i32);
 }
