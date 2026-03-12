@@ -74,6 +74,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let has_bin_flag = filtered_args.iter().any(|a| *a == "--bin");
     let has_lib_flag = filtered_args.iter().any(|a| *a == "--lib");
 
+    if has_bin_flag && has_lib_flag {
+        return Err("--bin and --lib are mutually exclusive".to_string());
+    }
+
     let binaries = if has_bin_flag {
         parse_bin_args(&filtered_args)?
     } else if has_lib_flag {
@@ -410,6 +414,19 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         }
     }
 
+    // If this is a workspace, search workspace members
+    if manifest.workspace.is_some() {
+        if let Ok(workspace_binaries) = find_workspace_binaries(&manifest) {
+            for bin_path in workspace_binaries {
+                if let Some(name) = bin_path.file_name().and_then(|n| n.to_str()) {
+                    if name == bin_name.as_str() || name.replace('-', "_") == bin_name.as_str() {
+                        return Ok(vec![bin_path]);
+                    }
+                }
+            }
+        }
+    }
+
     Err(format!(
         "Binary '{}' not found in Cargo.toml or target/debug/",
         bin_name
@@ -458,8 +475,10 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
     let manifest = Manifest::from_slice(cargo_toml_content.as_bytes())
         .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
 
-    if manifest.lib.is_none() {
-        return Err("No [lib] target found in Cargo.toml".to_string());
+    // Check for explicit [lib] or implicit library (src/lib.rs)
+    let has_implicit_lib = PathBuf::from("src/lib.rs").exists();
+    if manifest.lib.is_none() && !has_implicit_lib {
+        return Err("No library target found in Cargo.toml or src/lib.rs".to_string());
     }
 
     let target_dir = find_target_dir()?;

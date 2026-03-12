@@ -67,6 +67,20 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
     while let Some(dir) = current {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
+            // First, try manifest-driven resolution (more accurate than directory heuristics)
+            if is_library_artifact {
+                // For libraries, search workspace members by lib name
+                if let Some(path) = find_lib_src_path(dir, binary_name) {
+                    return Some(path);
+                }
+            } else {
+                // For binaries, search workspace members by bin name
+                if let Some(path) = find_bin_src_path(dir, binary_name) {
+                    return Some(path);
+                }
+            }
+
+            // Fallback: directory heuristics when manifest lookup fails
             // Check for examples/<binary_name>/src/
             let example_src = dir.join("examples").join(binary_name).join("src");
             if example_src.exists() {
@@ -77,18 +91,6 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
             let member_src = dir.join(binary_name).join("src");
             if member_src.exists() {
                 return Some(format!("{}/src/", binary_name));
-            }
-
-            // For multi-binary crates, the binary name may not match the crate directory.
-            // Search workspace members to find the matching binary.
-            if let Some(path) = find_bin_src_path(dir, binary_name) {
-                return Some(path);
-            }
-
-            // For libraries, the directory name may not match the lib name.
-            // Search workspace members to find the matching lib.
-            if let Some(path) = find_lib_src_path(dir, binary_name) {
-                return Some(path);
             }
 
             // Check for src/ in the workspace root
