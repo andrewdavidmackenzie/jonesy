@@ -260,7 +260,8 @@ impl PanicCause {
 }
 
 /// Detect panic cause from a function name in the call chain
-pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
+/// The optional file path helps distinguish Option vs Result for unwrap/expect
+pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<PanicCause> {
     // Check for drop/cleanup panic paths first
     if func_name.contains("panic_in_cleanup") {
         return Some(PanicCause::PanicInDrop);
@@ -303,12 +304,27 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     if func_name.contains("panic_const_rem_by_zero") {
         return Some(PanicCause::DivisionByZero);
     }
-    // unwrap/expect detection
+    // unwrap/expect detection - distinguish Option vs Result by file path or function name
+    // Check for Result::expect first (it calls unwrap_failed internally)
+    if func_name.contains("Result") && func_name.contains("expect") {
+        return Some(PanicCause::ExpectErr);
+    }
     if func_name.contains("unwrap_failed") {
-        // Could be Option or Result - context would tell us which
-        return Some(PanicCause::UnwrapNone);
+        // Check file path first (most reliable), then fall back to function name
+        let is_result = file_path
+            .map(|f| f.contains("result.rs") || f.contains("core/result"))
+            .unwrap_or_else(|| func_name.contains("result"));
+        if is_result {
+            // core::result::unwrap_failed - used by Result::unwrap()
+            // (Result::expect is detected above via the caller)
+            return Some(PanicCause::UnwrapErr);
+        } else {
+            // core::option::unwrap_failed
+            return Some(PanicCause::UnwrapNone);
+        }
     }
     if func_name.contains("expect_failed") {
+        // Only Option has expect_failed; Result::expect() uses unwrap_failed
         return Some(PanicCause::ExpectNone);
     }
     // Assert macros

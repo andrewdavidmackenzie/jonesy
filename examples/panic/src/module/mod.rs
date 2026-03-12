@@ -15,6 +15,18 @@ pub fn cause_unwrap_err() {
     let _: () = Err("error").unwrap();
 }
 
+#[allow(clippy::unnecessary_literal_unwrap)]
+// jonesy: expect panic expect on None
+pub fn cause_expect_none() {
+    let _: () = None.expect("expected a value");
+}
+
+#[allow(clippy::unnecessary_literal_unwrap)]
+// jonesy: expect panic expect on Err
+pub fn cause_expect_err() {
+    let _: () = Err("error").expect("expected ok");
+}
+
 #[allow(clippy::assertions_on_constants)]
 // jonesy: expect panic assert failed
 pub fn cause_assert() {

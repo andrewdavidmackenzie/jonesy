@@ -7,7 +7,7 @@ const CATCHPHRASES: [&str; 3] = [
 ];
 
 fn main() {
-    // jonesy: expect panic seems this can panic also!
+    // random_range(0..4) itself doesn't panic - panic happens at array access
     let index = rand::rng().random_range(0..4);
 
     // jonesy: expect panic this is a potential panic at runtime

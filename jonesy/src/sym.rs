@@ -323,6 +323,45 @@ fn find_segment<'a>(macho: &'a MachO, segment_name: &str) -> Option<&'a Segment<
     None
 }
 
+/// Precomputed sorted symbol index for efficient function lookups.
+/// Build once with `SymbolIndex::new()` and reuse for many lookups.
+#[derive(Debug)]
+pub(crate) struct SymbolIndex {
+    /// Sorted by address: (func_addr, demangled_name)
+    functions: Vec<(u64, String)>,
+}
+
+impl SymbolIndex {
+    /// Build a symbol index from a MachO binary. Call once, reuse for many lookups.
+    pub fn new(macho: &MachO) -> Option<Self> {
+        let symbols = macho.symbols.as_ref()?;
+
+        // Collect and sort function symbols with their addresses
+        let mut functions: Vec<(u64, String)> = symbols
+            .iter()
+            .filter_map(|s| s.ok())
+            .filter(|(name, nlist)| nlist.n_value > 0 && !name.is_empty())
+            .map(|(name, nlist)| {
+                let stripped = name.strip_prefix("_").unwrap_or(name);
+                (nlist.n_value, format!("{:#}", demangle(stripped)))
+            })
+            .collect();
+
+        functions.sort_by_key(|(a, _)| *a);
+        Some(Self { functions })
+    }
+
+    /// Find the function containing `addr` using binary search.
+    pub fn find_containing(&self, addr: u64) -> Option<(u64, &str)> {
+        // Binary search for the largest address <= addr
+        match self.functions.binary_search_by_key(&addr, |(a, _)| *a) {
+            Ok(i) => Some((self.functions[i].0, &self.functions[i].1)),
+            Err(0) => None, // addr is before all functions
+            Err(i) => Some((self.functions[i - 1].0, &self.functions[i - 1].1)),
+        }
+    }
+}
+
 /// Returns (function_start_address, demangled_name) for the function containing `addr`
 pub(crate) fn find_containing_function_with_addr(
     macho: &MachO,
@@ -534,11 +573,15 @@ impl CallGraph {
 
         // Process bl instructions in parallel (the expensive part is function lookup)
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+        // Precompute symbol index once for efficient lookups
+        let symbol_index = SymbolIndex::new(macho);
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
-                && let Some((func_addr, func_name)) =
-                    find_containing_function_with_addr(macho, data.address)
+                && let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(data.address))
+                    .map(|(addr, name)| (addr, name.to_string()))
             {
                 edges.entry(call_target).or_default().push(CallerInfo {
                     caller: FunctionInfo {
@@ -582,8 +625,12 @@ impl CallGraph {
             .disasm_all(text_data, text_addr)
             .map_err(|e| format!("Disassembly failed: {e}"))?;
 
+        // Precompute symbol index once for efficient lookups
+        let symbol_index = SymbolIndex::new(macho);
+
         for instruction in instructions.iter() {
-            if let Some((call_target, caller_info)) = process_instruction_basic(macho, instruction)
+            if let Some((call_target, caller_info)) =
+                process_instruction_basic(symbol_index.as_ref(), instruction)
             {
                 edges.entry(call_target).or_default().push(caller_info);
             }
@@ -669,6 +716,8 @@ impl CallGraph {
         let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
         let source_cache: DashMap<u64, (Option<String>, Option<u32>)> = DashMap::new();
+        // Precompute symbol index once for efficient fallback lookups
+        let symbol_index = SymbolIndex::new(binary_macho);
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
@@ -679,6 +728,7 @@ impl CallGraph {
                     crate_src_path,
                     &source_cache,
                     crate_line_table.as_ref(),
+                    symbol_index.as_ref(),
                 )
             {
                 edges.entry(target).or_default().push(caller_info);
@@ -715,7 +765,10 @@ impl CallGraph {
 
 /// Process a single instruction and extract call information (basic version without debug info).
 /// Returns (call_target, CallerInfo) if this is a bl instruction, None otherwise.
-fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, CallerInfo)> {
+fn process_instruction_basic(
+    symbol_index: Option<&SymbolIndex>,
+    instruction: &Insn,
+) -> Option<(u64, CallerInfo)> {
     if instruction.mnemonic() != Some("bl") {
         return None;
     }
@@ -723,7 +776,9 @@ fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, 
     let operand = instruction.op_str()?;
     let addr_str = operand.trim_start_matches("#0x");
     let call_target = u64::from_str_radix(addr_str, 16).ok()?;
-    let (func_addr, func_name) = find_containing_function_with_addr(macho, instruction.address())?;
+    let (func_addr, func_name) = symbol_index
+        .and_then(|idx| idx.find_containing(instruction.address()))
+        .map(|(addr, name)| (addr, name.to_string()))?;
 
     Some((
         call_target,
@@ -740,6 +795,7 @@ fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, 
 }
 
 /// Process instruction data using pre-built crate line table for fast lookups.
+/// Falls back to symbol table lookup if DWARF doesn't contain the function.
 fn process_instruction_data_with_crate_table(
     data: &InsnData,
     functions: &[FunctionInfo],
@@ -747,42 +803,72 @@ fn process_instruction_data_with_crate_table(
     crate_src_path: Option<&str>,
     source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
     crate_line_table: Option<&CrateLineTable>,
+    symbol_index: Option<&SymbolIndex>,
 ) -> Option<(u64, CallerInfo)> {
     let call_target = data.call_target?;
 
-    // Find the function containing this call
-    let func = find_function_at_address(functions, data.address)?;
+    // Find the function containing this call - try DWARF first, fall back to symbol table
+    if let Some(func) = find_function_at_address(functions, data.address) {
+        // Found in DWARF - use full debug info
+        let (func_file, func_line) = source_cache
+            .entry(func.start_address)
+            .or_insert_with(|| {
+                get_source_location(dwarf, func.start_address).unwrap_or((None, None))
+            })
+            .clone();
 
-    // Get source info from cache or compute it
-    let (func_file, func_line) = source_cache
-        .entry(func.start_address)
-        .or_insert_with(|| get_source_location(dwarf, func.start_address).unwrap_or((None, None)))
-        .clone();
+        let file = func.file.clone().or(func_file);
+        let mut line = func.line.or(func_line);
 
-    let file = func.file.clone().or(func_file);
-    let mut line = func.line.or(func_line);
-
-    // For functions in the crate source, find actual call line using pre-built table
-    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-        && f.contains(crate_path)
-    {
-        // Use pre-built crate line table for O(log n) lookup
-        if let Some(table) = crate_line_table
-            && let Some(crate_line) = table.get_line(func.start_address, data.address)
+        // For functions in the crate source, find actual call line using pre-built table
+        if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
+            && f.contains(crate_path)
         {
-            line = Some(crate_line);
+            // Use pre-built crate line table for O(log n) lookup
+            if let Some(table) = crate_line_table
+                && let Some(crate_line) = table.get_line(func.start_address, data.address)
+            {
+                line = Some(crate_line);
+            }
         }
-    }
 
-    Some((
-        call_target,
-        CallerInfo {
-            caller: func.clone(),
-            call_site_addr: data.address,
-            file,
-            line,
-        },
-    ))
+        Some((
+            call_target,
+            CallerInfo {
+                caller: func.clone(),
+                call_site_addr: data.address,
+                file,
+                line,
+            },
+        ))
+    } else if let Some((func_addr, func_name)) = symbol_index
+        .and_then(|idx| idx.find_containing(data.address))
+        .map(|(addr, name)| (addr, name.to_string()))
+    {
+        // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
+        // Try to get source info from DWARF line tables
+        let (file, line) = source_cache
+            .entry(func_addr)
+            .or_insert_with(|| get_source_location(dwarf, func_addr).unwrap_or((None, None)))
+            .clone();
+
+        Some((
+            call_target,
+            CallerInfo {
+                caller: FunctionInfo {
+                    name: func_name,
+                    start_address: func_addr,
+                    ..Default::default()
+                },
+                call_site_addr: data.address,
+                file,
+                line,
+            },
+        ))
+    } else {
+        // Function not found in DWARF or symbol table - skip this edge
+        None
+    }
 }
 
 // TODO Note that the address passed in is an n_value or Symbol table offset,
@@ -809,6 +895,9 @@ pub(crate) fn find_callers(
         return Ok(callers);
     };
 
+    // Precompute symbol index once for efficient lookups
+    let symbol_index = SymbolIndex::new(macho);
+
     for instruction in instructions.iter() {
         // TODO is "bl" the only valid instruction for ARM64?
         if instruction.mnemonic() == Some("bl")
@@ -817,12 +906,14 @@ pub(crate) fn find_callers(
             let addr_str = operand.trim_start_matches("#0x");
             if let Ok(call_target) = u64::from_str_radix(addr_str, 16)
                 && call_target == target_addr
-                && let Some((func_addr, func_name)) =
-                    find_containing_function_with_addr(macho, instruction.address())
+                && let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(instruction.address()))
+                    .map(|(addr, name)| (addr, name.to_string()))
             {
                 callers.push(CallerInfo {
                     caller: FunctionInfo {
-                        name: func_name.clone(),
+                        name: func_name,
                         start_address: func_addr,
                         ..Default::default()
                     },
@@ -1038,6 +1129,9 @@ pub fn find_callers_with_debug_info(
 
     let instructions = cs.disasm_all(text_data, text_addr)?;
 
+    // Precompute symbol index once for efficient fallback lookups
+    let symbol_index = SymbolIndex::new(binary_macho);
+
     for instruction in instructions.iter() {
         // Look for BL (branch with link) instructions
         if instruction.mnemonic() == Some("bl")
@@ -1047,9 +1141,9 @@ pub fn find_callers_with_debug_info(
             if let Ok(call_target) = u64::from_str_radix(addr_str, 16)
                 && call_target == target_addr
             {
-                // Find the function containing this call using DWARF info
+                // Find the function containing this call - try DWARF first, fall back to symbol table
                 if let Some(func) = find_function_at_address(&functions, instruction.address()) {
-                    // Get source info from function's start address to avoid inlined code locations
+                    // Found in DWARF - use full debug info
                     let (func_file, func_line) = get_source_location(&dwarf, func.start_address)?;
 
                     // Prefer function's declaration file/line if available, then function start's line info
@@ -1071,6 +1165,25 @@ pub fn find_callers_with_debug_info(
 
                     callers.push(CallerInfo {
                         caller: func.clone(),
+                        call_site_addr: instruction.address(),
+                        file,
+                        line,
+                    });
+                } else if let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(instruction.address()))
+                    .map(|(addr, name)| (addr, name.to_string()))
+                {
+                    // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
+                    let (file, line) =
+                        get_source_location(&dwarf, func_addr).unwrap_or((None, None));
+
+                    callers.push(CallerInfo {
+                        caller: FunctionInfo {
+                            name: func_name,
+                            start_address: func_addr,
+                            ..Default::default()
+                        },
                         call_site_addr: instruction.address(),
                         file,
                         line,
