@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::panic_cause::{PanicCause, detect_panic_cause};
-use crate::sym::CallGraph;
+use crate::sym::{CallGraph, matches_crate_pattern};
 use dashmap::DashSet;
 use is_terminal::IsTerminal;
 use rayon::prelude::*;
@@ -43,14 +43,9 @@ impl CallTreeNode {
 /// Returns true if the node's source file matches the crate source path.
 /// For workspace mode (when crate_src_path contains "|"), checks against multiple paths.
 pub fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
-    if let Some(file) = &node.file {
-        // Check if any of the patterns match (patterns separated by "|")
-        crate_src_path
-            .split('|')
-            .any(|pattern| !pattern.is_empty() && file.contains(pattern))
-    } else {
-        false
-    }
+    node.file
+        .as_ref()
+        .is_some_and(|file| matches_crate_pattern(file, crate_src_path))
 }
 
 /// Prune branches that don't lead to a leaf node in the target crate's source.
@@ -256,12 +251,11 @@ fn collect_crate_relationships(
     // Try to detect panic cause from this node's function name and file path
     let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
 
-    // Check if file matches any of the patterns (patterns separated by "|")
-    let file_matches = node.file.as_ref().is_some_and(|file| {
-        crate_src_path
-            .split('|')
-            .any(|pattern| !pattern.is_empty() && file.contains(pattern))
-    });
+    // Check if file matches any of the patterns
+    let file_matches = node
+        .file
+        .as_ref()
+        .is_some_and(|file| matches_crate_pattern(file, crate_src_path));
 
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
         && file_matches

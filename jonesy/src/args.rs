@@ -92,15 +92,13 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     }
 
     // Check if running from a workspace root first
-    let is_workspace_root = is_workspace_only_root();
+    let at_workspace_root = is_workspace_root();
 
     // Reject --bin and --lib at workspace level
-    if is_workspace_root && (has_bin_flag || has_lib_flag) {
-        return Err(
-            "--bin and --lib are not supported at workspace level. \
+    if at_workspace_root && (has_bin_flag || has_lib_flag) {
+        return Err("--bin and --lib are not supported at workspace level. \
              cd into a member crate directory for target-specific analysis."
-                .to_string(),
-        );
+            .to_string());
     }
 
     let (binaries, workspace_members) = if has_bin_flag {
@@ -221,8 +219,11 @@ fn find_target_dir() -> Result<PathBuf, String> {
     Err("target/debug/ directory not found. Run 'cargo build' first.".to_string())
 }
 
-/// Check if the current directory is a workspace-only root (has [workspace] but no [package])
-fn is_workspace_only_root() -> bool {
+/// Check if the current directory is a workspace root (virtual or non-virtual).
+/// Virtual workspace: has [workspace] but no [package]
+/// Non-virtual workspace: has both [workspace] and [package]
+/// Uses from_slice to avoid workspace inheritance resolution issues.
+fn is_workspace_root() -> bool {
     let cargo_toml_path = PathBuf::from("Cargo.toml");
     if !cargo_toml_path.exists() {
         return false;
@@ -232,14 +233,17 @@ fn is_workspace_only_root() -> bool {
         return false;
     };
 
+    // Use from_slice to avoid workspace inheritance resolution
     let Ok(manifest) = Manifest::from_slice(content.as_bytes()) else {
         return false;
     };
 
-    manifest.workspace.is_some() && manifest.package.is_none()
+    manifest.workspace.is_some()
 }
 
-/// Check if running from a workspace root and return workspace members
+/// Check if running from a workspace root and return workspace members.
+/// Handles both virtual workspaces (no [package]) and non-virtual workspaces
+/// (has both [workspace] and [package]).
 fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
     let cargo_toml_path = PathBuf::from("Cargo.toml");
     if !cargo_toml_path.exists() {
@@ -249,11 +253,12 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
     let cargo_toml_content = std::fs::read_to_string(&cargo_toml_path)
         .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
 
+    // Use from_slice to avoid workspace inheritance resolution issues
     let manifest = Manifest::from_slice(cargo_toml_content.as_bytes())
         .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
 
-    // Only return Some if this is a workspace-only Cargo.toml (no [package])
-    if manifest.workspace.is_none() || manifest.package.is_some() {
+    // Only proceed if this is a workspace root
+    if manifest.workspace.is_none() {
         return Ok(None);
     }
 
@@ -264,6 +269,18 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
     }
 
     let mut members = Vec::new();
+
+    // For non-virtual workspaces, include the root package as a member
+    if let Some(pkg) = &manifest.package {
+        let binaries = collect_binaries_from_manifest(&manifest, &pkg.name, &target_dir);
+        if !binaries.is_empty() {
+            members.push(WorkspaceMember {
+                name: pkg.name.clone(),
+                path: PathBuf::from("."),
+                binaries,
+            });
+        }
+    }
 
     // Iterate through workspace members
     for member_pattern in &workspace.members {
@@ -294,52 +311,18 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
                 continue;
             }
 
+            // Use from_slice to avoid workspace inheritance resolution issues
             if let Ok(content) = std::fs::read_to_string(&member_cargo_toml)
                 && let Ok(member_manifest) = Manifest::from_slice(content.as_bytes())
                 && let Some(pkg) = &member_manifest.package
             {
-                let pkg_name = &pkg.name;
-                let mut binaries = Vec::new();
-
-                // Check for explicit [[bin]] targets
-                for bin in &member_manifest.bin {
-                    let bin_name = bin.name.as_ref().unwrap_or(pkg_name);
-                    let bin_path = target_dir.join(bin_name);
-                    if bin_path.exists() {
-                        binaries.push(bin_path);
-                    }
-                }
-
-                // Check for default binary
-                if member_manifest.bin.is_empty() {
-                    let default_bin = target_dir.join(pkg_name);
-                    if default_bin.exists() {
-                        binaries.push(default_bin);
-                    }
-                }
-
-                // Check for library target
-                if member_manifest.lib.is_some() {
-                    let lib_name = member_manifest
-                        .lib
-                        .as_ref()
-                        .and_then(|l| l.name.clone())
-                        .unwrap_or_else(|| pkg_name.replace('-', "_"));
-
-                    let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
-                    let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
-
-                    if dylib_path.exists() {
-                        binaries.push(dylib_path);
-                    } else if rlib_path.exists() {
-                        binaries.push(rlib_path);
-                    }
-                }
+                let binaries =
+                    collect_binaries_from_manifest(&member_manifest, &pkg.name, &target_dir);
 
                 // Only add member if it has binaries
                 if !binaries.is_empty() {
                     members.push(WorkspaceMember {
-                        name: pkg_name.clone(),
+                        name: pkg.name.clone(),
                         path: member_path,
                         binaries,
                     });
@@ -353,6 +336,52 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
     }
 
     Ok(Some(members))
+}
+
+/// Collect binaries from a parsed manifest
+fn collect_binaries_from_manifest(
+    manifest: &Manifest,
+    pkg_name: &str,
+    target_dir: &PathBuf,
+) -> Vec<PathBuf> {
+    let mut binaries = Vec::new();
+
+    // Check for explicit [[bin]] targets
+    for bin in &manifest.bin {
+        let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
+        let bin_path = target_dir.join(bin_name);
+        if bin_path.exists() {
+            binaries.push(bin_path);
+        }
+    }
+
+    // Check for default binary (auto-detected by from_path)
+    if manifest.bin.is_empty() {
+        let default_bin = target_dir.join(pkg_name);
+        if default_bin.exists() {
+            binaries.push(default_bin);
+        }
+    }
+
+    // Check for library target
+    if manifest.lib.is_some() {
+        let lib_name = manifest
+            .lib
+            .as_ref()
+            .and_then(|l| l.name.clone())
+            .unwrap_or_else(|| pkg_name.replace('-', "_"));
+
+        let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
+        let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
+
+        if dylib_path.exists() {
+            binaries.push(dylib_path);
+        } else if rlib_path.exists() {
+            binaries.push(rlib_path);
+        }
+    }
+
+    binaries
 }
 
 /// Find binaries for all workspace members

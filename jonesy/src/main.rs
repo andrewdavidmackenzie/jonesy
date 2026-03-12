@@ -1,4 +1,4 @@
-use crate::args::{parse_args, Args, WorkspaceMember};
+use crate::args::{Args, WorkspaceMember, parse_args};
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
     print_call_tree, print_crate_code_points, prune_call_tree,
@@ -16,6 +16,7 @@ use goblin::mach::Mach::{Binary, Fat};
 use goblin::mach::MachO;
 use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -392,10 +393,7 @@ fn analyze_macho(
 
 /// Analyze a workspace with multiple member crates.
 /// Produces per-crate reports and an aggregate workspace summary.
-fn analyze_workspace(
-    members: &[WorkspaceMember],
-    args: &Args,
-) -> Result<(), Box<dyn Error>> {
+fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box<dyn Error>> {
     let workspace_root = std::env::current_dir()?;
 
     if !args.summary_only && !args.quiet {
@@ -435,11 +433,20 @@ fn analyze_workspace(
             }
 
             // Load configuration for this member crate
-            let config = Config::load_for_project(&member.path, args.config_path.as_deref())
-                .unwrap_or_else(|e| {
+            // If user explicitly provided --config, fail fast on errors
+            let config = match Config::load_for_project(&member.path, args.config_path.as_deref()) {
+                Ok(c) => c,
+                Err(e) if args.config_path.is_some() => {
+                    return Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Failed to load config for {}: {}", member.name, e),
+                    )));
+                }
+                Err(e) => {
                     eprintln!("Warning: Failed to load config for {}: {}", member.name, e);
                     Config::with_defaults()
-                });
+                }
+            };
 
             // Check if this is a library and detect its type
             let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
