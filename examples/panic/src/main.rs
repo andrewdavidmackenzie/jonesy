@@ -21,6 +21,9 @@ fn main() {
     // jonesy: expect panic expect on None
     module::cause_expect_none();
 
+    // jonesy: expect panic expect on Err
+    module::cause_expect_err();
+
     // jonesy: expect panic assert failed
     module::cause_assert();
 

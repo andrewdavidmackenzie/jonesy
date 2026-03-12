@@ -249,8 +249,8 @@ fn collect_crate_relationships(
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
 ) {
-    // Try to detect panic cause from this node's function name
-    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
+    // Try to detect panic cause from this node's function name and file path
+    let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
 
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
         && file.contains(crate_src_path)
