@@ -1,0 +1,16 @@
+[package]
+name = "multi_bin_example"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "bin_one"
+path = "src/bin_one.rs"
+
+[[bin]]
+name = "bin_two"
+path = "src/bin_two.rs"
+
+[lib]
+name = "multi_bin_lib"
+path = "src/lib.rs"

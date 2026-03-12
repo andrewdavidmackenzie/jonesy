@@ -1,0 +1,12 @@
+[package]
+name = "crate_b"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "crate_b_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "crate_b_bin"
+path = "src/main.rs"

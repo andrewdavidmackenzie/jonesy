@@ -2,9 +2,9 @@ const PANIC_STR: &str = "panic";
 
 mod module;
 
-/// A library function that can panic
+/// A library function that can panic (exported for C interop)
 #[unsafe(no_mangle)]
-pub fn library_function() {
+pub extern "C" fn library_function() {
     if std::env::args().len() > 1 {
         // jonesy: expect panic runtime panic depending on args
         panic!("{}", PANIC_STR);

@@ -47,4 +47,28 @@ fn main() {
 
     // jonesy: expect panic shift overflow
     module::cause_shift_overflow();
+
+    // jonesy: expect panic unwrap_err on Ok
+    module::cause_unwrap_err_on_ok();
+
+    // jonesy: expect panic expect_err on Ok
+    module::cause_expect_err_on_ok();
+
+    // jonesy: expect panic assert_eq failed
+    module::cause_assert_eq();
+
+    // jonesy: expect panic assert_ne failed
+    module::cause_assert_ne();
+
+    // jonesy: expect panic debug_assert_eq failed
+    module::cause_debug_assert_eq();
+
+    // jonesy: expect panic debug_assert_ne failed
+    module::cause_debug_assert_ne();
+
+    // jonesy: expect panic slice index out of bounds
+    module::cause_slice_index_oob();
+
+    // jonesy: expect panic string index not on UTF-8 boundary
+    module::cause_string_index_panic();
 }
