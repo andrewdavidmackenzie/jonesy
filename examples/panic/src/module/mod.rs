@@ -71,3 +71,51 @@ pub fn cause_arithmetic_overflow() {
 pub fn cause_shift_overflow() {
     let _ = 1u32 << 33;
 }
+
+#[allow(clippy::unnecessary_literal_unwrap)]
+// jonesy: expect panic unwrap_err on Ok
+pub fn cause_unwrap_err_on_ok() {
+    let _: &str = Ok::<i32, &str>(42).unwrap_err();
+}
+
+#[allow(clippy::unnecessary_literal_unwrap)]
+// jonesy: expect panic expect_err on Ok
+pub fn cause_expect_err_on_ok() {
+    let _: &str = Ok::<i32, &str>(42).expect_err("expected an error");
+}
+
+#[allow(clippy::assertions_on_constants)]
+// TODO: jonesy doesn't detect assert_eq yet
+pub fn cause_assert_eq() {
+    assert_eq!(1, 2);
+}
+
+#[allow(clippy::assertions_on_constants, clippy::eq_op)]
+// TODO: jonesy doesn't detect assert_ne yet
+pub fn cause_assert_ne() {
+    assert_ne!(1, 1);
+}
+
+// TODO: jonesy doesn't detect debug_assert_eq yet
+pub fn cause_debug_assert_eq() {
+    debug_assert_eq!(1, 2);
+}
+
+#[allow(clippy::eq_op)]
+// TODO: jonesy doesn't detect debug_assert_ne yet
+pub fn cause_debug_assert_ne() {
+    debug_assert_ne!(1, 1);
+}
+
+#[allow(clippy::useless_vec)]
+// TODO: jonesy slice index detection is platform-specific
+pub fn cause_slice_index_oob() {
+    let v = vec![1, 2, 3];
+    let _ = v[10];
+}
+
+// TODO: jonesy doesn't detect string index panic yet
+pub fn cause_string_index_panic() {
+    let s = "hello 世界";
+    let _ = &s[0..7]; // panics - cuts through UTF-8 char
+}

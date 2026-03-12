@@ -2,10 +2,11 @@
 resolver = "3"
 members = [
     "jonesy",
-    "examples/array_access",
     "examples/cdylib",
     "examples/dylib",
-    "examples/oom",
+    "examples/multi_bin",
     "examples/panic",
     "examples/perfect",
+    "examples/rlib",
+    "examples/staticlib",
 ]

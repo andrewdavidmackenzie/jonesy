@@ -368,3 +368,5 @@ See [description.md](description.md) for detailed technical documentation.
 2. **Direct calls only**: Only detects direct function calls, not indirect calls through function pointers
 3. **macOS/Mach-O**: Currently only supports Mach-O binaries with dSYM or embedded DWARF
 4. **Debug builds recommended**: Optimized builds may inline functions, affecting accuracy
+
+See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scenarios, supported panic types, and implementation status.

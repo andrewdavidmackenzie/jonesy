@@ -47,4 +47,28 @@ fn main() {
 
     // jonesy: expect panic shift overflow
     module::cause_shift_overflow();
+
+    // jonesy: expect panic unwrap_err on Ok
+    module::cause_unwrap_err_on_ok();
+
+    // jonesy: expect panic expect_err on Ok
+    module::cause_expect_err_on_ok();
+
+    // TODO: jonesy doesn't detect assert_eq yet
+    module::cause_assert_eq();
+
+    // TODO: jonesy doesn't detect assert_ne yet
+    module::cause_assert_ne();
+
+    // TODO: jonesy doesn't detect debug_assert_eq yet
+    module::cause_debug_assert_eq();
+
+    // TODO: jonesy doesn't detect debug_assert_ne yet
+    module::cause_debug_assert_ne();
+
+    // TODO: jonesy slice index detection is platform-specific
+    module::cause_slice_index_oob();
+
+    // TODO: jonesy doesn't detect string index panic yet
+    module::cause_string_index_panic();
 }
