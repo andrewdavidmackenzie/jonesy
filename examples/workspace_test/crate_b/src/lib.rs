@@ -49,13 +49,13 @@ pub fn lib_assert_false() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert_eq failed
+// TODO: jonesy does not detect assert_eq yet
 pub fn lib_assert_eq_fail() {
     assert_eq!(1, 2);
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// jonesy: expect panic assert_ne failed
+// TODO: jonesy does not detect assert_ne yet
 pub fn lib_assert_ne_fail() {
     assert_ne!(1, 1);
 }
@@ -65,13 +65,13 @@ pub fn lib_debug_assert_false() {
     debug_assert!(false);
 }
 
-// jonesy: expect panic debug_assert_eq failed (debug builds only)
+// TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
 pub fn lib_debug_assert_eq_fail() {
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
-// jonesy: expect panic debug_assert_ne failed (debug builds only)
+// TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
 pub fn lib_debug_assert_ne_fail() {
     debug_assert_ne!(1, 1);
 }
@@ -111,13 +111,13 @@ pub fn lib_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// jonesy: expect panic slice index out of bounds
+// TODO: jonesy does not detect slice index OOB yet
 pub fn lib_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
 }
 
-// jonesy: expect panic string index not on UTF-8 boundary
+// TODO: jonesy does not detect string index panic yet
 pub fn lib_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7];

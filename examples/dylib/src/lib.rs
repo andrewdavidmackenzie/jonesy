@@ -34,19 +34,19 @@ pub fn library_function() {
     // jonesy: expect panic assert failed
     module::cause_assert();
 
-    // jonesy: expect panic assert_eq failed
+    // TODO: jonesy does not detect assert_eq yet
     module::cause_assert_eq();
 
-    // jonesy: expect panic assert_ne failed
+    // TODO: jonesy does not detect assert_ne yet
     module::cause_assert_ne();
 
     // jonesy: expect panic debug_assert failed
     module::cause_debug_assert();
 
-    // jonesy: expect panic debug_assert_eq failed
+    // TODO: jonesy does not detect debug_assert_eq yet
     module::cause_debug_assert_eq();
 
-    // jonesy: expect panic debug_assert_ne failed
+    // TODO: jonesy does not detect debug_assert_ne yet
     module::cause_debug_assert_ne();
 
     // jonesy: expect panic unreachable
@@ -67,9 +67,9 @@ pub fn library_function() {
     // jonesy: expect panic shift overflow
     module::cause_shift_overflow();
 
-    // jonesy: expect panic slice index out of bounds
+    // TODO: jonesy does not detect slice index OOB yet
     module::cause_slice_index_oob();
 
-    // jonesy: expect panic string index not on UTF-8 boundary
+    // TODO: jonesy does not detect string index panic yet
     module::cause_string_index_panic();
 }

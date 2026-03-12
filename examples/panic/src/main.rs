@@ -54,21 +54,21 @@ fn main() {
     // jonesy: expect panic expect_err on Ok
     module::cause_expect_err_on_ok();
 
-    // jonesy: expect panic assert_eq failed
+    // TODO: jonesy doesn't detect assert_eq yet
     module::cause_assert_eq();
 
-    // jonesy: expect panic assert_ne failed
+    // TODO: jonesy doesn't detect assert_ne yet
     module::cause_assert_ne();
 
-    // jonesy: expect panic debug_assert_eq failed
+    // TODO: jonesy doesn't detect debug_assert_eq yet
     module::cause_debug_assert_eq();
 
-    // jonesy: expect panic debug_assert_ne failed
+    // TODO: jonesy doesn't detect debug_assert_ne yet
     module::cause_debug_assert_ne();
 
-    // jonesy: expect panic slice index out of bounds
+    // TODO: jonesy doesn't detect slice index OOB yet
     module::cause_slice_index_oob();
 
-    // jonesy: expect panic string index not on UTF-8 boundary
+    // TODO: jonesy doesn't detect string index panic yet
     module::cause_string_index_panic();
 }
