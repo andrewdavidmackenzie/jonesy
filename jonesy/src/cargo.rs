@@ -142,6 +142,15 @@ pub fn find_bin_src_path(workspace_root: &Path, bin_name: &str) -> Option<String
         return Some(path);
     }
 
+    // Also handle default single-binary crates (no [[bin]], src/main.rs)
+    if manifest.bin.is_empty()
+        && let Some(package) = &manifest.package
+        && (package.name == bin_name || package.name.replace('-', "_") == bin_name)
+        && workspace_root.join("src").join("main.rs").exists()
+    {
+        return Some("src/".to_string());
+    }
+
     // Then search workspace members
     let workspace = manifest.workspace.as_ref()?;
 
@@ -169,9 +178,10 @@ pub fn find_bin_src_path(workspace_root: &Path, bin_name: &str) -> Option<String
                     if manifest_bin_name == bin_name
                         || manifest_bin_name.replace('-', "_") == bin_name
                     {
-                        // Return relative path from workspace root
+                        // Return relative path from workspace root, respecting [[bin]].path
                         if let Ok(rel_path) = member_path.strip_prefix(workspace_root) {
-                            return Some(format!("{}/src/", rel_path.display()));
+                            let src_dir = bin_source_dir_from_path(bin.path.as_ref());
+                            return Some(format!("{}/{}/", rel_path.display(), src_dir.display()));
                         }
                     }
                 }
@@ -198,6 +208,15 @@ pub fn find_bin_src_path(workspace_root: &Path, bin_name: &str) -> Option<String
     None
 }
 
+/// Derive the source directory from a binary's path attribute.
+/// Returns the parent directory of the path, or "src" as default.
+fn bin_source_dir_from_path(bin_path: Option<&String>) -> PathBuf {
+    bin_path
+        .and_then(|p| Path::new(p).parent().map(|p| p.to_path_buf()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("src"))
+}
+
 /// Check if a manifest has a binary with the given name and return src path.
 fn check_manifest_for_binary(manifest: &Manifest, bin_name: &str) -> Option<String> {
     for bin in &manifest.bin {
@@ -208,7 +227,8 @@ fn check_manifest_for_binary(manifest: &Manifest, bin_name: &str) -> Option<Stri
             .unwrap_or_default();
 
         if manifest_bin_name == bin_name || manifest_bin_name.replace('-', "_") == bin_name {
-            return Some("src/".to_string());
+            let src_dir = bin_source_dir_from_path(bin.path.as_ref());
+            return Some(format!("{}/", src_dir.display()));
         }
     }
     None

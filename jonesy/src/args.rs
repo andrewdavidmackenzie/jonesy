@@ -361,6 +361,16 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         .get(bin_arg_idx + 1)
         .ok_or("--bin requires a binary name or path")?;
 
+    // Reject unexpected trailing positional args
+    if let Some(extra) = args.get(bin_arg_idx + 2) {
+        if !extra.starts_with("--") {
+            return Err(format!(
+                "Unexpected extra argument '{}' after --bin <name_or_path>",
+                extra
+            ));
+        }
+    }
+
     let binary_path = PathBuf::from(bin_name.as_str());
 
     // First check if it's a path that exists
@@ -445,6 +455,18 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
 
     // Check if there's an argument after --lib that isn't another flag
     let lib_path_arg = args.get(lib_arg_idx + 1).filter(|a| !a.starts_with("--"));
+
+    // Reject unexpected trailing positional args
+    if lib_path_arg.is_some() {
+        if let Some(extra) = args.get(lib_arg_idx + 2) {
+            if !extra.starts_with("--") {
+                return Err(format!(
+                    "Unexpected extra argument '{}' after --lib [path_to_lib_object]",
+                    extra
+                ));
+            }
+        }
+    }
 
     if let Some(path_str) = lib_path_arg {
         let binary_path = PathBuf::from(path_str.as_str());
