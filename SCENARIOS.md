@@ -56,7 +56,7 @@ Rust supports several library output types (crate-type), each with different cha
 | `assert_ne!()` | Not yet | See [#45](https://github.com/andrewdavidmackenzie/jonesy/issues/45) |
 | `debug_assert_eq!()` | Not yet | See [#45](https://github.com/andrewdavidmackenzie/jonesy/issues/45) |
 | `debug_assert_ne!()` | Not yet | See [#45](https://github.com/andrewdavidmackenzie/jonesy/issues/45) |
-| Slice index OOB | Not yet | See [#45](https://github.com/andrewdavidmackenzie/jonesy/issues/45) |
+| Slice index OOB | Platform-specific | Works on some Rust versions, see [#45](https://github.com/andrewdavidmackenzie/jonesy/issues/45) |
 | String index panic | Not yet | See [#45](https://github.com/andrewdavidmackenzie/jonesy/issues/45) |
 
 ## Analysis Scenarios

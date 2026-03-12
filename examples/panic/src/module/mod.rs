@@ -108,7 +108,7 @@ pub fn cause_debug_assert_ne() {
 }
 
 #[allow(clippy::useless_vec)]
-// TODO: jonesy doesn't detect slice index OOB yet
+// TODO: jonesy slice index detection is platform-specific
 pub fn cause_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];

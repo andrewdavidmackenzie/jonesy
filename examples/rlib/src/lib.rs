@@ -66,7 +66,7 @@ pub fn library_function() {
     // jonesy: expect panic shift overflow
     module::cause_shift_overflow();
 
-    // TODO: jonesy does not detect slice index OOB yet
+    // TODO: jonesy slice index detection is platform-specific
     module::cause_slice_index_oob();
 
     // TODO: jonesy does not detect string index panic yet

@@ -112,7 +112,7 @@ pub fn lib_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// TODO: jonesy does not detect slice index OOB yet
+// TODO: jonesy slice index detection is platform-specific
 pub fn lib_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];

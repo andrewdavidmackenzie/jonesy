@@ -66,7 +66,7 @@ fn main() {
     // TODO: jonesy doesn't detect debug_assert_ne yet
     module::cause_debug_assert_ne();
 
-    // TODO: jonesy doesn't detect slice index OOB yet
+    // TODO: jonesy slice index detection is platform-specific
     module::cause_slice_index_oob();
 
     // TODO: jonesy doesn't detect string index panic yet
