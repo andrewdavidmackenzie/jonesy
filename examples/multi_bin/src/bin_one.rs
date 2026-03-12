@@ -3,6 +3,22 @@
 fn main() {
     // Dispatch based on argument to ensure all functions are linked
     match std::env::args().nth(1).as_deref() {
+        // Library function calls to ensure they're linked and analyzed
+        Some("lib_panic") => multi_bin_lib::lib_function(),
+        Some("lib_unwrap") => multi_bin_lib::lib_unwrap_none(),
+        Some("lib_unwrap_err") => multi_bin_lib::lib_unwrap_err(),
+        Some("lib_expect_none") => multi_bin_lib::lib_expect_none(),
+        Some("lib_expect_err") => multi_bin_lib::lib_expect_err(),
+        Some("lib_unwrap_err_ok") => multi_bin_lib::lib_unwrap_err_on_ok(),
+        Some("lib_expect_err_ok") => multi_bin_lib::lib_expect_err_on_ok(),
+        Some("lib_assert") => multi_bin_lib::lib_assert(),
+        Some("lib_debug_assert") => multi_bin_lib::lib_debug_assert(),
+        Some("lib_unreachable") => multi_bin_lib::lib_unreachable(),
+        Some("lib_unimplemented") => multi_bin_lib::lib_unimplemented(),
+        Some("lib_todo") => multi_bin_lib::lib_todo(),
+        Some("lib_div_zero") => multi_bin_lib::lib_divide_by_zero(),
+        Some("lib_overflow") => multi_bin_lib::lib_arithmetic_overflow(),
+        Some("lib_shift") => multi_bin_lib::lib_shift_overflow(),
         Some("unwrap") => cause_an_unwrap(),
         Some("unwrap_err") => cause_unwrap_err(),
         Some("expect_none") => cause_expect_none(),

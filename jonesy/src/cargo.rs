@@ -67,6 +67,20 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
     while let Some(dir) = current {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
+            // First, try manifest-driven resolution (more accurate than directory heuristics)
+            if is_library_artifact {
+                // For libraries, search workspace members by lib name
+                if let Some(path) = find_lib_src_path(dir, binary_name) {
+                    return Some(path);
+                }
+            } else {
+                // For binaries, search workspace members by bin name
+                if let Some(path) = find_bin_src_path(dir, binary_name) {
+                    return Some(path);
+                }
+            }
+
+            // Fallback: directory heuristics when manifest lookup fails
             // Check for examples/<binary_name>/src/
             let example_src = dir.join("examples").join(binary_name).join("src");
             if example_src.exists() {
@@ -77,12 +91,6 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
             let member_src = dir.join(binary_name).join("src");
             if member_src.exists() {
                 return Some(format!("{}/src/", binary_name));
-            }
-
-            // For libraries, the directory name may not match the lib name.
-            // Search workspace members to find the matching lib.
-            if let Some(path) = find_lib_src_path(dir, binary_name) {
-                return Some(path);
             }
 
             // Check for src/ in the workspace root
@@ -120,6 +128,110 @@ fn expand_workspace_member(workspace_root: &Path, member_pattern: &str) -> Vec<s
     } else {
         vec![workspace_root.join(member_pattern)]
     }
+}
+
+/// Search workspace members to find the source path for a binary by its name.
+/// Returns the relative path to the src directory (e.g., "examples/multi_bin/src/").
+pub fn find_bin_src_path(workspace_root: &Path, bin_name: &str) -> Option<String> {
+    let cargo_toml = workspace_root.join("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).ok()?;
+    let manifest = Manifest::from_slice(content.as_bytes()).ok()?;
+
+    // First check if this manifest itself has the binary
+    if let Some(path) = check_manifest_for_binary(&manifest, bin_name) {
+        return Some(path);
+    }
+
+    // Also handle default single-binary crates (no [[bin]], src/main.rs)
+    if manifest.bin.is_empty()
+        && let Some(package) = &manifest.package
+        && (package.name == bin_name || package.name.replace('-', "_") == bin_name)
+        && workspace_root.join("src").join("main.rs").exists()
+    {
+        return Some("src/".to_string());
+    }
+
+    // Then search workspace members
+    let workspace = manifest.workspace.as_ref()?;
+
+    for member_pattern in &workspace.members {
+        let member_paths = expand_workspace_member(workspace_root, member_pattern);
+
+        for member_path in member_paths {
+            let member_cargo_toml = member_path.join("Cargo.toml");
+            if !member_cargo_toml.exists() {
+                continue;
+            }
+
+            if let Ok(member_content) = fs::read_to_string(&member_cargo_toml)
+                && let Ok(member_manifest) = Manifest::from_slice(member_content.as_bytes())
+            {
+                // Check [[bin]] entries in this member
+                for bin in &member_manifest.bin {
+                    let manifest_bin_name = bin
+                        .name
+                        .clone()
+                        .or_else(|| member_manifest.package.as_ref().map(|p| p.name.clone()))
+                        .unwrap_or_default();
+
+                    // Check if this bin matches the target name
+                    if manifest_bin_name == bin_name
+                        || manifest_bin_name.replace('-', "_") == bin_name
+                    {
+                        // Return relative path from workspace root, respecting [[bin]].path
+                        if let Ok(rel_path) = member_path.strip_prefix(workspace_root) {
+                            let src_dir = bin_source_dir_from_path(bin.path.as_ref());
+                            return Some(format!("{}/{}/", rel_path.display(), src_dir.display()));
+                        }
+                    }
+                }
+
+                // Also check if it's a single-binary crate (no [[bin]] entries but has a main.rs)
+                // In this case, the package name is the binary name
+                if member_manifest.bin.is_empty()
+                    && let Some(package) = &member_manifest.package
+                {
+                    let pkg_name = &package.name;
+                    if pkg_name == bin_name || pkg_name.replace('-', "_") == bin_name {
+                        // Check if there's a src/main.rs
+                        if member_path.join("src").join("main.rs").exists() {
+                            if let Ok(rel_path) = member_path.strip_prefix(workspace_root) {
+                                return Some(format!("{}/src/", rel_path.display()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Derive the source directory from a binary's path attribute.
+/// Returns the parent directory of the path, or "src" as default.
+fn bin_source_dir_from_path(bin_path: Option<&String>) -> PathBuf {
+    bin_path
+        .and_then(|p| Path::new(p).parent().map(|p| p.to_path_buf()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("src"))
+}
+
+/// Check if a manifest has a binary with the given name and return src path.
+fn check_manifest_for_binary(manifest: &Manifest, bin_name: &str) -> Option<String> {
+    for bin in &manifest.bin {
+        let manifest_bin_name = bin
+            .name
+            .clone()
+            .or_else(|| manifest.package.as_ref().map(|p| p.name.clone()))
+            .unwrap_or_default();
+
+        if manifest_bin_name == bin_name || manifest_bin_name.replace('-', "_") == bin_name {
+            let src_dir = bin_source_dir_from_path(bin.path.as_ref());
+            return Some(format!("{}/", src_dir.display()));
+        }
+    }
+    None
 }
 
 /// Search workspace members to find the source path for a library by its name.

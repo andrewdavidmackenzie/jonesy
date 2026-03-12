@@ -318,10 +318,7 @@ fn test_staticlib_example() {
     test_example("staticlib");
 }
 
-// TODO: multi_bin example causes "Could not determine crate source path" issue
-// See issue for details
 #[test]
-#[ignore = "multi_bin crate source path detection needs work"]
 fn test_multi_bin_example() {
     setup();
     test_example("multi_bin");
@@ -473,9 +470,7 @@ fn test_config_allow_panic() {
 }
 
 /// Test running jonesy with --bin option on a multi-binary crate (Scenario 5a)
-// TODO: depends on multi_bin example working correctly
 #[test]
-#[ignore = "multi_bin crate source path detection needs work"]
 fn test_multi_bin_specific_binary() {
     setup();
     let workspace_root = find_workspace_root();
@@ -526,9 +521,7 @@ fn test_multi_bin_specific_binary() {
 }
 
 /// Test running jonesy with --lib option on a crate with library (Scenario 5b)
-// TODO: depends on multi_bin example working correctly
 #[test]
-#[ignore = "multi_bin crate source path detection needs work"]
 fn test_multi_bin_lib_only() {
     setup();
     let workspace_root = find_workspace_root();
