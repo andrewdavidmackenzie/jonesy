@@ -410,9 +410,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
     // File paths in debug info are relative like "crate_a/src/main.rs"
     // Join patterns with "|" separator for is_in_crate to check
     // Include trailing "/" to match the format used in non-workspace mode
+    // Use directory basenames (not package names) for source path matching
+    // This handles cases where directory name differs from package name
     let workspace_src_path = members
         .iter()
-        .map(|m| format!("{}/src/", m.name))
+        .filter_map(|m| {
+            m.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|dir| format!("{}/src/", dir))
+        })
         .collect::<Vec<_>>()
         .join("|");
 
