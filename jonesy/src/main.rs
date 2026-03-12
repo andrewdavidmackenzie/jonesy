@@ -412,13 +412,28 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
     // Include trailing "/" to match the format used in non-workspace mode
     // Use directory basenames (not package names) for source path matching
     // This handles cases where directory name differs from package name
+    let workspace_root_name = workspace_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
     let workspace_src_path = members
         .iter()
         .filter_map(|m| {
-            m.path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|dir| format!("{}/src/", dir))
+            let path_str = m.path.to_string_lossy();
+            if path_str == "." {
+                // Root member: use workspace directory name
+                if workspace_root_name.is_empty() {
+                    Some("src/".to_string())
+                } else {
+                    Some(format!("{}/src/", workspace_root_name))
+                }
+            } else {
+                // Regular member: use directory basename
+                m.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|dir| format!("{}/src/", dir))
+            }
         })
         .collect::<Vec<_>>()
         .join("|");

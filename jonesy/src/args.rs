@@ -272,10 +272,17 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
 
     // For non-virtual workspaces, include the root package as a member
     if let Some(pkg) = &manifest.package {
-        let binaries = collect_binaries_from_manifest(&manifest, &pkg.name, &target_dir);
+        let pkg_name = pkg.name.clone();
+        // Complete the manifest to discover implicit targets
+        let mut root_manifest = manifest.clone();
+        let _ = root_manifest.complete_from_path_and_workspace::<toml::Value>(
+            &cargo_toml_path,
+            None::<(&Manifest<toml::Value>, &std::path::Path)>, // No parent workspace for the root
+        );
+        let binaries = collect_binaries_from_manifest(&root_manifest, &pkg_name, &target_dir);
         if !binaries.is_empty() {
             members.push(WorkspaceMember {
-                name: pkg.name.clone(),
+                name: pkg_name,
                 path: PathBuf::from("."),
                 binaries,
             });
@@ -311,18 +318,27 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
                 continue;
             }
 
-            // Use from_slice to avoid workspace inheritance resolution issues
+            // Parse manifest and complete it with workspace context for implicit target discovery
             if let Ok(content) = std::fs::read_to_string(&member_cargo_toml)
-                && let Ok(member_manifest) = Manifest::from_slice(content.as_bytes())
+                && let Ok(mut member_manifest) = Manifest::from_slice(content.as_bytes())
                 && let Some(pkg) = &member_manifest.package
             {
+                let pkg_name = pkg.name.clone();
+
+                // Complete the manifest to discover implicit targets (src/main.rs, src/lib.rs, etc.)
+                // Pass the workspace manifest to avoid resolution errors
+                let _ = member_manifest.complete_from_path_and_workspace(
+                    &member_cargo_toml,
+                    Some((&manifest, &cargo_toml_path)),
+                );
+
                 let binaries =
-                    collect_binaries_from_manifest(&member_manifest, &pkg.name, &target_dir);
+                    collect_binaries_from_manifest(&member_manifest, &pkg_name, &target_dir);
 
                 // Only add member if it has binaries
                 if !binaries.is_empty() {
                     members.push(WorkspaceMember {
-                        name: pkg.name.clone(),
+                        name: pkg_name,
                         path: member_path,
                         binaries,
                     });
