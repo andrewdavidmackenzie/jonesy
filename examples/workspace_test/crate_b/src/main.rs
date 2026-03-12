@@ -1,8 +1,74 @@
 //! Crate B - binary component, with all panic types
+//! Also calls crate_c and crate_b_lib functions to ensure they're linked
 
 fn main() {
     // Dispatch based on argument to ensure all functions are linked
     match std::env::args().nth(1).as_deref() {
+        // Call crate_c library functions (jonesy reports panic at call site)
+        // jonesy: expect panic crate_c explicit panic
+        Some("c_panic") => crate_c::lib_function(),
+        // jonesy: expect panic crate_c unwrap on None
+        Some("c_unwrap") => crate_c::unwrap_none(),
+        // jonesy: expect panic crate_c unwrap on Err
+        Some("c_unwrap_err") => crate_c::unwrap_err(),
+        // jonesy: expect panic crate_c expect on None
+        Some("c_expect_none") => crate_c::expect_none(),
+        // jonesy: expect panic crate_c expect on Err
+        Some("c_expect_err") => crate_c::expect_err(),
+        // jonesy: expect panic crate_c unwrap_err on Ok
+        Some("c_unwrap_err_ok") => crate_c::unwrap_err_on_ok(),
+        // jonesy: expect panic crate_c expect_err on Ok
+        Some("c_expect_err_ok") => crate_c::expect_err_on_ok(),
+        // jonesy: expect panic crate_c assert failed
+        Some("c_assert") => crate_c::assert_false(),
+        // jonesy: expect panic crate_c debug_assert failed
+        Some("c_debug_assert") => crate_c::debug_assert_false(),
+        // jonesy: expect panic crate_c unreachable
+        Some("c_unreachable") => crate_c::unreachable_code(),
+        // jonesy: expect panic crate_c unimplemented
+        Some("c_unimplemented") => crate_c::unimplemented_code(),
+        // jonesy: expect panic crate_c todo
+        Some("c_todo") => crate_c::todo_code(),
+        // jonesy: expect panic crate_c division by zero
+        Some("c_div_zero") => crate_c::divide_by_zero(),
+        // jonesy: expect panic crate_c arithmetic overflow
+        Some("c_overflow") => crate_c::arithmetic_overflow(),
+        // jonesy: expect panic crate_c shift overflow
+        Some("c_shift") => crate_c::shift_overflow(),
+
+        // Call crate_b_lib functions (jonesy reports panic at call site)
+        // jonesy: expect panic crate_b_lib explicit panic
+        Some("b_lib_panic") => crate_b_lib::lib_function(),
+        // jonesy: expect panic crate_b_lib unwrap on None
+        Some("b_lib_unwrap") => crate_b_lib::lib_unwrap_none(),
+        // jonesy: expect panic crate_b_lib unwrap on Err
+        Some("b_lib_unwrap_err") => crate_b_lib::lib_unwrap_err(),
+        // jonesy: expect panic crate_b_lib expect on None
+        Some("b_lib_expect_none") => crate_b_lib::lib_expect_none(),
+        // jonesy: expect panic crate_b_lib expect on Err
+        Some("b_lib_expect_err") => crate_b_lib::lib_expect_err(),
+        // jonesy: expect panic crate_b_lib unwrap_err on Ok
+        Some("b_lib_unwrap_err_ok") => crate_b_lib::lib_unwrap_err_on_ok(),
+        // jonesy: expect panic crate_b_lib expect_err on Ok
+        Some("b_lib_expect_err_ok") => crate_b_lib::lib_expect_err_on_ok(),
+        // jonesy: expect panic crate_b_lib assert failed
+        Some("b_lib_assert") => crate_b_lib::lib_assert_false(),
+        // jonesy: expect panic crate_b_lib debug_assert failed
+        Some("b_lib_debug_assert") => crate_b_lib::lib_debug_assert_false(),
+        // jonesy: expect panic crate_b_lib unreachable
+        Some("b_lib_unreachable") => crate_b_lib::lib_unreachable_code(),
+        // jonesy: expect panic crate_b_lib unimplemented
+        Some("b_lib_unimplemented") => crate_b_lib::lib_unimplemented_code(),
+        // jonesy: expect panic crate_b_lib todo
+        Some("b_lib_todo") => crate_b_lib::lib_todo_code(),
+        // jonesy: expect panic crate_b_lib division by zero
+        Some("b_lib_div_zero") => crate_b_lib::lib_divide_by_zero(),
+        // jonesy: expect panic crate_b_lib arithmetic overflow
+        Some("b_lib_overflow") => crate_b_lib::lib_arithmetic_overflow(),
+        // jonesy: expect panic crate_b_lib shift overflow
+        Some("b_lib_shift") => crate_b_lib::lib_shift_overflow(),
+
+        // Binary's own panic functions
         Some("unwrap") => bin_unwrap_none(),
         Some("unwrap_err") => bin_unwrap_err(),
         Some("expect_none") => bin_expect_none(),

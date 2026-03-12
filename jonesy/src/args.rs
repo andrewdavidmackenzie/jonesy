@@ -1,10 +1,23 @@
 use cargo_toml::Manifest;
 use std::path::PathBuf;
 
+/// Represents a workspace member crate with its binaries
+#[derive(Debug)]
+pub(crate) struct WorkspaceMember {
+    /// Name of the member crate
+    pub name: String,
+    /// Path to the member crate directory
+    pub path: PathBuf,
+    /// Paths to binaries for this member
+    pub binaries: Vec<PathBuf>,
+}
+
 /// Parsed command line arguments
 pub(crate) struct Args {
-    /// Paths to binaries to analyze
+    /// Paths to binaries to analyze (for non-workspace mode)
     pub binaries: Vec<PathBuf>,
+    /// Workspace members to analyze (for workspace mode)
+    pub workspace_members: Option<Vec<WorkspaceMember>>,
     /// Whether to show the full call tree (--tree flag)
     pub show_tree: bool,
     /// Whether to only show summary output (--summary-only flag)
@@ -78,19 +91,35 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         return Err("--bin and --lib are mutually exclusive".to_string());
     }
 
-    let binaries = if has_bin_flag {
-        parse_bin_args(&filtered_args)?
+    // Check if running from a workspace root first
+    let at_workspace_root = is_workspace_root();
+
+    // Reject --bin and --lib at workspace level
+    if at_workspace_root && (has_bin_flag || has_lib_flag) {
+        return Err("--bin and --lib are not supported at workspace level. \
+             cd into a member crate directory for target-specific analysis."
+            .to_string());
+    }
+
+    let (binaries, workspace_members) = if has_bin_flag {
+        (parse_bin_args(&filtered_args)?, None)
     } else if has_lib_flag {
-        parse_lib_args(&filtered_args)?
+        (parse_lib_args(&filtered_args)?, None)
     } else if filtered_args.len() == 1 {
         // No arguments besides program name - try to find binaries from Cargo.toml
-        find_crate_binaries()?
+        // Check if this is a workspace root first
+        if let Some(members) = find_workspace_members()? {
+            (vec![], Some(members))
+        } else {
+            (find_crate_binaries()?, None)
+        }
     } else {
         return Err(usage());
     };
 
     Ok(Args {
         binaries,
+        workspace_members,
         show_tree,
         summary_only,
         show_timings,
@@ -188,6 +217,187 @@ fn find_target_dir() -> Result<PathBuf, String> {
     }
 
     Err("target/debug/ directory not found. Run 'cargo build' first.".to_string())
+}
+
+/// Check if the current directory is a workspace root (virtual or non-virtual).
+/// Virtual workspace: has [workspace] but no [package]
+/// Non-virtual workspace: has both [workspace] and [package]
+/// Uses from_slice to avoid workspace inheritance resolution issues.
+fn is_workspace_root() -> bool {
+    let cargo_toml_path = PathBuf::from("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return false;
+    }
+
+    let Ok(content) = std::fs::read_to_string(&cargo_toml_path) else {
+        return false;
+    };
+
+    // Use from_slice to avoid workspace inheritance resolution
+    let Ok(manifest) = Manifest::from_slice(content.as_bytes()) else {
+        return false;
+    };
+
+    manifest.workspace.is_some()
+}
+
+/// Check if running from a workspace root and return workspace members.
+/// Handles both virtual workspaces (no [package]) and non-virtual workspaces
+/// (has both [workspace] and [package]).
+fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
+    let cargo_toml_path = PathBuf::from("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return Ok(None);
+    }
+
+    let cargo_toml_content = std::fs::read_to_string(&cargo_toml_path)
+        .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
+
+    // Use from_slice to avoid workspace inheritance resolution issues
+    let manifest = Manifest::from_slice(cargo_toml_content.as_bytes())
+        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
+
+    // Only proceed if this is a workspace root
+    if manifest.workspace.is_none() {
+        return Ok(None);
+    }
+
+    let workspace = manifest.workspace.as_ref().unwrap();
+    let target_dir = PathBuf::from("target/debug");
+    if !target_dir.exists() {
+        return Err("target/debug/ directory not found. Run 'cargo build' first.".to_string());
+    }
+
+    let mut members = Vec::new();
+
+    // For non-virtual workspaces, include the root package as a member
+    if let Some(pkg) = &manifest.package {
+        let pkg_name = pkg.name.clone();
+        // Complete the manifest to discover implicit targets
+        let mut root_manifest = manifest.clone();
+        let _ = root_manifest.complete_from_path_and_workspace::<toml::Value>(
+            &cargo_toml_path,
+            None::<(&Manifest<toml::Value>, &std::path::Path)>, // No parent workspace for the root
+        );
+        let binaries = collect_binaries_from_manifest(&root_manifest, &pkg_name, &target_dir);
+        if !binaries.is_empty() {
+            members.push(WorkspaceMember {
+                name: pkg_name,
+                path: PathBuf::from("."),
+                binaries,
+            });
+        }
+    }
+
+    // Iterate through workspace members
+    for member_pattern in &workspace.members {
+        // Handle glob patterns (e.g., "examples/*")
+        let member_paths = if member_pattern.contains('*') {
+            let base = member_pattern.trim_end_matches("/*").trim_end_matches("/*");
+            let base_path = PathBuf::from(base);
+            if base_path.is_dir() {
+                std::fs::read_dir(&base_path)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.path().is_dir())
+                            .map(|e| e.path())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![PathBuf::from(member_pattern)]
+        };
+
+        for member_path in member_paths {
+            let member_cargo_toml = member_path.join("Cargo.toml");
+            if !member_cargo_toml.exists() {
+                continue;
+            }
+
+            // Parse manifest and complete it with workspace context for implicit target discovery
+            if let Ok(content) = std::fs::read_to_string(&member_cargo_toml)
+                && let Ok(mut member_manifest) = Manifest::from_slice(content.as_bytes())
+                && let Some(pkg) = &member_manifest.package
+            {
+                let pkg_name = pkg.name.clone();
+
+                // Complete the manifest to discover implicit targets (src/main.rs, src/lib.rs, etc.)
+                // Pass the workspace manifest to avoid resolution errors
+                let _ = member_manifest.complete_from_path_and_workspace(
+                    &member_cargo_toml,
+                    Some((&manifest, &cargo_toml_path)),
+                );
+
+                let binaries =
+                    collect_binaries_from_manifest(&member_manifest, &pkg_name, &target_dir);
+
+                // Only add member if it has binaries
+                if !binaries.is_empty() {
+                    members.push(WorkspaceMember {
+                        name: pkg_name,
+                        path: member_path,
+                        binaries,
+                    });
+                }
+            }
+        }
+    }
+
+    if members.is_empty() {
+        return Err("No binary targets found in workspace. Run 'cargo build' first.".to_string());
+    }
+
+    Ok(Some(members))
+}
+
+/// Collect binaries from a parsed manifest
+fn collect_binaries_from_manifest(
+    manifest: &Manifest,
+    pkg_name: &str,
+    target_dir: &PathBuf,
+) -> Vec<PathBuf> {
+    let mut binaries = Vec::new();
+
+    // Check for explicit [[bin]] targets
+    for bin in &manifest.bin {
+        let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
+        let bin_path = target_dir.join(bin_name);
+        if bin_path.exists() {
+            binaries.push(bin_path);
+        }
+    }
+
+    // Check for default binary (auto-detected by from_path)
+    if manifest.bin.is_empty() {
+        let default_bin = target_dir.join(pkg_name);
+        if default_bin.exists() {
+            binaries.push(default_bin);
+        }
+    }
+
+    // Check for library target
+    if manifest.lib.is_some() {
+        let lib_name = manifest
+            .lib
+            .as_ref()
+            .and_then(|l| l.name.clone())
+            .unwrap_or_else(|| pkg_name.replace('-', "_"));
+
+        let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
+        let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
+
+        if dylib_path.exists() {
+            binaries.push(dylib_path);
+        } else if rlib_path.exists() {
+            binaries.push(rlib_path);
+        }
+    }
+
+    binaries
 }
 
 /// Find binaries for all workspace members

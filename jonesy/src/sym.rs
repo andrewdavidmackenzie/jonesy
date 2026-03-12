@@ -27,6 +27,14 @@ use std::{fs, io};
 
 type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 
+/// Check if a file path matches a crate source pattern.
+/// Supports multi-pattern format with "|" separator for workspace mode.
+pub fn matches_crate_pattern(file_path: &str, crate_pattern: &str) -> bool {
+    crate_pattern
+        .split('|')
+        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern))
+}
+
 #[allow(clippy::large_enum_variant)]
 pub enum SymbolTable<'a> {
     MachO(Mach<'a>),
@@ -81,7 +89,7 @@ impl CrateLineTable {
                         };
 
                         // Only include entries from crate source
-                        if full_path.contains(crate_src_path)
+                        if matches_crate_pattern(&full_path, crate_src_path)
                             && let Some(line) = row.line()
                         {
                             entries.push(CrateLineEntry {
@@ -821,9 +829,10 @@ fn process_instruction_data_with_crate_table(
         let mut line = func.line.or(func_line);
 
         // For functions in the crate source, find actual call line using pre-built table
-        if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-            && f.contains(crate_path)
-        {
+        let file_in_crate = file.as_ref().is_some_and(|f| {
+            crate_src_path.is_some_and(|crate_path| matches_crate_pattern(f, crate_path))
+        });
+        if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
             if let Some(table) = crate_line_table
                 && let Some(crate_line) = table.get_line(func.start_address, data.address)
@@ -1294,7 +1303,7 @@ fn get_crate_line_at_address<R: Reader>(
                     };
 
                     // Check if this line is in the crate source
-                    if full_path.contains(crate_src_path)
+                    if matches_crate_pattern(&full_path, crate_src_path)
                         && let Some(line) = row.line()
                         && addr >= best_addr
                     {
