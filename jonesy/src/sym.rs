@@ -1078,9 +1078,9 @@ pub fn find_callers_with_debug_info(
             if let Ok(call_target) = u64::from_str_radix(addr_str, 16)
                 && call_target == target_addr
             {
-                // Find the function containing this call using DWARF info
+                // Find the function containing this call - try DWARF first, fall back to symbol table
                 if let Some(func) = find_function_at_address(&functions, instruction.address()) {
-                    // Get source info from function's start address to avoid inlined code locations
+                    // Found in DWARF - use full debug info
                     let (func_file, func_line) = get_source_location(&dwarf, func.start_address)?;
 
                     // Prefer function's declaration file/line if available, then function start's line info
@@ -1102,6 +1102,23 @@ pub fn find_callers_with_debug_info(
 
                     callers.push(CallerInfo {
                         caller: func.clone(),
+                        call_site_addr: instruction.address(),
+                        file,
+                        line,
+                    });
+                } else if let Some((func_addr, func_name)) =
+                    find_containing_function_with_addr(binary_macho, instruction.address())
+                {
+                    // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
+                    let (file, line) =
+                        get_source_location(&dwarf, func_addr).unwrap_or((None, None));
+
+                    callers.push(CallerInfo {
+                        caller: FunctionInfo {
+                            name: func_name,
+                            start_address: func_addr,
+                            ..Default::default()
+                        },
                         call_site_addr: instruction.address(),
                         file,
                         line,
