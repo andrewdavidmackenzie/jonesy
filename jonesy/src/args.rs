@@ -51,7 +51,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     // Parse --config option
     let config_path = parse_config_path(args)?;
 
-    // Filter out flags and options with values from args for path parsing
+    // Filter out standalone flags from args for path parsing
+    // Keep --bin and --lib with their arguments for separate processing
     let filtered_args: Vec<&String> = args
         .iter()
         .enumerate()
@@ -69,15 +70,17 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         .map(|(_, a)| a)
         .collect();
 
-    let binaries = if filtered_args.len() == 1 {
+    // Check for --bin or --lib flags
+    let has_bin_flag = filtered_args.iter().any(|a| *a == "--bin");
+    let has_lib_flag = filtered_args.iter().any(|a| *a == "--lib");
+
+    let binaries = if has_bin_flag {
+        parse_bin_args(&filtered_args)?
+    } else if has_lib_flag {
+        parse_lib_args(&filtered_args)?
+    } else if filtered_args.len() == 1 {
         // No arguments besides program name - try to find binaries from Cargo.toml
         find_crate_binaries()?
-    } else if filtered_args.len() == 3 {
-        match filtered_args[1].as_str() {
-            "--bin" => parse_bin_args(&filtered_args)?,
-            "--lib" => parse_lib_args(&filtered_args)?,
-            _ => return Err(usage()),
-        }
     } else {
         return Err(usage());
     };
@@ -134,11 +137,13 @@ fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
 fn usage() -> String {
     "Usage:\n  \
      jonesy [OPTIONS]\n  \
-     jonesy [OPTIONS] --bin <path_to_binary>\n  \
-     jonesy [OPTIONS] --lib <path_to_lib_object>\n\n\
+     jonesy [OPTIONS] --bin <name_or_path>\n  \
+     jonesy [OPTIONS] --lib [path_to_lib_object]\n\n\
      When run without --bin or --lib, jonesy looks for Cargo.toml in the current\n\
      directory and analyzes all binary targets found in target/debug/.\n\n\
      Options:\n  \
+     --bin <name>       Analyze only the specified binary (by name or path)\n  \
+     --lib              Analyze only the library target\n  \
      --tree             Show full call tree instead of just crate code points\n  \
      --summary-only     Only show summary, not detailed panic points\n  \
      --quiet            Suppress progress messages (keeps panic points and summary)\n  \
@@ -340,41 +345,145 @@ fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
     Ok(binaries)
 }
 
-/// Parse --bin path_to_binary
+/// Parse --bin name_or_path
+/// Can be either a path to a binary or a binary name to look up in Cargo.toml
 fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
-    let binary_path = PathBuf::from(args[2].as_str());
+    // Find the argument after --bin
+    let bin_arg_idx = args
+        .iter()
+        .position(|a| *a == "--bin")
+        .ok_or("--bin flag not found")?;
+    let bin_name = args
+        .get(bin_arg_idx + 1)
+        .ok_or("--bin requires a binary name or path")?;
 
-    // Check that the file exists
-    if !binary_path.exists() {
-        return Err(format!("Binary not found at {:?}", binary_path));
+    let binary_path = PathBuf::from(bin_name.as_str());
+
+    // First check if it's a path that exists
+    if binary_path.exists() {
+        std::fs::File::open(&binary_path)
+            .map_err(|e| format!("Cannot read binary at {:?}: {}", binary_path, e))?;
+        return Ok(vec![binary_path]);
     }
 
-    // Check that the file is readable by attempting to open it
-    std::fs::File::open(&binary_path)
-        .map_err(|e| format!("Cannot read binary at {:?}: {}", binary_path, e))?;
-
-    Ok(vec![binary_path])
-}
-
-/// Parse --lib path_to_library_object
-fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
-    let binary_path = PathBuf::from(args[2].as_str());
-
-    // Check that the file exists
-    if !binary_path.exists() {
+    // Otherwise, treat it as a binary name and look it up in Cargo.toml
+    let cargo_toml_path = PathBuf::from("Cargo.toml");
+    if !cargo_toml_path.exists() {
         return Err(format!(
-            "Library shared object not found at {:?}",
-            binary_path
+            "Binary '{}' not found and no Cargo.toml in current directory",
+            bin_name
         ));
     }
 
-    // Check that the file is readable by attempting to open it
-    std::fs::File::open(&binary_path).map_err(|e| {
-        format!(
-            "Cannot read Library shared object at {:?}: {}",
-            binary_path, e
-        )
-    })?;
+    let cargo_toml_content = std::fs::read_to_string(&cargo_toml_path)
+        .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
 
-    Ok(vec![binary_path])
+    let manifest = Manifest::from_slice(cargo_toml_content.as_bytes())
+        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
+
+    // Look for target/debug directory
+    let target_dir = find_target_dir()?;
+
+    // Check if this binary name matches any [[bin]] target
+    for bin in &manifest.bin {
+        let manifest_bin_name = bin
+            .name
+            .as_ref()
+            .or(manifest.package.as_ref().map(|p| &p.name));
+        if let Some(name) = manifest_bin_name
+            && (name == bin_name.as_str() || name.replace('-', "_") == bin_name.as_str())
+        {
+            let bin_path = target_dir.join(name);
+            if bin_path.exists() {
+                return Ok(vec![bin_path]);
+            }
+        }
+    }
+
+    // Check if it matches the package name (default binary)
+    if let Some(pkg) = &manifest.package
+        && (pkg.name == bin_name.as_str() || pkg.name.replace('-', "_") == bin_name.as_str())
+    {
+        let bin_path = target_dir.join(&pkg.name);
+        if bin_path.exists() {
+            return Ok(vec![bin_path]);
+        }
+    }
+
+    Err(format!(
+        "Binary '{}' not found in Cargo.toml or target/debug/",
+        bin_name
+    ))
+}
+
+/// Parse --lib [path_to_library_object]
+/// If a path is provided, use it directly.
+/// Otherwise, find the library target from Cargo.toml
+fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    // Find the --lib flag position
+    let lib_arg_idx = args
+        .iter()
+        .position(|a| *a == "--lib")
+        .ok_or("--lib flag not found")?;
+
+    // Check if there's an argument after --lib that isn't another flag
+    let lib_path_arg = args.get(lib_arg_idx + 1).filter(|a| !a.starts_with("--"));
+
+    if let Some(path_str) = lib_path_arg {
+        let binary_path = PathBuf::from(path_str.as_str());
+        if !binary_path.exists() {
+            return Err(format!(
+                "Library shared object not found at {:?}",
+                binary_path
+            ));
+        }
+        std::fs::File::open(&binary_path).map_err(|e| {
+            format!(
+                "Cannot read Library shared object at {:?}: {}",
+                binary_path, e
+            )
+        })?;
+        return Ok(vec![binary_path]);
+    }
+
+    // No path provided - find the library from Cargo.toml
+    let cargo_toml_path = PathBuf::from("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return Err("No Cargo.toml found. Use --lib <path> to specify library path.".to_string());
+    }
+
+    let cargo_toml_content = std::fs::read_to_string(&cargo_toml_path)
+        .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
+
+    let manifest = Manifest::from_slice(cargo_toml_content.as_bytes())
+        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
+
+    if manifest.lib.is_none() {
+        return Err("No [lib] target found in Cargo.toml".to_string());
+    }
+
+    let target_dir = find_target_dir()?;
+
+    // Library name defaults to package name with hyphens replaced by underscores
+    let lib_name = manifest
+        .lib
+        .as_ref()
+        .and_then(|l| l.name.clone())
+        .or_else(|| manifest.package.as_ref().map(|p| p.name.replace('-', "_")))
+        .ok_or("Cannot determine library name")?;
+
+    // On macOS, look for .dylib or .rlib
+    let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
+    let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
+
+    if dylib_path.exists() {
+        Ok(vec![dylib_path])
+    } else if rlib_path.exists() {
+        Ok(vec![rlib_path])
+    } else {
+        Err(format!(
+            "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
+            lib_name
+        ))
+    }
 }
