@@ -573,11 +573,15 @@ impl CallGraph {
 
         // Process bl instructions in parallel (the expensive part is function lookup)
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
+        // Precompute symbol index once for efficient lookups
+        let symbol_index = SymbolIndex::new(macho);
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
-                && let Some((func_addr, func_name)) =
-                    find_containing_function_with_addr(macho, data.address)
+                && let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(data.address))
+                    .map(|(addr, name)| (addr, name.to_string()))
             {
                 edges.entry(call_target).or_default().push(CallerInfo {
                     caller: FunctionInfo {
@@ -621,8 +625,12 @@ impl CallGraph {
             .disasm_all(text_data, text_addr)
             .map_err(|e| format!("Disassembly failed: {e}"))?;
 
+        // Precompute symbol index once for efficient lookups
+        let symbol_index = SymbolIndex::new(macho);
+
         for instruction in instructions.iter() {
-            if let Some((call_target, caller_info)) = process_instruction_basic(macho, instruction)
+            if let Some((call_target, caller_info)) =
+                process_instruction_basic(symbol_index.as_ref(), instruction)
             {
                 edges.entry(call_target).or_default().push(caller_info);
             }
@@ -757,7 +765,10 @@ impl CallGraph {
 
 /// Process a single instruction and extract call information (basic version without debug info).
 /// Returns (call_target, CallerInfo) if this is a bl instruction, None otherwise.
-fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, CallerInfo)> {
+fn process_instruction_basic(
+    symbol_index: Option<&SymbolIndex>,
+    instruction: &Insn,
+) -> Option<(u64, CallerInfo)> {
     if instruction.mnemonic() != Some("bl") {
         return None;
     }
@@ -765,7 +776,9 @@ fn process_instruction_basic(macho: &MachO, instruction: &Insn) -> Option<(u64, 
     let operand = instruction.op_str()?;
     let addr_str = operand.trim_start_matches("#0x");
     let call_target = u64::from_str_radix(addr_str, 16).ok()?;
-    let (func_addr, func_name) = find_containing_function_with_addr(macho, instruction.address())?;
+    let (func_addr, func_name) = symbol_index
+        .and_then(|idx| idx.find_containing(instruction.address()))
+        .map(|(addr, name)| (addr, name.to_string()))?;
 
     Some((
         call_target,
@@ -882,6 +895,9 @@ pub(crate) fn find_callers(
         return Ok(callers);
     };
 
+    // Precompute symbol index once for efficient lookups
+    let symbol_index = SymbolIndex::new(macho);
+
     for instruction in instructions.iter() {
         // TODO is "bl" the only valid instruction for ARM64?
         if instruction.mnemonic() == Some("bl")
@@ -890,12 +906,14 @@ pub(crate) fn find_callers(
             let addr_str = operand.trim_start_matches("#0x");
             if let Ok(call_target) = u64::from_str_radix(addr_str, 16)
                 && call_target == target_addr
-                && let Some((func_addr, func_name)) =
-                    find_containing_function_with_addr(macho, instruction.address())
+                && let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(instruction.address()))
+                    .map(|(addr, name)| (addr, name.to_string()))
             {
                 callers.push(CallerInfo {
                     caller: FunctionInfo {
-                        name: func_name.clone(),
+                        name: func_name,
                         start_address: func_addr,
                         ..Default::default()
                     },
