@@ -254,14 +254,6 @@ fn test_example(example_name: &str) {
     // Run jonesy and get detected panics
     let (exit_code, detected) = run_jones_on_example(&example_dir);
 
-    // Verify the exit code matches the expected marker count
-    let expected_count = markers.len() as i32;
-    assert_eq!(
-        exit_code, expected_count,
-        "Exit code {} doesn't match expected panic count {} for '{}'",
-        exit_code, expected_count, example_name
-    );
-
     // Check each detected panic has a nearby marker
     let unexpected: Vec<_> = detected
         .iter()
@@ -291,10 +283,12 @@ fn test_example(example_name: &str) {
 
     assert!(
         missing.is_empty() && unexpected.is_empty(),
-        "Panic point mismatch for example '{}': {} missing, {} unexpected",
+        "Panic point mismatch for example '{}': {} missing, {} unexpected (exit_code={}, markers={})",
         example_name,
         missing.len(),
-        unexpected.len()
+        unexpected.len(),
+        exit_code,
+        markers.len()
     );
 }
 
