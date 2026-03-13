@@ -221,7 +221,16 @@ Configuration is loaded in order of precedence (later overrides earlier):
 | `unwind`        | Panic in no-unwind context                | **allowed** | — |
 | `unknown`       | Unknown panic cause                       | denied      | — |
 
-Clippy lints are "restriction" lints (off by default). Enable with `#![warn(clippy::unwrap_used)]` or in `Cargo.toml`.
+Clippy lints are "restriction" lints (off by default). Enable in `Cargo.toml`:
+
+```toml
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+indexing_slicing = "warn"
+panic = "warn"
+```
+
 Clippy's static analysis may produce false positives, while jonesy only reports actual panic paths in the compiled binary.
 
 ### jones.toml Format
