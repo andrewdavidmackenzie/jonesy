@@ -83,7 +83,7 @@ pub fn cause_unimplemented() {
     unimplemented!();
 }
 
-// TODO: jonesy cannot detect todo! in library mode (local symbol indirection)
+// Known limitation: todo!() in library mode (see issue #58)
 pub fn cause_todo() {
     todo!();
 }
