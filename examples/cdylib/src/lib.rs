@@ -70,6 +70,6 @@ pub extern "C" fn library_function() {
     // Known limitation: slice index detection is platform-specific (see issue #59)
     module::cause_slice_index_oob();
 
-    // Known limitation: string index panic not detected (see issue #60)
+    // jonesy: expect panic string/slice error
     module::cause_string_index_panic();
 }

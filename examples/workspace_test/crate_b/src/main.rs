@@ -35,6 +35,8 @@ fn main() {
         Some("c_overflow") => crate_c::arithmetic_overflow(),
         // jonesy: expect panic crate_c shift overflow
         Some("c_shift") => crate_c::shift_overflow(),
+        // jonesy: expect panic crate_c string/slice error
+        Some("c_string") => crate_c::string_index_panic(),
 
         // Call crate_b_lib functions (jonesy reports panic at call site)
         // jonesy: expect panic crate_b_lib explicit panic
@@ -67,6 +69,8 @@ fn main() {
         Some("b_lib_overflow") => crate_b_lib::lib_arithmetic_overflow(),
         // jonesy: expect panic crate_b_lib shift overflow
         Some("b_lib_shift") => crate_b_lib::lib_shift_overflow(),
+        // jonesy: expect panic crate_b_lib string/slice error
+        Some("b_lib_string") => crate_b_lib::lib_string_index_panic(),
 
         // Binary's own panic functions
         Some("unwrap") => bin_unwrap_none(),
@@ -207,8 +211,8 @@ fn bin_slice_index_oob() {
     let _ = v[10];
 }
 
-// Known limitation: string index panic not detected (see issue #60)
 fn bin_string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic string/slice error
     let _ = &s[0..7];
 }

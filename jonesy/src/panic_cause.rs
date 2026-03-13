@@ -391,9 +391,22 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         || func_name.contains("Index::index")
     {
         // Check if it's for str (string slice) vs array/vec (bounds check)
-        // String slicing requires str:: or core::str:: indicator
-        // Note: Range<usize> alone is not sufficient as slices also use it
-        if func_name.contains("str::") || func_name.contains("core::str::") {
+        // String slicing can be detected via:
+        // 1. Function name containing str:: or core::str::
+        // 2. File path matching known stdlib string module paths
+        let is_string_op = func_name.contains("str::") || func_name.contains("core::str::");
+        let is_string_file = file_path
+            .map(|f| {
+                // Normalize path separators for cross-platform matching
+                let normalized = f.replace('\\', "/");
+                // Only match known stdlib string module paths to avoid false positives
+                // from user directories named "str"
+                normalized.contains("/library/core/src/str/")
+                    || normalized.contains("/library/std/src/str/")
+                    || normalized.contains("/src/libcore/str/")
+            })
+            .unwrap_or(false);
+        if is_string_op || is_string_file {
             return Some(PanicCause::StringSliceError);
         }
         return Some(PanicCause::BoundsCheck);

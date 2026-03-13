@@ -19,6 +19,7 @@ fn main() {
         Some("lib_div_zero") => multi_bin_lib::lib_divide_by_zero(),
         Some("lib_overflow") => multi_bin_lib::lib_arithmetic_overflow(),
         Some("lib_shift") => multi_bin_lib::lib_shift_overflow(),
+        Some("lib_string") => multi_bin_lib::lib_string_index_panic(),
         Some("unwrap") => cause_an_unwrap(),
         Some("unwrap_err") => cause_unwrap_err(),
         Some("expect_none") => cause_expect_none(),
@@ -279,9 +280,9 @@ fn cause_slice_index_oob() {
     }
 }
 
-// Known limitation: string index panic not detected (see issue #60)
 fn cause_string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic string/slice error
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 
     // Panic-free alternative: use .get() which returns Option

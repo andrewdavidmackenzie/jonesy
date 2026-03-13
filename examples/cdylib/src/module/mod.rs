@@ -108,14 +108,14 @@ pub fn cause_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// Known limitation: slice index detection is platform-specific (see issue #59)
 pub fn cause_slice_index_oob() {
     let v = vec![1, 2, 3];
+    // Known limitation: slice index detection is platform-specific (see issue #59)
     let _ = v[10];
 }
 
-// Known limitation: string index panic not detected (see issue #60)
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic string/slice error
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 }
