@@ -85,36 +85,36 @@ pub fn cause_expect_err_on_ok() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// TODO: jonesy doesn't detect assert_eq yet
+// jonesy: expect panic assert_eq! failed
 pub fn cause_assert_eq() {
     assert_eq!(1, 2);
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// TODO: jonesy doesn't detect assert_ne yet
+// jonesy: expect panic assert_ne! failed
 pub fn cause_assert_ne() {
     assert_ne!(1, 1);
 }
 
-// TODO: jonesy doesn't detect debug_assert_eq yet
+// jonesy: expect panic debug_assert_eq! failed
 pub fn cause_debug_assert_eq() {
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
-// TODO: jonesy doesn't detect debug_assert_ne yet
+// jonesy: expect panic debug_assert_ne! failed
 pub fn cause_debug_assert_ne() {
     debug_assert_ne!(1, 1);
 }
 
 #[allow(clippy::useless_vec)]
-// TODO: jonesy slice index detection is platform-specific
+// jonesy: expect panic index out of bounds
 pub fn cause_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
 }
 
-// TODO: jonesy doesn't detect string index panic yet
+// jonesy: expect panic string slice boundary error
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7]; // panics - cuts through UTF-8 char

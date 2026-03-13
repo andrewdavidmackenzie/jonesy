@@ -54,21 +54,21 @@ fn main() {
     // jonesy: expect panic expect_err on Ok
     module::cause_expect_err_on_ok();
 
-    // TODO: jonesy doesn't detect assert_eq yet
+    // jonesy: expect panic assert_eq! failed
     module::cause_assert_eq();
 
-    // TODO: jonesy doesn't detect assert_ne yet
+    // jonesy: expect panic assert_ne! failed
     module::cause_assert_ne();
 
-    // TODO: jonesy doesn't detect debug_assert_eq yet
+    // jonesy: expect panic debug_assert_eq! failed
     module::cause_debug_assert_eq();
 
-    // TODO: jonesy doesn't detect debug_assert_ne yet
+    // jonesy: expect panic debug_assert_ne! failed
     module::cause_debug_assert_ne();
 
-    // TODO: jonesy slice index detection is platform-specific
+    // jonesy: expect panic index out of bounds
     module::cause_slice_index_oob();
 
-    // TODO: jonesy doesn't detect string index panic yet
+    // jonesy: expect panic string slice boundary error
     module::cause_string_index_panic();
 }
