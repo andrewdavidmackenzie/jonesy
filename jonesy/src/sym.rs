@@ -553,7 +553,9 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
     instructions
         .iter()
         .filter_map(|insn| {
-            if insn.mnemonic() == Some("bl") {
+            // Match both BL (branch with link) and B (branch) for tail call detection
+            let mnemonic = insn.mnemonic();
+            if mnemonic == Some("bl") || mnemonic == Some("b") {
                 let operand = insn.op_str()?;
                 let addr_str = operand.trim_start_matches("#0x");
                 let call_target = u64::from_str_radix(addr_str, 16).ok();
@@ -778,12 +780,14 @@ impl CallGraph {
 }
 
 /// Process a single instruction and extract call information (basic version without debug info).
-/// Returns (call_target, CallerInfo) if this is a bl instruction, None otherwise.
+/// Returns (call_target, CallerInfo) if this is a bl/b instruction, None otherwise.
 fn process_instruction_basic(
     symbol_index: Option<&SymbolIndex>,
     instruction: &Insn,
 ) -> Option<(u64, CallerInfo)> {
-    if instruction.mnemonic() != Some("bl") {
+    // Match both BL (branch with link) and B (branch) for tail call detection
+    let mnemonic = instruction.mnemonic();
+    if mnemonic != Some("bl") && mnemonic != Some("b") {
         return None;
     }
 
@@ -914,8 +918,9 @@ pub(crate) fn find_callers(
     let symbol_index = SymbolIndex::new(macho);
 
     for instruction in instructions.iter() {
-        // TODO is "bl" the only valid instruction for ARM64?
-        if instruction.mnemonic() == Some("bl")
+        // Match both BL (branch with link) and B (branch) for tail call detection
+        let mnemonic = instruction.mnemonic();
+        if (mnemonic == Some("bl") || mnemonic == Some("b"))
             && let Some(operand) = instruction.op_str()
         {
             let addr_str = operand.trim_start_matches("#0x");
@@ -1148,8 +1153,10 @@ pub fn find_callers_with_debug_info(
     let symbol_index = SymbolIndex::new(binary_macho);
 
     for instruction in instructions.iter() {
-        // Look for BL (branch with link) instructions
-        if instruction.mnemonic() == Some("bl")
+        // Look for BL (branch with link) and B (branch) instructions
+        // B is used for tail calls where the compiler optimizes `call; ret` into a single jump
+        let mnemonic = instruction.mnemonic();
+        if (mnemonic == Some("bl") || mnemonic == Some("b"))
             && let Some(operand) = instruction.op_str()
         {
             let addr_str = operand.trim_start_matches("#0x");
