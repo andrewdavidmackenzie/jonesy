@@ -117,7 +117,7 @@ pub fn lib_slice_index_oob() {
     let _ = v[10];
 }
 
-// TODO: jonesy does not detect string index panic yet
+// Known limitation: string index panic not detected (see issue #60)
 pub fn lib_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7];

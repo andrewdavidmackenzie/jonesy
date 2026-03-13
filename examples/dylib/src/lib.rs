@@ -70,6 +70,6 @@ pub fn library_function() {
     // Known limitation: slice index detection is platform-specific (see issue #59)
     module::cause_slice_index_oob();
 
-    // TODO: jonesy does not detect string index panic yet
+    // Known limitation: string index panic not detected (see issue #60)
     module::cause_string_index_panic();
 }

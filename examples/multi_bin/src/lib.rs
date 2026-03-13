@@ -240,7 +240,7 @@ pub fn lib_slice_index_oob() {
     }
 }
 
-// TODO: jonesy does not detect string index panic yet
+// Known limitation: string index panic not detected (see issue #60)
 pub fn lib_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
