@@ -403,6 +403,14 @@ const LIBRARY_PANIC_PATTERNS: &[&str] = &[
     "core::result::unwrap_failed",
 ];
 
+/// Represents a panic caller location for library analysis.
+#[derive(Hash, Eq, PartialEq)]
+struct PanicCaller {
+    file: String,
+    name: String,
+    line: u32,
+}
+
 /// Check if a function name belongs to the standard library.
 /// Used to filter out stdlib functions from panic analysis results.
 fn is_stdlib_function(name: &str) -> bool {
@@ -523,7 +531,7 @@ fn analyze_archive(
     }
     let step_start = Instant::now();
 
-    let mut panic_callers: HashSet<(String, String, u32)> = HashSet::new(); // (file, name, line)
+    let mut panic_callers: HashSet<PanicCaller> = HashSet::new();
 
     // Search for callers of panic-related symbols
     for target_sym in merged_graph.target_symbols() {
@@ -563,7 +571,11 @@ fn analyze_archive(
                 && file_in_scope(file)
                 && let Some(line) = caller_info.line
             {
-                panic_callers.insert((file.clone(), caller_info.caller.name.clone(), line));
+                panic_callers.insert(PanicCaller {
+                    file: file.clone(),
+                    name: caller_info.caller.name.clone(),
+                    line,
+                });
             }
         }
     }
@@ -586,20 +598,20 @@ fn analyze_archive(
 
     // Sort for deterministic output
     let mut sorted_callers: Vec<_> = panic_callers.into_iter().collect();
-    sorted_callers.sort_by(|a, b| (&a.0, a.2, &a.1).cmp(&(&b.0, b.2, &b.1)));
+    sorted_callers.sort_by(|a, b| (&a.file, a.line, &a.name).cmp(&(&b.file, b.line, &b.name)));
 
     // Collect points for summary
-    for (file, _name, line) in &sorted_callers {
-        points.insert((file.clone(), *line));
-        files_affected.insert(file.clone());
+    for caller in &sorted_callers {
+        points.insert((caller.file.clone(), caller.line));
+        files_affected.insert(caller.file.clone());
     }
 
     // Print details if not summary-only
     if !summary_only {
         println!("\nPanic code points in library:");
-        for (file, _name, line) in &sorted_callers {
+        for caller in &sorted_callers {
             // Output in format expected by test framework: " --> file:line:col"
-            println!(" --> {}:{}:1", file, line);
+            println!(" --> {}:{}:1", caller.file, caller.line);
         }
     }
 
