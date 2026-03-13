@@ -18,6 +18,7 @@ pub fn lib_unwrap_none() {
         println!("Got value: {value}");
     }
     let _value = opt.unwrap_or(0);
+    let _value = opt.unwrap_or_default();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
@@ -81,6 +82,8 @@ pub fn lib_expect_err_on_ok() {
     let result: Result<i32, &str> = Ok(42);
     if let Err(e) = result {
         println!("Got expected error: {e}");
+    } else {
+        println!("Got Ok, but expected Err");
     }
 }
 
@@ -106,6 +109,8 @@ pub fn lib_assert_eq() {
     let b = 2;
     if a != b {
         println!("Values differ: {a} != {b}");
+    } else {
+        println!("Values are equal");
     }
 }
 
@@ -119,6 +124,8 @@ pub fn lib_assert_ne() {
     let b = 1;
     if a == b {
         println!("Values are equal: {a} == {b}");
+    } else {
+        println!("Values differ");
     }
 }
 
@@ -142,6 +149,8 @@ pub fn lib_debug_assert_eq() {
     let b = 2;
     if a != b {
         println!("Debug: values differ: {a} != {b}");
+    } else {
+        println!("Debug: values are equal");
     }
 }
 
@@ -155,6 +164,8 @@ pub fn lib_debug_assert_ne() {
     let b = 1;
     if a == b {
         println!("Debug: values are equal: {a} == {b}");
+    } else {
+        println!("Debug: values differ");
     }
 }
 
@@ -183,6 +194,8 @@ pub fn lib_divide_by_zero() {
     let divisor: i32 = 0;
     if divisor != 0 {
         let _result = dividend / divisor;
+    } else {
+        println!("Cannot divide by zero");
     }
     let _result = dividend.checked_div(divisor); // Returns None
 }
