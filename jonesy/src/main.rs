@@ -444,12 +444,7 @@ fn analyze_archive(
     _config: &Config,
     _project_root: Option<&Path>,
 ) -> AnalysisSummary {
-    // TODO: Future enhancements for unused parameters:
-    // - _binary_path: Could be used for relative path display in output
-    // - _show_tree: Display full call tree from panic to user code
-    // - _no_hyperlinks: Format output with clickable terminal links
-    // - _config: Apply allow/deny list filtering for panic causes
-    // - _project_root: Resolve relative paths for output formatting
+    // See issue #56 for planned enhancements to these unused parameters
     use std::collections::HashSet;
 
     // Helper to check if a file path is within the crate/workspace scope
