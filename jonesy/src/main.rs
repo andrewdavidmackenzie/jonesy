@@ -427,7 +427,7 @@ fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
     _binary_path: &Path,
-    _crate_src_path: Option<&str>,
+    crate_src_path: Option<&str>,
     _show_tree: bool,
     summary_only: bool,
     show_timings: bool,
@@ -438,12 +438,18 @@ fn analyze_archive(
 ) -> AnalysisSummary {
     // TODO: Future enhancements for unused parameters:
     // - _binary_path: Could be used for relative path display in output
-    // - _crate_src_path: Filter results to specific crate sources
     // - _show_tree: Display full call tree from panic to user code
     // - _no_hyperlinks: Format output with clickable terminal links
     // - _config: Apply allow/deny list filtering for panic causes
     // - _project_root: Resolve relative paths for output formatting
     use std::collections::HashSet;
+
+    // Helper to check if a file path is within the crate/workspace scope
+    let file_in_scope = |file: &str| {
+        crate_src_path.map_or(true, |paths| {
+            paths.split('|').any(|p| !p.is_empty() && file.contains(p))
+        })
+    };
 
     let show_progress = !quiet && !summary_only;
     let total_start = Instant::now();
@@ -486,7 +492,14 @@ fn analyze_archive(
                     }
                 }
             },
-            Err(_) => {} // Non-MachO object files are expected in some archives
+            Err(e) => {
+                if show_progress {
+                    eprintln!(
+                        "  Warning: Failed to parse {} as Mach-O: {}",
+                        member_name, e
+                    );
+                }
+            }
         }
     }
 
@@ -545,7 +558,9 @@ fn analyze_archive(
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)
+            // Also filter by crate_src_path if provided (for workspace scoping)
             if let Some(file) = dwarf_file
+                && file_in_scope(file)
                 && let Some(line) = caller_info.line
             {
                 panic_callers.insert((file.clone(), caller_info.caller.name.clone(), line));
