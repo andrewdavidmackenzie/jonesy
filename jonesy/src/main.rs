@@ -403,6 +403,23 @@ const LIBRARY_PANIC_PATTERNS: &[&str] = &[
     "core::result::unwrap_failed",
 ];
 
+/// Check if a function name belongs to the standard library.
+/// Used to filter out stdlib functions from panic analysis results.
+fn is_stdlib_function(name: &str) -> bool {
+    name.starts_with("core::")
+        || name.starts_with("std::")
+        || name.starts_with("alloc::")
+        || name.starts_with("<core::")
+        || name.starts_with("<std::")
+        || name.starts_with("<alloc::")
+        || name.contains(" core::")
+        || name.contains(" std::")
+        || name.contains(" alloc::")
+        || name.contains("::core::")
+        || name.contains("::std::")
+        || name.contains("::alloc::")
+}
+
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
 #[allow(clippy::too_many_arguments)]
@@ -419,6 +436,13 @@ fn analyze_archive(
     _config: &Config,
     _project_root: Option<&Path>,
 ) -> AnalysisSummary {
+    // TODO: Future enhancements for unused parameters:
+    // - _binary_path: Could be used for relative path display in output
+    // - _crate_src_path: Filter results to specific crate sources
+    // - _show_tree: Display full call tree from panic to user code
+    // - _no_hyperlinks: Format output with clickable terminal links
+    // - _config: Apply allow/deny list filtering for panic causes
+    // - _project_root: Resolve relative paths for output formatting
     use std::collections::HashSet;
 
     let show_progress = !quiet && !summary_only;
@@ -488,21 +512,7 @@ fn analyze_archive(
 
         for caller_info in merged_graph.get_callers(target_sym) {
             // Skip standard library functions - we only want user code
-            // This includes trait impls like "<T as core::...>" which contain library paths
-            let name = &caller_info.caller.name;
-            if name.starts_with("core::")
-                || name.starts_with("std::")
-                || name.starts_with("alloc::")
-                || name.starts_with("<core::")
-                || name.starts_with("<std::")
-                || name.starts_with("<alloc::")
-                || name.contains(" core::")
-                || name.contains(" std::")
-                || name.contains(" alloc::")
-                || name.contains("::core::")
-                || name.contains("::std::")
-                || name.contains("::alloc::")
-            {
+            if is_stdlib_function(&caller_info.caller.name) {
                 continue;
             }
 
@@ -686,33 +696,21 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     }
                 }
                 SymbolTable::Archive(archive) => {
-                    for member_name in archive.members() {
-                        if !member_name.ends_with(".o") {
-                            continue;
-                        }
-
-                        let Ok(member_data) = archive.extract(member_name, &binary_buffer) else {
-                            continue;
-                        };
-
-                        if let Ok(obj_macho) = MachO::parse(member_data, 0) {
-                            // Use workspace root path to include panics from all member crates
-                            let summary = analyze_macho(
-                                &obj_macho,
-                                member_data,
-                                &binary_path,
-                                Some(&workspace_src_path),
-                                args.show_tree,
-                                args.summary_only,
-                                args.show_timings,
-                                args.quiet,
-                                args.no_hyperlinks,
-                                &config,
-                                Some(workspace_root.as_path()),
-                            );
-                            member_summary.add(&summary);
-                        }
-                    }
+                    // Use relocation-based analysis for consistent cross-object resolution
+                    let summary = analyze_archive(
+                        &archive,
+                        &binary_buffer,
+                        &binary_path,
+                        Some(&workspace_src_path),
+                        args.show_tree,
+                        args.summary_only,
+                        args.show_timings,
+                        args.quiet,
+                        args.no_hyperlinks,
+                        &config,
+                        Some(workspace_root.as_path()),
+                    );
+                    member_summary.add(&summary);
                 }
             }
         }
