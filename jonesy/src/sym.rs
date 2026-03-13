@@ -448,10 +448,15 @@ const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
 const BL_MASK: u32 = 0xFC000000;
 const BL_OPCODE: u32 = 0x94000000;
 
-/// Decode ARM64 BL instruction target address from raw bytes.
+/// ARM64 B instruction mask: bits [31:26] must be 000101
+const B_MASK: u32 = 0xFC000000;
+const B_OPCODE: u32 = 0x14000000;
+
+/// Decode ARM64 BL/B instruction target address from raw bytes.
 /// BL encoding: 100101 imm26
+/// B encoding: 000101 imm26
 /// Target = PC + sign_extend(imm26) * 4
-fn decode_bl_target(insn_bytes: u32, pc: u64) -> u64 {
+fn decode_branch_target(insn_bytes: u32, pc: u64) -> u64 {
     // Extract 26-bit immediate
     let imm26 = insn_bytes & 0x03FFFFFF;
     // Sign-extend to 32 bits and multiply by 4 (shift left 2)
@@ -460,8 +465,10 @@ fn decode_bl_target(insn_bytes: u32, pc: u64) -> u64 {
     (pc as i64 + offset as i64) as u64
 }
 
-/// Scan for ARM64 BL instructions in parallel by dividing into chunks.
-/// Directly scans raw bytes for BL pattern - no disassembly needed.
+/// Scan for ARM64 BL and B instructions in parallel by dividing into chunks.
+/// BL = branch with link (function calls)
+/// B = unconditional branch (tail calls to other functions)
+/// Directly scans raw bytes for patterns - no disassembly needed.
 /// This is much faster than using Capstone for full disassembly.
 fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
     let num_threads = rayon::current_num_threads();
@@ -478,7 +485,7 @@ fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData>
 
     if chunk_size >= text_data.len() {
         // Single chunk - use sequential scanning
-        return sequential_scan_bl_instructions(text_data, text_addr);
+        return scan_branch_instructions(text_data, text_addr);
     }
 
     // Create chunks with their base addresses
@@ -491,26 +498,30 @@ fn parallel_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData>
         })
         .collect();
 
-    // Scan chunks in parallel for BL instructions
+    // Scan chunks in parallel for BL and B instructions
     let results: Vec<Vec<InsnData>> = chunks
         .par_iter()
-        .map(|(_i, chunk, chunk_addr)| scan_bl_instructions(chunk, *chunk_addr))
+        .map(|(_i, chunk, chunk_addr)| scan_branch_instructions(chunk, *chunk_addr))
         .collect();
 
     // Flatten results from all chunks
     results.into_iter().flatten().collect()
 }
 
-/// Scan a chunk of ARM64 code for BL instructions.
-/// Directly checks raw bytes against BL opcode pattern.
-fn scan_bl_instructions(data: &[u8], base_addr: u64) -> Vec<InsnData> {
+/// Scan a chunk of ARM64 code for BL and B instructions.
+/// BL = branch with link (function calls)
+/// B = unconditional branch (tail calls to other functions)
+/// Directly checks raw bytes against opcode patterns.
+fn scan_branch_instructions(data: &[u8], base_addr: u64) -> Vec<InsnData> {
     data.chunks_exact(ARM64_INSN_SIZE)
         .enumerate()
         .filter_map(|(i, bytes)| {
             let insn = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            if (insn & BL_MASK) == BL_OPCODE {
+            let is_bl = (insn & BL_MASK) == BL_OPCODE;
+            let is_b = (insn & B_MASK) == B_OPCODE;
+            if is_bl || is_b {
                 let pc = base_addr + (i * ARM64_INSN_SIZE) as u64;
-                let target = decode_bl_target(insn, pc);
+                let target = decode_branch_target(insn, pc);
                 Some(InsnData {
                     address: pc,
                     call_target: Some(target),
@@ -520,11 +531,6 @@ fn scan_bl_instructions(data: &[u8], base_addr: u64) -> Vec<InsnData> {
             }
         })
         .collect()
-}
-
-/// Sequential BL scanning fallback for small sections.
-fn sequential_scan_bl_instructions(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
-    scan_bl_instructions(text_data, text_addr)
 }
 
 /// Sequential disassembly using Capstone - kept for non-ARM64 platforms.
@@ -547,7 +553,9 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
     instructions
         .iter()
         .filter_map(|insn| {
-            if insn.mnemonic() == Some("bl") {
+            // Match both BL (branch with link) and B (branch) for tail call detection
+            let mnemonic = insn.mnemonic();
+            if mnemonic == Some("bl") || mnemonic == Some("b") {
                 let operand = insn.op_str()?;
                 let addr_str = operand.trim_start_matches("#0x");
                 let call_target = u64::from_str_radix(addr_str, 16).ok();
@@ -696,9 +704,9 @@ impl CallGraph {
         #[cfg(not(target_arch = "aarch64"))]
         let insn_data = sequential_disassemble_arm64(text_data, text_addr);
         if show_timings {
-            // insn_data contains only BL instructions (not all instructions)
+            // insn_data contains only BL/B branch instructions (not all instructions)
             eprintln!(
-                "    [cg timing] scan for bl instructions: {:?} ({} found)",
+                "    [cg timing] scan for branch instructions: {:?} ({} found)",
                 step.elapsed(),
                 insn_data.len()
             );
@@ -772,12 +780,14 @@ impl CallGraph {
 }
 
 /// Process a single instruction and extract call information (basic version without debug info).
-/// Returns (call_target, CallerInfo) if this is a bl instruction, None otherwise.
+/// Returns (call_target, CallerInfo) if this is a bl/b instruction, None otherwise.
 fn process_instruction_basic(
     symbol_index: Option<&SymbolIndex>,
     instruction: &Insn,
 ) -> Option<(u64, CallerInfo)> {
-    if instruction.mnemonic() != Some("bl") {
+    // Match both BL (branch with link) and B (branch) for tail call detection
+    let mnemonic = instruction.mnemonic();
+    if mnemonic != Some("bl") && mnemonic != Some("b") {
         return None;
     }
 
@@ -908,8 +918,9 @@ pub(crate) fn find_callers(
     let symbol_index = SymbolIndex::new(macho);
 
     for instruction in instructions.iter() {
-        // TODO is "bl" the only valid instruction for ARM64?
-        if instruction.mnemonic() == Some("bl")
+        // Match both BL (branch with link) and B (branch) for tail call detection
+        let mnemonic = instruction.mnemonic();
+        if (mnemonic == Some("bl") || mnemonic == Some("b"))
             && let Some(operand) = instruction.op_str()
         {
             let addr_str = operand.trim_start_matches("#0x");
@@ -1142,8 +1153,10 @@ pub fn find_callers_with_debug_info(
     let symbol_index = SymbolIndex::new(binary_macho);
 
     for instruction in instructions.iter() {
-        // Look for BL (branch with link) instructions
-        if instruction.mnemonic() == Some("bl")
+        // Look for BL (branch with link) and B (branch) instructions
+        // B is used for tail calls where the compiler optimizes `call; ret` into a single jump
+        let mnemonic = instruction.mnemonic();
+        if (mnemonic == Some("bl") || mnemonic == Some("b"))
             && let Some(operand) = instruction.op_str()
         {
             let addr_str = operand.trim_start_matches("#0x");

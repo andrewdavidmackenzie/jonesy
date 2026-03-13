@@ -100,7 +100,9 @@ pub fn build_call_tree_parallel(
                 // Use sequential recursion within each branch to ensure deterministic behavior
                 build_call_tree_sequential(call_graph, caller_addr, visited)
             } else {
-                Vec::new()
+                // Already visited - still get callers but don't recurse into them
+                // This ensures all paths through the call graph are represented
+                build_shallow_callers(call_graph, caller_addr)
             };
 
             Some(CallTreeNode {
@@ -131,7 +133,8 @@ fn build_call_tree_sequential(
             let child_callers = if should_recurse {
                 build_call_tree_sequential(call_graph, caller_addr, visited)
             } else {
-                Vec::new()
+                // Already visited - still get callers but don't recurse into them
+                build_shallow_callers(call_graph, caller_addr)
             };
 
             CallTreeNode {
@@ -139,6 +142,25 @@ fn build_call_tree_sequential(
                 file,
                 line: caller_info.line,
                 callers: child_callers,
+            }
+        })
+        .collect()
+}
+
+/// Build shallow caller nodes without recursion.
+/// Used when a function was already visited through another path.
+/// This ensures we still capture caller relationships even for visited functions.
+fn build_shallow_callers(call_graph: &CallGraph, target_addr: u64) -> Vec<CallTreeNode> {
+    call_graph
+        .get_callers(target_addr)
+        .into_iter()
+        .map(|caller_info| {
+            let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+            CallTreeNode {
+                name: caller_info.caller.name.clone(),
+                file,
+                line: caller_info.line,
+                callers: vec![], // No deeper recursion to prevent infinite loops
             }
         })
         .collect()
@@ -195,7 +217,7 @@ pub fn collect_crate_code_points_hierarchical(
         roots.sort();
     }
 
-    // Build tree from roots
+    // Build tree from roots, propagating causes from children to parents
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,

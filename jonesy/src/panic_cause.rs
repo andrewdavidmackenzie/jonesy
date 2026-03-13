@@ -382,6 +382,23 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         return Some(PanicCause::StringSliceError);
     }
 
+    // Bounds checking domain - detect from Index trait implementations
+    // These are called from user code when indexing slices/vecs
+    // Function names like "index<T, usize>" or "Index::index"
+    // Note: function name might be just "index<...>" without module prefix
+    if func_name.starts_with("index<")
+        || func_name.contains("::index<")
+        || func_name.contains("Index::index")
+    {
+        // Check if it's for str (string slice) vs array/vec (bounds check)
+        // String slicing requires str:: or core::str:: indicator
+        // Note: Range<usize> alone is not sufficient as slices also use it
+        if func_name.contains("str::") || func_name.contains("core::str::") {
+            return Some(PanicCause::StringSliceError);
+        }
+        return Some(PanicCause::BoundsCheck);
+    }
+
     // panic_fmt is the core panic function - if we reach here without a more
     // specific match, leave cause as None (unknown) to avoid incorrect labeling.
     None

@@ -227,7 +227,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::with_defaults();
 
-        // Drop panics should be allowed by default
+        // Drop and unwind panics should be allowed by default
         assert!(!config.is_denied(&PanicCause::PanicInDrop));
         assert!(!config.is_denied(&PanicCause::CannotUnwind));
 
