@@ -544,9 +544,10 @@ fn analyze_archive(
             });
 
             // Only include entries with proper DWARF file/line info from user code
-            // Skip entries that would fall back to function names (not useful output)
-            if let Some(file) = dwarf_file {
-                let line = caller_info.line.unwrap_or(0);
+            // Skip entries without valid line numbers (would show confusing ":0" in output)
+            if let Some(file) = dwarf_file
+                && let Some(line) = caller_info.line
+            {
                 panic_callers.insert((file.clone(), caller_info.caller.name.clone(), line));
             }
         }
