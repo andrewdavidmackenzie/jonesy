@@ -108,14 +108,14 @@ pub fn cause_debug_assert_ne() {
 }
 
 #[allow(clippy::useless_vec)]
-// jonesy: expect panic index out of bounds
 pub fn cause_slice_index_oob() {
     let v = vec![1, 2, 3];
+    // jonesy: expect panic index out of bounds
     let _ = v[10];
 }
 
-// jonesy: expect panic string slice boundary error
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic string slice boundary error
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 }

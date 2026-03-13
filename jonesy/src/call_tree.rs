@@ -177,6 +177,11 @@ pub fn collect_crate_code_points_hierarchical(
 
     collect_crate_relationships(node, crate_src_path, &mut points, None, None);
 
+    // Propagate causes within the same function (same file, nearby lines)
+    // This handles cases where different instructions within a function have different
+    // causes - e.g., vec creation vs vec indexing in the same function
+    propagate_function_causes(&mut points);
+
     // Find roots: points that are not in any other point's children
     let all_children: HashSet<(String, u32)> = points
         .values()
@@ -195,7 +200,7 @@ pub fn collect_crate_code_points_hierarchical(
         roots.sort();
     }
 
-    // Build tree from roots
+    // Build tree from roots, propagating causes from children to parents
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,
@@ -230,6 +235,70 @@ pub fn collect_crate_code_points_hierarchical(
         .iter()
         .filter_map(|root| build_subtree(root, &points, &mut HashSet::new()))
         .collect()
+}
+
+/// Propagate specific panic causes between code points in the same function.
+/// When different instructions within a function can panic for different reasons
+/// (e.g., vec allocation vs vec indexing), we want to ensure that calling the
+/// function gets ALL the causes, not just the cause of the entry point.
+///
+/// This only propagates "real" panic causes (BoundsCheck, StringSliceError, etc.),
+/// not generic causes like CannotUnwind.
+fn propagate_function_causes(points: &mut CodePointMap) {
+    use crate::panic_cause::PanicCause;
+
+    // Distance in lines to consider as "same function"
+    // Keep this small to avoid propagating between adjacent functions
+    const FUNCTION_LINE_RANGE: u32 = 5;
+
+    // Collect causes that should be propagated (not generic/internal causes)
+    fn should_propagate(cause: &PanicCause) -> bool {
+        matches!(
+            cause,
+            PanicCause::BoundsCheck
+                | PanicCause::StringSliceError
+                | PanicCause::DivisionByZero
+                | PanicCause::ArithmeticOverflow(_)
+                | PanicCause::ShiftOverflow(_)
+        )
+    }
+
+    // Group points by file
+    let mut by_file: HashMap<String, Vec<(u32, HashSet<PanicCause>)>> = HashMap::new();
+    for ((file, line), (_, causes, _)) in points.iter() {
+        by_file
+            .entry(file.clone())
+            .or_default()
+            .push((*line, causes.clone()));
+    }
+
+    // For each file, collect propagatable causes from nearby lines
+    for (file, lines) in &by_file {
+        // Collect all propagatable causes in each line's range
+        let mut propagated: HashMap<u32, HashSet<PanicCause>> = HashMap::new();
+
+        for (line, _) in lines {
+            let nearby_causes: HashSet<_> = lines
+                .iter()
+                .filter(|(other_line, _)| {
+                    let diff = line.abs_diff(*other_line);
+                    diff <= FUNCTION_LINE_RANGE
+                })
+                .flat_map(|(_, causes)| causes.iter().filter(|c| should_propagate(c)).cloned())
+                .collect();
+
+            if !nearby_causes.is_empty() {
+                propagated.insert(*line, nearby_causes);
+            }
+        }
+
+        // Apply propagated causes
+        for (line, new_causes) in propagated {
+            if let Some((_, causes, _)) = points.get_mut(&(file.clone(), line)) {
+                causes.extend(new_causes);
+            }
+        }
+    }
 }
 
 /// Collect crate code point relationships by walking the call tree.
