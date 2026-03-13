@@ -413,3 +413,6 @@ See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scen
 | String slice | `clippy::string_slice` |
 
 These are "restriction" lints (off by default). Enable with `#![warn(clippy::unwrap_used)]` or in `Cargo.toml`.
+
+**Note:** Clippy's static analysis may produce false positives (warning on code that can't actually panic at runtime),
+while jonesy analyzes the compiled binary and only reports actual panic paths in the final executable.
