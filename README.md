@@ -395,3 +395,21 @@ The following panic patterns are detected in library-only analysis:
 - Slice index out of bounds
 
 See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scenarios, supported panic types, and implementation status.
+
+## Clippy Lints for Panic Detection
+
+[Clippy](https://github.com/rust-lang/rust-clippy) can catch many potential panics at compile time:
+
+| Panic Type | Clippy Lint |
+|------------|-------------|
+| `unwrap()` | `clippy::unwrap_used` |
+| `expect()` | `clippy::expect_used` |
+| Index `[]` | `clippy::indexing_slicing` |
+| Arithmetic | `clippy::arithmetic_side_effects` |
+| `todo!()` | `clippy::todo` |
+| `unimplemented!()` | `clippy::unimplemented` |
+| `unreachable!()` | `clippy::unreachable` |
+| `panic!()` | `clippy::panic` |
+| String slice | `clippy::string_slice` |
+
+These are "restriction" lints (off by default). Enable with `#![warn(clippy::unwrap_used)]` or in `Cargo.toml`.
