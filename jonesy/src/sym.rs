@@ -533,7 +533,6 @@ fn scan_branch_instructions(data: &[u8], base_addr: u64) -> Vec<InsnData> {
         .collect()
 }
 
-
 /// Sequential disassembly using Capstone - kept for non-ARM64 platforms.
 #[allow(dead_code)]
 fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {

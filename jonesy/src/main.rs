@@ -219,10 +219,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// For binaries, rust_panic$ is the root. For libraries, we look for
 /// the functions that call into the panic runtime.
 const PANIC_SYMBOL_PATTERNS: &[&str] = &[
-    "rust_panic$",       // Main panic entry point (binaries)
-    "panic_fmt$",        // Core panic formatting (libraries)
-    "panic_display",     // Panic display helper
-    "slice_index_fail",  // Slice indexing panics (vec[i] where i >= len)
+    "rust_panic$",        // Main panic entry point (binaries)
+    "panic_fmt$",         // Core panic formatting (libraries)
+    "panic_display",      // Panic display helper
+    "slice_index_fail",   // Slice indexing panics (vec[i] where i >= len)
     "str_index_overflow", // String slice boundary panics
 ];
 
