@@ -8,7 +8,7 @@ use crate::cargo::{
 };
 use crate::config::Config;
 use crate::sym::{
-    CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address, find_symbol_containing,
     load_debug_info, read_symbols,
 };
 use dashmap::DashSet;
@@ -156,38 +156,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             SymbolTable::Archive(archive) => {
-                // Process each object file in the archive
+                // Use relocation-based analysis for library archives
                 let crate_src_path = derive_crate_src_path(&binary_path);
-
-                for member_name in archive.members() {
-                    // Skip non-object files (like .rmeta)
-                    if !member_name.ends_with(".o") {
-                        continue;
-                    }
-
-                    // Extract the member data
-                    let Ok(member_data) = archive.extract(member_name, &binary_buffer) else {
-                        continue;
-                    };
-
-                    // Parse the object file as Mach-O
-                    if let Ok(obj_macho) = MachO::parse(member_data, 0) {
-                        let summary = analyze_macho(
-                            &obj_macho,
-                            member_data,
-                            &binary_path,
-                            crate_src_path.as_deref(),
-                            parsed_args.show_tree,
-                            parsed_args.summary_only,
-                            parsed_args.show_timings,
-                            parsed_args.quiet,
-                            parsed_args.no_hyperlinks,
-                            &config,
-                            project_root.as_deref(),
-                        );
-                        total_summary.add(&summary);
-                    }
-                }
+                let summary = analyze_archive(
+                    &archive,
+                    &binary_buffer,
+                    &binary_path,
+                    crate_src_path.as_deref(),
+                    parsed_args.show_tree,
+                    parsed_args.summary_only,
+                    parsed_args.show_timings,
+                    parsed_args.quiet,
+                    parsed_args.no_hyperlinks,
+                    &config,
+                    project_root.as_deref(),
+                );
+                total_summary.add(&summary);
             }
         }
 
@@ -391,6 +375,194 @@ fn analyze_macho(
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
     result
+}
+
+/// Panic symbol name patterns to search for in library call graphs.
+/// These are the demangled names of functions that indicate panic.
+const LIBRARY_PANIC_PATTERNS: &[&str] = &[
+    // Direct panic functions
+    "core::panicking::panic_fmt",
+    "core::panicking::panic_display",
+    "core::panicking::panic_in_cleanup",
+    "core::panicking::panic_const",
+    "core::panicking::panic_bounds_check",
+    "core::panicking::panic_nounwind_fmt",
+    "core::panicking::panic_cannot_unwind",
+    "core::panicking::assert_failed",
+    "std::panicking::begin_panic",
+    "std::panicking::begin_panic_fmt",
+    // Option panic functions
+    "core::option::Option<T>::unwrap",
+    "core::option::Option<T>::expect",
+    "core::option::unwrap_failed",
+    // Result panic functions
+    "core::result::Result<T,E>::unwrap",
+    "core::result::Result<T,E>::expect",
+    "core::result::Result<T,E>::unwrap_err",
+    "core::result::Result<T,E>::expect_err",
+    "core::result::unwrap_failed",
+];
+
+/// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
+/// This works for library-only crates that don't have binary entry points.
+#[allow(clippy::too_many_arguments)]
+fn analyze_archive(
+    archive: &goblin::archive::Archive,
+    buffer: &[u8],
+    _binary_path: &Path,
+    _crate_src_path: Option<&str>,
+    _show_tree: bool,
+    summary_only: bool,
+    show_timings: bool,
+    quiet: bool,
+    _no_hyperlinks: bool,
+    _config: &Config,
+    _project_root: Option<&Path>,
+) -> AnalysisSummary {
+    use std::collections::HashSet;
+
+    let show_progress = !quiet && !summary_only;
+    let total_start = Instant::now();
+
+    if show_progress {
+        eprintln!("  Building library call graph from relocations...");
+    }
+    let step_start = Instant::now();
+
+    // Build a merged call graph from all .o files in the archive
+    let mut merged_graph = LibraryCallGraph::empty();
+
+    for member_name in archive.members() {
+        // Skip non-object files (like .rmeta)
+        if !member_name.ends_with(".o") {
+            continue;
+        }
+
+        // Extract the member data
+        let Ok(member_data) = archive.extract(member_name, buffer) else {
+            continue;
+        };
+
+        // Parse the object file as Mach-O and build its call graph
+        if let Ok(obj_macho) = MachO::parse(member_data, 0) {
+            if let Ok(obj_graph) = LibraryCallGraph::build_from_object(&obj_macho, member_data) {
+                merged_graph.merge(obj_graph);
+            }
+        }
+    }
+
+    if show_timings {
+        eprintln!("  [timing] Build library call graph: {:?}", step_start.elapsed());
+    }
+
+    if merged_graph.is_empty() {
+        if show_progress {
+            println!("\nNo call graph data found in archive");
+        }
+        return AnalysisSummary::default();
+    }
+
+    // Find all callers of panic-related functions
+    if show_progress {
+        eprintln!("  Finding panic callers...");
+    }
+    let step_start = Instant::now();
+
+    let mut panic_callers: HashSet<(String, String, u32)> = HashSet::new(); // (file, name, line)
+
+    // Search for callers of panic-related symbols
+    for target_sym in merged_graph.target_symbols() {
+        // Check if this is a panic-related symbol
+        let is_panic_symbol = LIBRARY_PANIC_PATTERNS.iter().any(|p| target_sym.contains(p))
+            || target_sym.contains("core::panicking::")
+            || target_sym.contains("std::panicking::");
+
+        if !is_panic_symbol {
+            continue;
+        }
+
+        for caller_info in merged_graph.get_callers(target_sym) {
+            // Skip standard library functions - we only want user code
+            // This includes trait impls like "<T as core::...>" which contain library paths
+            let name = &caller_info.caller.name;
+            if name.starts_with("core::")
+                || name.starts_with("std::")
+                || name.starts_with("alloc::")
+                || name.starts_with("<core::")
+                || name.starts_with("<std::")
+                || name.starts_with("<alloc::")
+                || name.contains(" core::")
+                || name.contains(" std::")
+                || name.contains(" alloc::")
+                || name.contains("::core::")
+                || name.contains("::std::")
+                || name.contains("::alloc::") {
+                continue;
+            }
+
+            // Get file from DWARF info, filtering out library code paths
+            let dwarf_file = caller_info.caller.file.as_ref()
+                .filter(|f| {
+                    // Skip standard library and dependency paths
+                    !f.starts_with("/rustc/")
+                        && !f.starts_with("/rust/")
+                        && !f.starts_with("library/")
+                        && !f.starts_with("src/arch/")
+                        && !f.starts_with("src/raw/")
+                        && !f.contains("/.cargo/")
+                        && !f.contains("/deps/")
+                });
+
+            // Only include entries with proper DWARF file/line info from user code
+            // Skip entries that would fall back to function names (not useful output)
+            if let Some(file) = dwarf_file {
+                let line = caller_info.line.unwrap_or(0);
+                panic_callers.insert((file.clone(), caller_info.caller.name.clone(), line));
+            }
+        }
+    }
+
+    if show_timings {
+        eprintln!("  [timing] Find panic callers: {:?}", step_start.elapsed());
+    }
+
+    // Report results
+    if panic_callers.is_empty() {
+        if show_progress {
+            println!("\nNo panics in crate");
+        }
+        return AnalysisSummary::default();
+    }
+
+    // Build the summary from collected panic points
+    let mut points: HashSet<(String, u32)> = HashSet::new();
+    let mut files_affected: HashSet<String> = HashSet::new();
+
+    // Sort for deterministic output
+    let mut sorted_callers: Vec<_> = panic_callers.into_iter().collect();
+    sorted_callers.sort_by(|a, b| (&a.0, a.2, &a.1).cmp(&(&b.0, b.2, &b.1)));
+
+    if !summary_only {
+        println!("\nPanic code points in library:");
+        for (file, _name, line) in &sorted_callers {
+            points.insert((file.clone(), *line));
+            files_affected.insert(file.clone());
+            // Output in format expected by test framework: " --> file:line:col"
+            println!(" --> {}:{}:1", file, line);
+        }
+    } else {
+        // Still collect points for summary even if not printing
+        for (file, _name, line) in &sorted_callers {
+            points.insert((file.clone(), *line));
+            files_affected.insert(file.clone());
+        }
+    }
+
+    if show_timings {
+        eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
+    }
+
+    AnalysisSummary::from_points(points, files_affected)
 }
 
 /// Analyze a workspace with multiple member crates.

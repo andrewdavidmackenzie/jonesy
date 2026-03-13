@@ -369,4 +369,29 @@ See [description.md](description.md) for detailed technical documentation.
 3. **macOS/Mach-O**: Currently only supports Mach-O binaries with dSYM or embedded DWARF
 4. **Debug builds recommended**: Optimized builds may inline functions, affecting accuracy
 
+### Library-Only Analysis Limitations
+
+When analyzing library-only crates (rlib) without binary entry points using `--lib`:
+
+1. **Relocation-based detection**: Uses ARM64 branch relocations to find panic callers, which works differently from binary call tree analysis
+
+2. **`todo!()` macro**: May not be detected due to compiler generating local symbol indirection instead of direct panic calls
+
+3. **Conditional panics**: Panics inside conditional branches (e.g., `if condition { panic!() }`) may not be reliably detected if the code path isn't compiled into the object file
+
+4. **Static libraries (`.a`)**: Have aggressive dead code elimination (DCE) that removes unreferenced functions. Library functions must be exported with `#[no_mangle]` to be analyzed
+
+5. **Line number precision**: For calls to standard library functions (like `Option::unwrap`), the reported line number is the function definition rather than the exact call site within the function
+
+### Detected Panic Types in Library Mode
+
+The following panic patterns are detected in library-only analysis:
+- `panic!()`, `assert!()`, `assert_eq!()`, `assert_ne!()`
+- `debug_assert!()`, `debug_assert_eq!()`, `debug_assert_ne!()`
+- `unreachable!()`, `unimplemented!()`
+- `Option::unwrap()`, `Option::expect()`
+- `Result::unwrap()`, `Result::expect()`, `Result::unwrap_err()`, `Result::expect_err()`
+- Division by zero, arithmetic overflow, shift overflow
+- Slice index out of bounds
+
 See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scenarios, supported panic types, and implementation status.

@@ -301,18 +301,18 @@ fn test_panic_example() {
     test_example("panic");
 }
 
-// TODO: jonesy doesn't fully support library-only analysis yet
-// Libraries without a binary entry point show "No panics in crate"
+// Library-only analysis is now implemented for rlib archives
 #[test]
-#[ignore = "jonesy library-only analysis not yet implemented"]
 fn test_rlib_example() {
     setup();
     test_example("rlib");
 }
 
-// TODO: jonesy doesn't fully support library-only analysis yet
+// Static libraries have aggressive dead code elimination which removes
+// unreferenced panic-prone code. The staticlib test would need special
+// handling to export functions properly.
 #[test]
-#[ignore = "jonesy library-only analysis not yet implemented"]
+#[ignore = "staticlib requires #[no_mangle] exports to avoid DCE"]
 fn test_staticlib_example() {
     setup();
     test_example("staticlib");

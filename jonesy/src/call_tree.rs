@@ -768,6 +768,11 @@ pub struct AnalysisSummary {
 }
 
 impl AnalysisSummary {
+    /// Create a new summary from collected points
+    pub fn from_points(points: HashSet<(String, u32)>, files: HashSet<String>) -> Self {
+        Self { points, files }
+    }
+
     /// Merge another summary into this one (union of sets, no double-counting)
     pub fn add(&mut self, other: &AnalysisSummary) {
         self.points.extend(other.points.iter().cloned());

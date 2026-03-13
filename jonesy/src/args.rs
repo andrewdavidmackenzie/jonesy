@@ -723,14 +723,17 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         .or_else(|| manifest.package.as_ref().map(|p| p.name.replace('-', "_")))
         .ok_or("Cannot determine library name")?;
 
-    // On macOS, look for .dylib or .rlib
+    // On macOS, look for .dylib, .rlib, or .a (staticlib)
     let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
     let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
+    let staticlib_path = target_dir.join(format!("lib{}.a", lib_name));
 
     if dylib_path.exists() {
         Ok(vec![dylib_path])
     } else if rlib_path.exists() {
         Ok(vec![rlib_path])
+    } else if staticlib_path.exists() {
+        Ok(vec![staticlib_path])
     } else {
         Err(format!(
             "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
