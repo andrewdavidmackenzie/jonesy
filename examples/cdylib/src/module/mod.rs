@@ -108,7 +108,7 @@ pub fn cause_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// TODO: jonesy slice index detection is platform-specific
+// Known limitation: slice index detection is platform-specific (see issue #59)
 pub fn cause_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
