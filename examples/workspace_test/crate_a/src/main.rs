@@ -141,8 +141,8 @@ fn slice_index_oob() {
     let _ = v[10];
 }
 
-// Known limitation: string index panic not detected (see issue #60)
 fn string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic string/slice error
     let _ = &s[0..7];
 }

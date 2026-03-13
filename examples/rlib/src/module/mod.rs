@@ -114,7 +114,7 @@ pub fn cause_slice_index_oob() {
     let _ = v[10];
 }
 
-// Known limitation: string index panic not detected (see issue #60)
+// Known limitation: string panic not detected in library-only mode (see issue #60)
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7]; // panics - cuts through UTF-8 char

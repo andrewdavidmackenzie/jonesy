@@ -240,9 +240,9 @@ pub fn lib_slice_index_oob() {
     }
 }
 
-// Known limitation: string index panic not detected (see issue #60)
 pub fn lib_string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic string/slice error
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 
     // Panic-free alternative: use .get() which returns Option
