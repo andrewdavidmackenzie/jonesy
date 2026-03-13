@@ -463,15 +463,30 @@ fn analyze_archive(
         }
 
         // Extract the member data
-        let Ok(member_data) = archive.extract(member_name, buffer) else {
-            continue;
+        let member_data = match archive.extract(member_name, buffer) {
+            Ok(data) => data,
+            Err(e) => {
+                if show_progress {
+                    eprintln!("  Warning: Failed to extract {}: {}", member_name, e);
+                }
+                continue;
+            }
         };
 
         // Parse the object file as Mach-O and build its call graph
-        if let Ok(obj_macho) = MachO::parse(member_data, 0) {
-            if let Ok(obj_graph) = LibraryCallGraph::build_from_object(&obj_macho, member_data) {
-                merged_graph.merge(obj_graph);
-            }
+        match MachO::parse(member_data, 0) {
+            Ok(obj_macho) => match LibraryCallGraph::build_from_object(&obj_macho, member_data) {
+                Ok(obj_graph) => merged_graph.merge(obj_graph),
+                Err(e) => {
+                    if show_progress {
+                        eprintln!(
+                            "  Warning: Failed to build call graph for {}: {}",
+                            member_name, e
+                        );
+                    }
+                }
+            },
+            Err(_) => {} // Non-MachO object files are expected in some archives
         }
     }
 
@@ -557,19 +572,18 @@ fn analyze_archive(
     let mut sorted_callers: Vec<_> = panic_callers.into_iter().collect();
     sorted_callers.sort_by(|a, b| (&a.0, a.2, &a.1).cmp(&(&b.0, b.2, &b.1)));
 
+    // Collect points for summary
+    for (file, _name, line) in &sorted_callers {
+        points.insert((file.clone(), *line));
+        files_affected.insert(file.clone());
+    }
+
+    // Print details if not summary-only
     if !summary_only {
         println!("\nPanic code points in library:");
         for (file, _name, line) in &sorted_callers {
-            points.insert((file.clone(), *line));
-            files_affected.insert(file.clone());
             // Output in format expected by test framework: " --> file:line:col"
             println!(" --> {}:{}:1", file, line);
-        }
-    } else {
-        // Still collect points for summary even if not printing
-        for (file, _name, line) in &sorted_callers {
-            points.insert((file.clone(), *line));
-            files_affected.insert(file.clone());
         }
     }
 
