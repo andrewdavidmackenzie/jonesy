@@ -204,22 +204,25 @@ Configuration is loaded in order of precedence (later overrides earlier):
 
 ### Panic Cause Identifiers
 
-| ID              | Description                               | Default     |
-|-----------------|-------------------------------------------|-------------|
-| `panic`         | Explicit `panic!()` calls                 | denied      |
-| `bounds`        | Array/slice index out of bounds           | denied      |
-| `overflow`      | Arithmetic overflow (add, sub, mul, etc.) | denied      |
-| `div_zero`      | Division by zero                          | denied      |
-| `unwrap`        | `unwrap()` on `None` or `Err`             | denied      |
-| `expect`        | `expect()` on `None` or `Err`             | denied      |
-| `assert`        | `assert!()` failures                      | denied      |
-| `debug_assert`  | `debug_assert!()` failures                | denied      |
-| `unreachable`   | `unreachable!()` reached                  | denied      |
-| `unimplemented` | `unimplemented!()` reached                | denied      |
-| `todo`          | `todo!()` reached                         | denied      |
-| `drop`          | Panic during drop/cleanup                 | **allowed** |
-| `unwind`        | Panic in no-unwind context                | **allowed** |
-| `unknown`       | Unknown panic cause                       | denied      |
+| ID              | Description                               | Default     | Clippy Lint |
+|-----------------|-------------------------------------------|-------------|-------------|
+| `panic`         | Explicit `panic!()` calls                 | denied      | `clippy::panic` |
+| `bounds`        | Array/slice index out of bounds           | denied      | `clippy::indexing_slicing` |
+| `overflow`      | Arithmetic overflow (add, sub, mul, etc.) | denied      | `clippy::arithmetic_side_effects` |
+| `div_zero`      | Division by zero                          | denied      | `clippy::arithmetic_side_effects` |
+| `unwrap`        | `unwrap()` on `None` or `Err`             | denied      | `clippy::unwrap_used` |
+| `expect`        | `expect()` on `None` or `Err`             | denied      | `clippy::expect_used` |
+| `assert`        | `assert!()` failures                      | denied      | — |
+| `debug_assert`  | `debug_assert!()` failures                | denied      | — |
+| `unreachable`   | `unreachable!()` reached                  | denied      | `clippy::unreachable` |
+| `unimplemented` | `unimplemented!()` reached                | denied      | `clippy::unimplemented` |
+| `todo`          | `todo!()` reached                         | denied      | `clippy::todo` |
+| `drop`          | Panic during drop/cleanup                 | **allowed** | — |
+| `unwind`        | Panic in no-unwind context                | **allowed** | — |
+| `unknown`       | Unknown panic cause                       | denied      | — |
+
+Clippy lints are "restriction" lints (off by default). Enable with `#![warn(clippy::unwrap_used)]` or in `Cargo.toml`.
+Clippy's static analysis may produce false positives, while jonesy only reports actual panic paths in the compiled binary.
 
 ### jones.toml Format
 
@@ -395,24 +398,3 @@ The following panic patterns are detected in library-only analysis:
 - Slice index out of bounds
 
 See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scenarios, supported panic types, and implementation status.
-
-## Clippy Lints for Panic Detection
-
-[Clippy](https://github.com/rust-lang/rust-clippy) can catch many potential panics at compile time:
-
-| Panic Type | Clippy Lint |
-|------------|-------------|
-| `unwrap()` | `clippy::unwrap_used` |
-| `expect()` | `clippy::expect_used` |
-| Index `[]` | `clippy::indexing_slicing` |
-| Arithmetic | `clippy::arithmetic_side_effects` |
-| `todo!()` | `clippy::todo` |
-| `unimplemented!()` | `clippy::unimplemented` |
-| `unreachable!()` | `clippy::unreachable` |
-| `panic!()` | `clippy::panic` |
-| String slice | `clippy::string_slice` |
-
-These are "restriction" lints (off by default). Enable with `#![warn(clippy::unwrap_used)]` or in `Cargo.toml`.
-
-**Note:** Clippy's static analysis may produce false positives (warning on code that can't actually panic at runtime),
-while jonesy analyzes the compiled binary and only reports actual panic paths in the final executable.
