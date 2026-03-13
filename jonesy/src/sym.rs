@@ -916,8 +916,16 @@ impl LibraryCallGraph {
         let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
 
         // Create a context for parsing relocations
-        let container = if macho.is_64 { Container::Big } else { Container::Little };
-        let endian = if macho.little_endian { Endian::Little } else { Endian::Big };
+        let container = if macho.is_64 {
+            Container::Big
+        } else {
+            Container::Little
+        };
+        let endian = if macho.little_endian {
+            Endian::Little
+        } else {
+            Endian::Big
+        };
         let ctx = Ctx::new(container, endian);
 
         // Find __text section and process its relocations
@@ -968,7 +976,8 @@ impl LibraryCallGraph {
 
                         // Demangle the target symbol name
                         let target_demangled = {
-                            let stripped = target_sym_name.strip_prefix("_").unwrap_or(target_sym_name);
+                            let stripped =
+                                target_sym_name.strip_prefix("_").unwrap_or(target_sym_name);
                             format!("{:#}", demangle(stripped))
                         };
 
@@ -981,7 +990,9 @@ impl LibraryCallGraph {
                         // If call site points to library code, try the function start
                         // address as fallback (the caller function is in user code)
                         let (file, line) = if file.as_ref().map_or(false, |f| {
-                            f.starts_with("/rustc/") || f.contains("/.cargo/") || f.contains("/deps/")
+                            f.starts_with("/rustc/")
+                                || f.contains("/.cargo/")
+                                || f.contains("/deps/")
                         }) {
                             // Fall back to function start address
                             line_lookup

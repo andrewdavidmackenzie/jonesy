@@ -8,8 +8,8 @@ use crate::cargo::{
 };
 use crate::config::Config;
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address, find_symbol_containing,
-    load_debug_info, read_symbols,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
+    find_symbol_containing, load_debug_info, read_symbols,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
@@ -452,7 +452,10 @@ fn analyze_archive(
     }
 
     if show_timings {
-        eprintln!("  [timing] Build library call graph: {:?}", step_start.elapsed());
+        eprintln!(
+            "  [timing] Build library call graph: {:?}",
+            step_start.elapsed()
+        );
     }
 
     if merged_graph.is_empty() {
@@ -473,7 +476,9 @@ fn analyze_archive(
     // Search for callers of panic-related symbols
     for target_sym in merged_graph.target_symbols() {
         // Check if this is a panic-related symbol
-        let is_panic_symbol = LIBRARY_PANIC_PATTERNS.iter().any(|p| target_sym.contains(p))
+        let is_panic_symbol = LIBRARY_PANIC_PATTERNS
+            .iter()
+            .any(|p| target_sym.contains(p))
             || target_sym.contains("core::panicking::")
             || target_sym.contains("std::panicking::");
 
@@ -496,22 +501,22 @@ fn analyze_archive(
                 || name.contains(" alloc::")
                 || name.contains("::core::")
                 || name.contains("::std::")
-                || name.contains("::alloc::") {
+                || name.contains("::alloc::")
+            {
                 continue;
             }
 
             // Get file from DWARF info, filtering out library code paths
-            let dwarf_file = caller_info.caller.file.as_ref()
-                .filter(|f| {
-                    // Skip standard library and dependency paths
-                    !f.starts_with("/rustc/")
-                        && !f.starts_with("/rust/")
-                        && !f.starts_with("library/")
-                        && !f.starts_with("src/arch/")
-                        && !f.starts_with("src/raw/")
-                        && !f.contains("/.cargo/")
-                        && !f.contains("/deps/")
-                });
+            let dwarf_file = caller_info.caller.file.as_ref().filter(|f| {
+                // Skip standard library and dependency paths
+                !f.starts_with("/rustc/")
+                    && !f.starts_with("/rust/")
+                    && !f.starts_with("library/")
+                    && !f.starts_with("src/arch/")
+                    && !f.starts_with("src/raw/")
+                    && !f.contains("/.cargo/")
+                    && !f.contains("/deps/")
+            });
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries that would fall back to function names (not useful output)
