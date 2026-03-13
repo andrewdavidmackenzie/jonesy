@@ -139,13 +139,13 @@ fn bin_assert_false() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// TODO: jonesy does not detect assert_eq yet
+// jonesy: expect panic assert_eq failed
 fn bin_assert_eq_fail() {
     assert_eq!(1, 2);
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// TODO: jonesy does not detect assert_ne yet
+// jonesy: expect panic assert_ne failed
 fn bin_assert_ne_fail() {
     assert_ne!(1, 1);
 }
@@ -155,13 +155,13 @@ fn bin_debug_assert_false() {
     debug_assert!(false);
 }
 
-// TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
+// jonesy: expect panic debug_assert_eq failed
 fn bin_debug_assert_eq_fail() {
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
-// TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
+// jonesy: expect panic debug_assert_ne failed
 fn bin_debug_assert_ne_fail() {
     debug_assert_ne!(1, 1);
 }

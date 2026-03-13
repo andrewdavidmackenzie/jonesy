@@ -100,7 +100,7 @@ pub fn lib_assert() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// TODO: jonesy does not detect assert_eq yet
+// jonesy: expect panic assert_eq failed
 pub fn lib_assert_eq() {
     assert_eq!(1, 2);
 
@@ -115,7 +115,7 @@ pub fn lib_assert_eq() {
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// TODO: jonesy does not detect assert_ne yet
+// jonesy: expect panic assert_ne failed
 pub fn lib_assert_ne() {
     assert_ne!(1, 1);
 
@@ -140,7 +140,7 @@ pub fn lib_debug_assert() {
     }
 }
 
-// TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
+// jonesy: expect panic debug_assert_eq failed
 pub fn lib_debug_assert_eq() {
     debug_assert_eq!(1, 2);
 
@@ -155,7 +155,7 @@ pub fn lib_debug_assert_eq() {
 }
 
 #[allow(clippy::eq_op)]
-// TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
+// jonesy: expect panic debug_assert_ne failed
 pub fn lib_debug_assert_ne() {
     debug_assert_ne!(1, 1);
 

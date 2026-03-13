@@ -34,19 +34,19 @@ pub fn library_function() {
     // jonesy: expect panic assert failed
     module::cause_assert();
 
-    // TODO: jonesy does not detect assert_eq yet
+    // jonesy: expect panic assert_eq failed
     module::cause_assert_eq();
 
-    // TODO: jonesy does not detect assert_ne yet
+    // jonesy: expect panic assert_ne failed
     module::cause_assert_ne();
 
     // jonesy: expect panic debug_assert failed
     module::cause_debug_assert();
 
-    // TODO: jonesy does not detect debug_assert_eq yet
+    // jonesy: expect panic debug_assert_eq failed
     module::cause_debug_assert_eq();
 
-    // TODO: jonesy does not detect debug_assert_ne yet
+    // jonesy: expect panic debug_assert_ne failed
     module::cause_debug_assert_ne();
 
     // jonesy: expect panic unreachable
