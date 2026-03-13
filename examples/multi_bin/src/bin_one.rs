@@ -139,7 +139,7 @@ fn cause_assert() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// TODO: jonesy does not detect assert_eq yet
+// jonesy: expect panic assert_eq failed
 fn cause_assert_eq() {
     assert_eq!(1, 2);
 
@@ -154,7 +154,7 @@ fn cause_assert_eq() {
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// TODO: jonesy does not detect assert_ne yet
+// jonesy: expect panic assert_ne failed
 fn cause_assert_ne() {
     assert_ne!(1, 1);
 
@@ -179,7 +179,7 @@ fn cause_debug_assert() {
     }
 }
 
-// TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
+// jonesy: expect panic debug_assert_eq failed
 fn cause_debug_assert_eq() {
     debug_assert_eq!(1, 2);
 
@@ -194,7 +194,7 @@ fn cause_debug_assert_eq() {
 }
 
 #[allow(clippy::eq_op)]
-// TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
+// jonesy: expect panic debug_assert_ne failed
 fn cause_debug_assert_ne() {
     debug_assert_ne!(1, 1);
 
@@ -266,7 +266,7 @@ fn cause_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// TODO: jonesy slice index detection is platform-specific
+// Known limitation: slice index detection is platform-specific (see issue #59)
 fn cause_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
@@ -279,7 +279,7 @@ fn cause_slice_index_oob() {
     }
 }
 
-// TODO: jonesy does not detect string index panic yet
+// Known limitation: string index panic not detected (see issue #60)
 fn cause_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7]; // panics - cuts through UTF-8 char

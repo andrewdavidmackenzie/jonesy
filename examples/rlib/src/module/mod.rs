@@ -83,7 +83,7 @@ pub fn cause_unimplemented() {
     unimplemented!();
 }
 
-// TODO: jonesy cannot detect todo! in library mode (local symbol indirection)
+// Known limitation: todo!() in library mode (see issue #58)
 pub fn cause_todo() {
     todo!();
 }
@@ -114,7 +114,7 @@ pub fn cause_slice_index_oob() {
     let _ = v[10];
 }
 
-// TODO: jonesy does not detect string index panic yet
+// Known limitation: string index panic not detected (see issue #60)
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7]; // panics - cuts through UTF-8 char

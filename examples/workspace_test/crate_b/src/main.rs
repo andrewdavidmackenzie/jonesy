@@ -139,13 +139,13 @@ fn bin_assert_false() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// TODO: jonesy does not detect assert_eq yet
+// jonesy: expect panic assert_eq failed
 fn bin_assert_eq_fail() {
     assert_eq!(1, 2);
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// TODO: jonesy does not detect assert_ne yet
+// jonesy: expect panic assert_ne failed
 fn bin_assert_ne_fail() {
     assert_ne!(1, 1);
 }
@@ -155,13 +155,13 @@ fn bin_debug_assert_false() {
     debug_assert!(false);
 }
 
-// TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
+// jonesy: expect panic debug_assert_eq failed
 fn bin_debug_assert_eq_fail() {
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
-// TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
+// jonesy: expect panic debug_assert_ne failed
 fn bin_debug_assert_ne_fail() {
     debug_assert_ne!(1, 1);
 }
@@ -201,13 +201,13 @@ fn bin_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// TODO: jonesy slice index detection is platform-specific
+// Known limitation: slice index detection is platform-specific (see issue #59)
 fn bin_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
 }
 
-// TODO: jonesy does not detect string index panic yet
+// Known limitation: string index panic not detected (see issue #60)
 fn bin_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7];
