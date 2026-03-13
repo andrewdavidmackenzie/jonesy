@@ -208,6 +208,8 @@ pub fn cause_debug_assert_eq() {
     let b = 2;
     if a != b {
         println!("Debug: values differ: {a} != {b}");
+    } else {
+        println!("Debug: values are equal");
     }
 }
 
@@ -221,6 +223,8 @@ pub fn cause_debug_assert_ne() {
     let b = 1;
     if a == b {
         println!("Debug: values are equal: {a} == {b}");
+    } else {
+        println!("Debug: values differ");
     }
 }
 

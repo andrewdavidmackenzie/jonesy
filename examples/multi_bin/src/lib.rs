@@ -238,4 +238,8 @@ pub fn lib_string_index_panic() {
     } else {
         println!("Invalid string slice boundary");
     }
+    // Or use char_indices to find valid boundaries
+    for (i, c) in s.char_indices() {
+        println!("Char '{c}' starts at byte {i}");
+    }
 }
