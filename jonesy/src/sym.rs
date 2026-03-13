@@ -13,6 +13,7 @@ use gimli::{
 };
 use goblin::Object;
 use goblin::archive::Archive;
+use goblin::container::{Container, Ctx, Endian};
 use goblin::mach::segment::SectionData;
 use goblin::mach::segment::{Section, Segment};
 use goblin::mach::symbols::N_OSO;
@@ -772,6 +773,288 @@ impl CallGraph {
     }
 
     /// Create an empty call graph.
+    pub fn empty() -> Self {
+        Self {
+            edges: HashMap::new(),
+        }
+    }
+}
+
+/// ARM64 relocation type for BL/B instructions (branch with 26-bit offset)
+const ARM64_RELOC_BRANCH26: u8 = 2;
+
+/// Line entry for DWARF line table lookups
+#[derive(Debug, Clone)]
+struct ObjectLineEntry {
+    address: u64,
+    file: String,
+    line: u32,
+}
+
+/// Line table built from DWARF debug info for address -> file/line lookups.
+/// Used for enriching LibraryCallGraph with source location info.
+struct ObjectLineTable {
+    entries: Vec<ObjectLineEntry>,
+}
+
+impl ObjectLineTable {
+    /// Build a line table from DWARF debug info.
+    fn build<R: Reader>(dwarf: &Dwarf<R>) -> Result<Self, gimli::Error> {
+        let mut entries = Vec::new();
+
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+
+            if let Some(program) = &unit.line_program {
+                // Build file path lookup from line program header
+                let header = program.header();
+                let mut file_paths: Vec<String> = Vec::new();
+
+                // Index 0 is reserved, start from index 1
+                file_paths.push(String::new()); // placeholder for index 0
+
+                for file_entry in header.file_names() {
+                    let file_name = dwarf
+                        .attr_string(&unit, file_entry.path_name())?
+                        .to_string_lossy()?
+                        .into_owned();
+
+                    let full_path = if let Some(dir) = file_entry.directory(header) {
+                        let dir_str = dwarf
+                            .attr_string(&unit, dir)?
+                            .to_string_lossy()?
+                            .into_owned();
+                        if dir_str.is_empty() {
+                            file_name
+                        } else {
+                            format!("{}/{}", dir_str, file_name)
+                        }
+                    } else {
+                        file_name
+                    };
+                    file_paths.push(full_path);
+                }
+
+                // Iterate rows and collect entries
+                let mut rows = program.clone().rows();
+                while let Some((_, row)) = rows.next_row()? {
+                    let file_idx = row.file_index() as usize;
+                    if let Some(line) = row.line() {
+                        if file_idx < file_paths.len() && file_idx > 0 {
+                            entries.push(ObjectLineEntry {
+                                address: row.address(),
+                                file: file_paths[file_idx].clone(),
+                                line: line.get() as u32,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by address for binary search
+        entries.sort_by_key(|e| e.address);
+
+        Ok(Self { entries })
+    }
+
+    /// Look up file/line for an address. Returns (file, line) if found.
+    fn lookup(&self, address: u64) -> Option<(Option<String>, Option<u32>)> {
+        if self.entries.is_empty() {
+            return None;
+        }
+
+        // Binary search for the largest address <= target
+        let idx = match self.entries.binary_search_by_key(&address, |e| e.address) {
+            Ok(i) => i,
+            Err(0) => return None, // address is before first entry
+            Err(i) => i - 1,       // use previous entry
+        };
+
+        let entry = &self.entries[idx];
+        Some((Some(entry.file.clone()), Some(entry.line)))
+    }
+}
+
+/// Call graph for library analysis - uses symbol names instead of addresses.
+/// This allows cross-object-file resolution in archives (rlib/staticlib).
+pub struct LibraryCallGraph {
+    /// Maps target symbol name -> list of CallerInfo (aggregated from all .o files)
+    edges: HashMap<String, Vec<CallerInfo>>,
+}
+
+impl LibraryCallGraph {
+    /// Build a library call graph from a single object file.
+    /// Uses relocations to find call targets by symbol name.
+    /// Also enriches caller info with file/line from DWARF debug info.
+    pub fn build_from_object(
+        macho: &MachO,
+        buffer: &[u8],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
+
+        // Get symbols for lookup
+        let symbols: Vec<(String, u64)> = macho
+            .symbols
+            .as_ref()
+            .map(|s| {
+                s.iter()
+                    .filter_map(|sym| {
+                        let (name, nlist) = sym.ok()?;
+                        Some((name.to_string(), nlist.n_value))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Build symbol index for finding containing functions
+        let symbol_index = SymbolIndex::new(macho);
+
+        // Load DWARF for file/line lookups
+        let dwarf = load_dwarf_sections(macho, buffer).ok();
+        let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
+
+        // Create a context for parsing relocations
+        let container = if macho.is_64 {
+            Container::Big
+        } else {
+            Container::Little
+        };
+        let endian = if macho.little_endian {
+            Endian::Little
+        } else {
+            Endian::Big
+        };
+        let ctx = Ctx::new(container, endian);
+
+        // Find __text section and process its relocations
+        for segment in macho.segments.iter() {
+            if let Ok(sections) = segment.sections() {
+                for (section, _data) in sections {
+                    let section_name = section.name().unwrap_or("");
+                    if section_name != "__text" {
+                        continue;
+                    }
+
+                    // Get the section's base address for calculating call site addresses
+                    let section_addr = section.addr;
+
+                    // Iterate relocations for this section
+                    for reloc in section.iter_relocations(buffer, ctx) {
+                        let Ok(reloc_info) = reloc else {
+                            continue;
+                        };
+
+                        // Only process ARM64_RELOC_BRANCH26 (BL/B instructions)
+                        if reloc_info.r_type() != ARM64_RELOC_BRANCH26 {
+                            continue;
+                        }
+
+                        // Must be an external symbol reference
+                        if !reloc_info.is_extern() {
+                            continue;
+                        }
+
+                        // Get the symbol name being called
+                        let sym_index = reloc_info.r_symbolnum();
+                        let Some((target_sym_name, _)) = symbols.get(sym_index) else {
+                            continue;
+                        };
+
+                        // Calculate the call site address
+                        let call_site_addr = section_addr + reloc_info.r_address as u64;
+
+                        // Find what function contains this call site
+                        let Some((func_addr, func_name)) = symbol_index
+                            .as_ref()
+                            .and_then(|idx| idx.find_containing(call_site_addr))
+                            .map(|(addr, name)| (addr, name.to_string()))
+                        else {
+                            continue;
+                        };
+
+                        // Demangle the target symbol name
+                        let target_demangled = {
+                            let stripped =
+                                target_sym_name.strip_prefix("_").unwrap_or(target_sym_name);
+                            format!("{:#}", demangle(stripped))
+                        };
+
+                        // Look up file/line from DWARF at call site
+                        let (file, line) = line_lookup
+                            .as_ref()
+                            .and_then(|lt| lt.lookup(call_site_addr))
+                            .unwrap_or_else(|| (None, None));
+
+                        // If call site points to library code, try the function start
+                        // address as fallback (the caller function is in user code)
+                        let (file, line) = if file.as_ref().map_or(false, |f| {
+                            f.starts_with("/rustc/")
+                                || f.contains("/.cargo/")
+                                || f.contains("/deps/")
+                        }) {
+                            // Fall back to function start address
+                            line_lookup
+                                .as_ref()
+                                .and_then(|lt| lt.lookup(func_addr))
+                                .unwrap_or_else(|| (None, None))
+                        } else {
+                            (file, line)
+                        };
+
+                        // Record the call: target_symbol -> caller
+                        edges.entry(target_demangled).or_default().push(CallerInfo {
+                            caller: FunctionInfo {
+                                name: func_name,
+                                start_address: func_addr,
+                                file,
+                                ..Default::default()
+                            },
+                            call_site_addr,
+                            line,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(Self { edges })
+    }
+
+    /// Merge another LibraryCallGraph into this one.
+    pub fn merge(&mut self, other: Self) {
+        for (target, callers) in other.edges {
+            self.edges.entry(target).or_default().extend(callers);
+        }
+    }
+
+    /// Get all callers of a symbol by name (demangled).
+    pub fn get_callers(&self, symbol_name: &str) -> Vec<CallerInfo> {
+        self.edges.get(symbol_name).cloned().unwrap_or_default()
+    }
+
+    /// Get all callers of symbols matching a pattern.
+    pub fn get_callers_matching(&self, pattern: &Regex) -> Vec<(&str, &[CallerInfo])> {
+        self.edges
+            .iter()
+            .filter(|(name, _)| pattern.is_match(name))
+            .map(|(name, callers)| (name.as_str(), callers.as_slice()))
+            .collect()
+    }
+
+    /// Get all target symbol names in the call graph.
+    pub fn target_symbols(&self) -> impl Iterator<Item = &str> {
+        self.edges.keys().map(|s| s.as_str())
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+    }
+
+    /// Create an empty library call graph.
     pub fn empty() -> Self {
         Self {
             edges: HashMap::new(),
