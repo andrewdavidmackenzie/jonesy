@@ -11,70 +11,151 @@ pub fn lib_function() {
 // jonesy: expect panic unwrap on None
 pub fn lib_unwrap_none() {
     let _: () = None.unwrap();
+
+    // Panic-free alternative: use if let, match, or unwrap_or
+    let opt: Option<i32> = None;
+    if let Some(value) = opt {
+        println!("Got value: {value}");
+    }
+    let _value = opt.unwrap_or(0);
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
 // jonesy: expect panic unwrap on Err
 pub fn lib_unwrap_err() {
     let _: () = Err("error").unwrap();
+
+    // Panic-free alternative: use match or the ? operator
+    let result: Result<i32, &str> = Err("error");
+    if let Ok(value) = result {
+        println!("Got value: {value}");
+    }
+    let _value = result.unwrap_or(0);
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
 // jonesy: expect panic expect on None
 pub fn lib_expect_none() {
     let _: () = None.expect("expected a value");
+
+    // Panic-free alternative: use match
+    let opt: Option<i32> = None;
+    match opt {
+        Some(value) => println!("Got value: {value}"),
+        None => println!("No value present"),
+    }
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
 // jonesy: expect panic expect on Err
 pub fn lib_expect_err() {
     let _: () = Err("error").expect("expected ok");
+
+    // Panic-free alternative: use match
+    let result: Result<i32, &str> = Err("error");
+    match result {
+        Ok(value) => println!("Got value: {value}"),
+        Err(e) => println!("Error: {e}"),
+    }
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
 // jonesy: expect panic unwrap_err on Ok
 pub fn lib_unwrap_err_on_ok() {
     let _: &str = Ok::<i32, &str>(42).unwrap_err();
+
+    // Panic-free alternative: use match
+    let result: Result<i32, &str> = Ok(42);
+    match result {
+        Ok(value) => println!("Got Ok: {value}"),
+        Err(e) => println!("Got error: {e}"),
+    }
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
 // jonesy: expect panic expect_err on Ok
 pub fn lib_expect_err_on_ok() {
     let _: &str = Ok::<i32, &str>(42).expect_err("expected an error");
+
+    // Panic-free alternative: use if let
+    let result: Result<i32, &str> = Ok(42);
+    if let Err(e) = result {
+        println!("Got expected error: {e}");
+    }
 }
 
 #[allow(clippy::assertions_on_constants)]
 // jonesy: expect panic assert failed
 pub fn lib_assert() {
     assert!(false);
+
+    // Panic-free alternative: use if
+    let condition = false;
+    if !condition {
+        println!("Condition was false");
+    }
 }
 
 #[allow(clippy::assertions_on_constants)]
 // TODO: jonesy does not detect assert_eq yet
 pub fn lib_assert_eq() {
     assert_eq!(1, 2);
+
+    // Panic-free alternative: use if
+    let a = 1;
+    let b = 2;
+    if a != b {
+        println!("Values differ: {a} != {b}");
+    }
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
 // TODO: jonesy does not detect assert_ne yet
 pub fn lib_assert_ne() {
     assert_ne!(1, 1);
+
+    // Panic-free alternative: use if
+    let a = 1;
+    let b = 1;
+    if a == b {
+        println!("Values are equal: {a} == {b}");
+    }
 }
 
 // jonesy: expect panic debug_assert failed (debug builds only)
 pub fn lib_debug_assert() {
     debug_assert!(false);
+
+    // Panic-free alternative: use if
+    let condition = false;
+    if !condition {
+        println!("Debug: condition was false");
+    }
 }
 
 // TODO: jonesy does not detect debug_assert_eq yet (debug builds only)
 pub fn lib_debug_assert_eq() {
     debug_assert_eq!(1, 2);
+
+    // Panic-free alternative: use if
+    let a = 1;
+    let b = 2;
+    if a != b {
+        println!("Debug: values differ: {a} != {b}");
+    }
 }
 
 #[allow(clippy::eq_op)]
 // TODO: jonesy does not detect debug_assert_ne yet (debug builds only)
 pub fn lib_debug_assert_ne() {
     debug_assert_ne!(1, 1);
+
+    // Panic-free alternative: use if
+    let a = 1;
+    let b = 1;
+    if a == b {
+        println!("Debug: values are equal: {a} == {b}");
+    }
 }
 
 // jonesy: expect panic unreachable reached
@@ -96,6 +177,14 @@ pub fn lib_todo() {
 // jonesy: expect panic division by zero
 pub fn lib_divide_by_zero() {
     let _ = 1 / 0;
+
+    // Panic-free alternative: check divisor or use checked_div
+    let dividend: i32 = 1;
+    let divisor: i32 = 0;
+    if divisor != 0 {
+        let _result = dividend / divisor;
+    }
+    let _result = dividend.checked_div(divisor); // Returns None
 }
 
 #[allow(arithmetic_overflow)]
@@ -103,12 +192,25 @@ pub fn lib_arithmetic_overflow() {
     let x: i32 = i32::MAX;
     // jonesy: expect panic arithmetic overflow (debug builds)
     let _ = x + 1;
+
+    // Panic-free alternatives: use checked, saturating, or wrapping arithmetic
+    let _checked = x.checked_add(1); // Returns None on overflow
+    let _saturating = x.saturating_add(1); // Returns i32::MAX
+    let _wrapping = x.wrapping_add(1); // Wraps to i32::MIN
 }
 
 #[allow(arithmetic_overflow)]
 // jonesy: expect panic shift overflow
 pub fn lib_shift_overflow() {
     let _ = 1u32 << 33;
+
+    // Panic-free alternative: validate shift amount or use checked_shl
+    let value = 1u32;
+    let shift = 33;
+    if shift < 32 {
+        let _result = value << shift;
+    }
+    let _result = value.checked_shl(shift); // Returns None
 }
 
 #[allow(clippy::useless_vec)]
@@ -116,10 +218,24 @@ pub fn lib_shift_overflow() {
 pub fn lib_slice_index_oob() {
     let v = vec![1, 2, 3];
     let _ = v[10];
+
+    // Panic-free alternative: use .get() which returns Option
+    if let Some(value) = v.get(10) {
+        println!("Got value: {value}");
+    } else {
+        println!("Index out of bounds");
+    }
 }
 
 // TODO: jonesy does not detect string index panic yet
 pub fn lib_string_index_panic() {
     let s = "hello 世界";
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
+
+    // Panic-free alternative: use .get() which returns Option
+    if let Some(slice) = s.get(0..7) {
+        println!("Got slice: {slice}");
+    } else {
+        println!("Invalid string slice boundary");
+    }
 }
