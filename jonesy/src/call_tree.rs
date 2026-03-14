@@ -24,6 +24,8 @@ pub struct CallTreeNode {
     pub file: Option<String>,
     /// Line number (if available from debug info)
     pub line: Option<u32>,
+    /// Column number (if available from debug info)
+    pub column: Option<u32>,
     /// Functions that call this one
     pub callers: Vec<CallTreeNode>,
 }
@@ -35,6 +37,7 @@ impl CallTreeNode {
             name,
             file: None,
             line: None,
+            column: None,
             callers: Vec::new(),
         }
     }
@@ -109,6 +112,7 @@ pub fn build_call_tree_parallel(
                 name: caller_info.caller.name.clone(),
                 file,
                 line: caller_info.line,
+                column: caller_info.column,
                 callers: child_callers,
             })
         })
@@ -141,6 +145,7 @@ fn build_call_tree_sequential(
                 name: caller_info.caller.name.clone(),
                 file,
                 line: caller_info.line,
+                column: caller_info.column,
                 callers: child_callers,
             }
         })
@@ -160,6 +165,7 @@ fn build_shallow_callers(call_graph: &CallGraph, target_addr: u64) -> Vec<CallTr
                 name: caller_info.caller.name.clone(),
                 file,
                 line: caller_info.line,
+                column: caller_info.column,
                 callers: vec![], // No deeper recursion to prevent infinite loops
             }
         })
@@ -172,6 +178,8 @@ pub struct CrateCodePoint {
     pub name: String,
     pub file: String,
     pub line: u32,
+    /// Column number of the call site (if available from DWARF)
+    pub column: Option<u32>,
     /// All detected causes of panic paths through this point
     pub causes: HashSet<PanicCause>,
     /// Code points that this one calls (closer to panic in the call chain)
@@ -181,8 +189,8 @@ pub struct CrateCodePoint {
 /// Key for identifying a code point: (file, line)
 type CodePointKey = (String, u32);
 
-/// Info stored for each code point: (function name, set of causes, set of child keys)
-type CodePointInfo = (String, HashSet<PanicCause>, HashSet<CodePointKey>);
+/// Info stored for each code point: (function name, column, set of causes, set of child keys)
+type CodePointInfo = (String, Option<u32>, HashSet<PanicCause>, HashSet<CodePointKey>);
 
 /// Map of code points: key -> info
 type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
@@ -202,7 +210,7 @@ pub fn collect_crate_code_points_hierarchical(
     // Find roots: points that are not in any other point's children
     let all_children: HashSet<(String, u32)> = points
         .values()
-        .flat_map(|(_, _, children)| children.iter().cloned())
+        .flat_map(|(_, _, _, children)| children.iter().cloned())
         .collect();
 
     let mut roots: Vec<CodePointKey> = points
@@ -228,7 +236,7 @@ pub fn collect_crate_code_points_hierarchical(
             return None;
         }
 
-        let (name, causes, child_keys_set) = points.get(key)?;
+        let (name, column, causes, child_keys_set) = points.get(key)?;
         // Sort child keys for deterministic output
         let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
@@ -243,6 +251,7 @@ pub fn collect_crate_code_points_hierarchical(
             name: name.clone(),
             file: key.0.clone(),
             line: key.1,
+            column: *column,
             causes: causes.clone(),
             children,
         })
@@ -292,16 +301,16 @@ fn collect_crate_relationships(
         // Ensure this point exists in the map and accumulate all causes
         let entry = points
             .entry(key.clone())
-            .or_insert_with(|| (node.name.clone(), HashSet::new(), HashSet::new()));
+            .or_insert_with(|| (node.name.clone(), node.column, HashSet::new(), HashSet::new()));
 
         // Add this path's cause to the set of causes (if detected)
         if let Some(cause) = &detected_cause {
-            entry.1.insert(cause.clone());
+            entry.2.insert(cause.clone());
         }
 
         // If there's a child crate code point (closer to panic), add it as a child of this node
         if let Some(child_key) = &child_crate_key {
-            entry.2.insert(child_key.clone());
+            entry.3.insert(child_key.clone());
         }
     }
 
@@ -477,8 +486,9 @@ fn print_flat_format(points: &[CrateCodePoint], project_root: Option<&Path>) {
 fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
     // Use absolute path for terminal clickability
     let display_path = get_clickable_path(&point.file, project_root);
+    let column = point.column.unwrap_or(1);
 
-    let location = format!("{}:{}:1", display_path, point.line);
+    let location = format!("{}:{}:{}", display_path, point.line, column);
 
     // Get primary cause for display (only for leaf nodes)
     let is_leaf = point.children.is_empty();
@@ -529,8 +539,9 @@ fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
 fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent: &str) {
     // Use absolute path for terminal clickability
     let display_path = get_clickable_path(&point.file, project_root);
+    let column = point.column.unwrap_or(1);
 
-    let location = format!("{}:{}:1", display_path, point.line);
+    let location = format!("{}:{}:{}", display_path, point.line, column);
 
     // Get primary cause for display (only for leaf nodes)
     let is_leaf = point.children.is_empty();
@@ -644,18 +655,19 @@ fn print_file_entry(
 
     // Format location with hyperlinks if enabled
     let use_hyperlinks = !no_hyperlinks && io::stdout().is_terminal();
+    let column = point.column.unwrap_or(1);
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
             file_url.set_fragment(Some(&format!("L{}", point.line)));
-            let display = format!("{}:{}:1", filename, point.line);
+            let display = format!("{}:{}:{}", filename, point.line, column);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
             // Fallback to absolute path if URL conversion fails
-            format!("{}:{}:1", absolute_path, point.line)
+            format!("{}:{}:{}", absolute_path, point.line, column)
         }
     } else {
         // Plain absolute path for terminal auto-detection of clickable links
-        format!("{}:{}:1", absolute_path, point.line)
+        format!("{}:{}:{}", absolute_path, point.line, column)
     };
 
     // Get primary cause for display
@@ -856,20 +868,21 @@ fn print_crate_point(
 
     // Format location - use OSC 8 hyperlinks when stdout is a TTY and not disabled
     let use_hyperlinks = !no_hyperlinks && io::stdout().is_terminal();
+    let column = point.column.unwrap_or(1);
     let location = if use_hyperlinks {
         // OSC 8 hyperlink: \x1b]8;;URL\x1b\\DISPLAY\x1b]8;;\x1b\\
         // Use url crate for proper percent-encoding of paths with spaces/special chars
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
             file_url.set_fragment(Some(&format!("L{}", point.line)));
-            let display = format!("{}:{}:1", display_path, point.line);
+            let display = format!("{}:{}:{}", display_path, point.line, column);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
             // Fallback to absolute path if URL conversion fails
-            format!("{}:{}:1", absolute_path, point.line)
+            format!("{}:{}:{}", absolute_path, point.line, column)
         }
     } else {
         // Plain absolute path for terminal auto-detection of clickable links
-        format!("{}:{}:1", absolute_path, point.line)
+        format!("{}:{}:{}", absolute_path, point.line, column)
     };
 
     // Only show cause and help on leaf nodes (no children)
