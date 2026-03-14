@@ -190,7 +190,12 @@ pub struct CrateCodePoint {
 type CodePointKey = (String, u32);
 
 /// Info stored for each code point: (function name, column, set of causes, set of child keys)
-type CodePointInfo = (String, Option<u32>, HashSet<PanicCause>, HashSet<CodePointKey>);
+type CodePointInfo = (
+    String,
+    Option<u32>,
+    HashSet<PanicCause>,
+    HashSet<CodePointKey>,
+);
 
 /// Map of code points: key -> info
 type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
@@ -299,9 +304,14 @@ fn collect_crate_relationships(
 
     if let Some(key) = &node_key {
         // Ensure this point exists in the map and accumulate all causes
-        let entry = points
-            .entry(key.clone())
-            .or_insert_with(|| (node.name.clone(), node.column, HashSet::new(), HashSet::new()));
+        let entry = points.entry(key.clone()).or_insert_with(|| {
+            (
+                node.name.clone(),
+                node.column,
+                HashSet::new(),
+                HashSet::new(),
+            )
+        });
 
         // Add this path's cause to the set of causes (if detected)
         if let Some(cause) = &detected_cause {
