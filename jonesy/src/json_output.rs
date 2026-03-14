@@ -1,65 +1,13 @@
 //! JSON output format for jonesy analysis results.
 //!
-//! This module provides structures and serialization for machine-readable
-//! JSON output of panic analysis results.
+//! This module generates machine-readable JSON output directly from AnalysisResult.
 
 use crate::args::VERSION;
 use crate::call_tree::{AnalysisResult, CrateCodePoint};
-use crate::panic_cause::PanicCause;
-use serde::Serialize;
+use serde_json::{Value, json};
 
 /// Schema version for JSON output format
 pub const JSON_SCHEMA_VERSION: &str = "1.0";
-
-/// Root structure for JSON output (serialization format)
-#[derive(Debug, Serialize)]
-struct JsonOutput {
-    version: String,
-    jonesy_version: String,
-    project: ProjectInfo,
-    summary: Summary,
-    panic_points: Vec<JsonPanicPoint>,
-}
-
-/// Project information (serialization format)
-#[derive(Debug, Serialize)]
-struct ProjectInfo {
-    name: String,
-    root: String,
-}
-
-/// Summary statistics (serialization format)
-#[derive(Debug, Serialize)]
-struct Summary {
-    panic_points: usize,
-    files_affected: usize,
-}
-
-/// A single panic point (serialization format)
-#[derive(Debug, Serialize)]
-struct JsonPanicPoint {
-    file: String,
-    line: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    column: Option<u32>,
-    function: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cause: Option<JsonPanicCause>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<JsonPanicPoint>,
-}
-
-/// Panic cause information (serialization format)
-#[derive(Debug, Serialize)]
-struct JsonPanicCause {
-    #[serde(rename = "type")]
-    cause_type: String,
-    description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    suggestion: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warning: Option<String>,
-}
 
 /// Generate JSON output from analysis results.
 ///
@@ -72,58 +20,82 @@ pub fn generate_json_output(
 ) -> Result<String, serde_json::Error> {
     let summary = result.summary();
 
-    let panic_points = if summary_only {
+    let panic_points: Vec<Value> = if summary_only {
         Vec::new()
     } else {
         result
             .code_points
             .iter()
-            .map(|p| JsonPanicPoint::from_code_point(p, &result.project_root, tree))
+            .map(|p| code_point_to_json(p, &result.project_root, tree))
             .collect()
     };
 
-    let output = JsonOutput {
-        version: JSON_SCHEMA_VERSION.to_string(),
-        jonesy_version: VERSION.to_string(),
-        project: ProjectInfo {
-            name: result.project_name.clone(),
-            root: result.project_root.clone(),
+    let output = json!({
+        "version": JSON_SCHEMA_VERSION,
+        "jonesy_version": VERSION,
+        "project": {
+            "name": result.project_name,
+            "root": result.project_root,
         },
-        summary: Summary {
-            panic_points: summary.panic_points(),
-            files_affected: summary.files_affected(),
+        "summary": {
+            "panic_points": summary.panic_points(),
+            "files_affected": summary.files_affected(),
         },
-        panic_points,
-    };
+        "panic_points": panic_points,
+    });
 
     serde_json::to_string_pretty(&output)
 }
 
-impl JsonPanicPoint {
-    fn from_code_point(point: &CrateCodePoint, project_root: &str, include_children: bool) -> Self {
-        let cause = {
-            let mut causes: Vec<_> = point.causes.iter().collect();
-            causes.sort_by_key(|c| c.description());
-            causes.first().map(|c| JsonPanicCause::from_cause(c))
-        };
+/// Convert a CrateCodePoint to JSON value.
+fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_children: bool) -> Value {
+    // Get primary cause (sorted for determinism)
+    let cause = {
+        let mut causes: Vec<_> = point.causes.iter().collect();
+        causes.sort_by_key(|c| c.description());
+        causes.first().map(|c| {
+            let suggestion = c.suggestion();
+            let mut cause_obj = json!({
+                "type": c.id(),
+                "description": c.description(),
+            });
+            if !suggestion.is_empty() {
+                cause_obj["suggestion"] = json!(suggestion);
+            }
+            if let Some(warning) = c.release_warning() {
+                cause_obj["warning"] = json!(warning);
+            }
+            cause_obj
+        })
+    };
 
-        JsonPanicPoint {
-            file: make_absolute_path(&point.file, project_root),
-            line: point.line,
-            column: point.column,
-            function: point.name.clone(),
-            cause,
-            children: if include_children {
-                point
-                    .children
-                    .iter()
-                    .map(|c| JsonPanicPoint::from_code_point(c, project_root, true))
-                    .collect()
-            } else {
-                Vec::new()
-            },
-        }
+    let children: Vec<Value> = if include_children {
+        point
+            .children
+            .iter()
+            .map(|c| code_point_to_json(c, project_root, true))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut obj = json!({
+        "file": make_absolute_path(&point.file, project_root),
+        "line": point.line,
+        "function": point.name,
+    });
+
+    if let Some(col) = point.column {
+        obj["column"] = json!(col);
     }
+    if let Some(c) = cause {
+        obj["cause"] = c;
+    }
+    if !children.is_empty() {
+        obj["children"] = json!(children);
+    }
+
+    obj
 }
 
 /// Make a file path absolute using the project root.
@@ -132,21 +104,5 @@ fn make_absolute_path(file: &str, project_root: &str) -> String {
         file.to_string()
     } else {
         format!("{}/{}", project_root.trim_end_matches('/'), file)
-    }
-}
-
-impl JsonPanicCause {
-    fn from_cause(cause: &PanicCause) -> Self {
-        let suggestion = cause.suggestion();
-        JsonPanicCause {
-            cause_type: cause.id().to_string(),
-            description: cause.description().to_string(),
-            suggestion: if suggestion.is_empty() {
-                None
-            } else {
-                Some(suggestion.to_string())
-            },
-            warning: cause.release_warning().map(str::to_string),
-        }
     }
 }
