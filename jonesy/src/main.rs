@@ -167,8 +167,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             SymbolTable::Archive(archive) => {
+                // JSON output is not yet supported for archives
+                if parsed_args.output.is_json() {
+                    eprintln!(
+                        "Error: JSON output (--format json) is not yet supported for archives. \
+                        Use text output or analyze a binary instead."
+                    );
+                    std::process::exit(255);
+                }
                 // Use relocation-based analysis for library archives
-                // Note: JSON output not yet supported for archives
                 let crate_src_path = derive_crate_src_path(&binary_path);
                 let summary = analyze_archive(
                     &archive,
