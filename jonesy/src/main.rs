@@ -9,11 +9,11 @@ use crate::cargo::{
 use crate::config::Config;
 use crate::html_output::generate_html_output;
 use crate::json_output::generate_json_output;
-use crate::text_output::generate_text_output;
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
     find_symbol_containing, load_debug_info, read_symbols,
 };
+use crate::text_output::generate_text_output;
 use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
 use goblin::mach::MachO;
@@ -845,7 +845,12 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 member_code_points,
             );
             let no_hyperlinks = !args.output.use_hyperlinks();
-            generate_text_output(&member_result, args.output.show_tree(), false, no_hyperlinks);
+            generate_text_output(
+                &member_result,
+                args.output.show_tree(),
+                false,
+                no_hyperlinks,
+            );
         } else if args.output.show_progress() {
             println!(
                 "Panic points: {} in {} file(s)\n",

@@ -25,7 +25,12 @@ pub fn generate_text_output(
     let summary = result.summary();
 
     if !summary_only {
-        print_panic_points(&result.code_points, &result.project_root, tree, no_hyperlinks);
+        print_panic_points(
+            &result.code_points,
+            &result.project_root,
+            tree,
+            no_hyperlinks,
+        );
     }
 
     // Print summary
@@ -96,7 +101,11 @@ fn print_directory_tree(
     let group_count = dir_groups.len();
     for (i, (dir, files)) in dir_groups.iter().enumerate() {
         let is_last_dir = i == group_count - 1;
-        let dir_connector = if is_last_dir { "└── " } else { "├── " };
+        let dir_connector = if is_last_dir {
+            "└── "
+        } else {
+            "├── "
+        };
         let child_prefix = if is_last_dir { "    " } else { "│   " };
 
         if !dir.is_empty() {
