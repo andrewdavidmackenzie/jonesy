@@ -17,7 +17,7 @@ use goblin::mach::MachO;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::error::Error;
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -212,9 +212,9 @@ const PANIC_SYMBOL_PATTERNS: &[&str] = &[
 ];
 
 /// Create a spinner for long-running operations.
-/// Returns None if progress display is disabled.
+/// Returns None if progress display is disabled or stderr is not a terminal.
 fn create_spinner(show_progress: bool, message: &str) -> Option<ProgressBar> {
-    if !show_progress {
+    if !show_progress || !io::stderr().is_terminal() {
         return None;
     }
     let spinner = ProgressBar::new_spinner();
