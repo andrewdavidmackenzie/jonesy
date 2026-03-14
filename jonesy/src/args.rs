@@ -144,25 +144,15 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let show_timings = args.iter().any(|a| a == "--show-timings");
     let quiet = args.iter().any(|a| a == "--quiet");
     let no_hyperlinks = args.iter().any(|a| a == "--no-hyperlinks");
-    let is_json = args.iter().any(|a| a == "--format")
-        && args
-            .iter()
-            .position(|a| a == "--format")
-            .and_then(|i| args.get(i + 1))
-            .is_some_and(|v| v.eq_ignore_ascii_case("json"));
+
+    // Parse --format option with validation
+    let output = parse_output_format(args, show_tree, summary_only, quiet, no_hyperlinks)?;
 
     // Parse --max-threads option
     let max_threads = parse_max_threads(args)?;
 
     // Parse --config option
     let config_path = parse_config_path(args)?;
-
-    // Build output format from flags
-    let output = if is_json {
-        OutputFormat::Json
-    } else {
-        OutputFormat::text(show_tree, summary_only, quiet, !no_hyperlinks)
-    };
 
     // Filter out standalone flags from args for path parsing
     // Keep --bin and --lib with their arguments for separate processing
@@ -264,6 +254,43 @@ fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
         }
     }
     Ok(None)
+}
+
+/// Parse --format option and build OutputFormat with proper validation
+fn parse_output_format(
+    args: &[String],
+    show_tree: bool,
+    summary_only: bool,
+    quiet: bool,
+    no_hyperlinks: bool,
+) -> Result<OutputFormat, String> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--format" {
+            let value = args
+                .get(i + 1)
+                .ok_or("--format requires an argument (text or json)")?;
+            return match value.to_lowercase().as_str() {
+                "text" => Ok(OutputFormat::text(
+                    show_tree,
+                    summary_only,
+                    quiet,
+                    !no_hyperlinks,
+                )),
+                "json" => Ok(OutputFormat::Json),
+                _ => Err(format!(
+                    "Invalid format '{}'. Valid options: text, json",
+                    value
+                )),
+            };
+        }
+    }
+    // No --format flag, default to text
+    Ok(OutputFormat::text(
+        show_tree,
+        summary_only,
+        quiet,
+        !no_hyperlinks,
+    ))
 }
 
 fn usage() -> String {

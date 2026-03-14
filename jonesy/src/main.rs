@@ -714,6 +714,15 @@ fn analyze_archive(
 /// Analyze a workspace with multiple member crates.
 /// Produces per-crate reports and an aggregate workspace summary.
 fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box<dyn Error>> {
+    // JSON output is not yet supported for workspaces
+    if args.output.is_json() {
+        return Err(
+            "JSON output (--format json) is not yet supported for workspaces. \
+            Use text output or analyze individual crates."
+                .into(),
+        );
+    }
+
     let workspace_root = std::env::current_dir()?;
 
     if args.output.show_progress() {
@@ -802,12 +811,6 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             let binary_buffer = fs::read(&binary_path)?;
             let symbols = read_symbols(&binary_buffer)?;
 
-            // For workspace mode, use text output (JSON workspace support is future work)
-            let workspace_output = match &args.output {
-                OutputFormat::Json => OutputFormat::text(false, false, true, true),
-                other => other.clone(),
-            };
-
             match symbols {
                 SymbolTable::MachO(Binary(macho)) => {
                     // Use workspace root path to include panics from all member crates
@@ -819,7 +822,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         args.show_timings,
                         &config,
                         Some(workspace_root.as_path()),
-                        &workspace_output,
+                        &args.output,
                     );
                     member_summary.add(&result.summary);
                 }
@@ -838,7 +841,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         args.show_timings,
                         &config,
                         Some(workspace_root.as_path()),
-                        &workspace_output,
+                        &args.output,
                     );
                     member_summary.add(&summary);
                 }
