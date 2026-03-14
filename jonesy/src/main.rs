@@ -52,8 +52,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return analyze_workspace(workspace_members, &parsed_args);
     }
 
+    use std::collections::HashSet;
+
     let mut total_summary = AnalysisSummary::default();
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
+    let mut seen_code_points: HashSet<(String, u32)> = HashSet::new();
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
 
@@ -150,7 +153,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &parsed_args.output,
                 );
                 total_summary.add(&result.summary);
-                all_code_points.extend(result.code_points);
+                // Deduplicate code points across binaries using (file, line) as key
+                for point in result.code_points {
+                    let key = (point.file.clone(), point.line);
+                    if seen_code_points.insert(key) {
+                        all_code_points.push(point);
+                    }
+                }
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 if !parsed_args.output.is_summary_only() {

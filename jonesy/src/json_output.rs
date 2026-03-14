@@ -74,6 +74,9 @@ pub struct JsonPanicCause {
     /// Suggestion for fixing the issue
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    /// Warning about behavior in release builds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 impl JsonOutput {
@@ -146,6 +149,7 @@ impl From<&PanicCause> for JsonPanicCause {
             } else {
                 Some(suggestion.to_string())
             },
+            warning: cause.release_warning().map(str::to_string),
         }
     }
 }
