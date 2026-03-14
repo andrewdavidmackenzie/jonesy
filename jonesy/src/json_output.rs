@@ -78,7 +78,7 @@ pub fn generate_json_output(
         result
             .code_points
             .iter()
-            .map(|p| JsonPanicPoint::from_code_point(p, tree))
+            .map(|p| JsonPanicPoint::from_code_point(p, &result.project_root, tree))
             .collect()
     };
 
@@ -100,7 +100,7 @@ pub fn generate_json_output(
 }
 
 impl JsonPanicPoint {
-    fn from_code_point(point: &CrateCodePoint, include_children: bool) -> Self {
+    fn from_code_point(point: &CrateCodePoint, project_root: &str, include_children: bool) -> Self {
         let cause = {
             let mut causes: Vec<_> = point.causes.iter().collect();
             causes.sort_by_key(|c| c.description());
@@ -108,7 +108,7 @@ impl JsonPanicPoint {
         };
 
         JsonPanicPoint {
-            file: point.file.clone(),
+            file: make_absolute_path(&point.file, project_root),
             line: point.line,
             column: point.column,
             function: point.name.clone(),
@@ -117,12 +117,21 @@ impl JsonPanicPoint {
                 point
                     .children
                     .iter()
-                    .map(|c| JsonPanicPoint::from_code_point(c, true))
+                    .map(|c| JsonPanicPoint::from_code_point(c, project_root, true))
                     .collect()
             } else {
                 Vec::new()
             },
         }
+    }
+}
+
+/// Make a file path absolute using the project root.
+fn make_absolute_path(file: &str, project_root: &str) -> String {
+    if file.starts_with('/') {
+        file.to_string()
+    } else {
+        format!("{}/{}", project_root.trim_end_matches('/'), file)
     }
 }
 

@@ -233,7 +233,7 @@ fn generate_html_report(
 "#,
         );
         for point in code_points {
-            render_panic_point(&mut html, point, include_tree, 0);
+            render_panic_point(&mut html, point, project_root, include_tree, 0);
         }
         html.push_str("        </ul>\n");
     }
@@ -254,9 +254,16 @@ fn generate_html_report(
 }
 
 /// Render a single panic point as HTML.
-fn render_panic_point(html: &mut String, point: &CrateCodePoint, include_tree: bool, depth: usize) {
+fn render_panic_point(
+    html: &mut String,
+    point: &CrateCodePoint,
+    project_root: &str,
+    include_tree: bool,
+    depth: usize,
+) {
     let indent = "            ".repeat(depth + 1);
-    let file_url = escape_html(&format!("file://{}", point.file));
+    let absolute_path = make_absolute_path(&point.file, project_root);
+    let file_url = escape_html(&format!("file://{}", absolute_path));
     let location = if let Some(col) = point.column {
         format!("{}:{}:{}", point.file, point.line, col)
     } else {
@@ -323,7 +330,7 @@ fn render_panic_point(html: &mut String, point: &CrateCodePoint, include_tree: b
     if include_tree && !point.children.is_empty() {
         html.push_str(&format!("{}    <div class=\"children\">\n", indent));
         for child in &point.children {
-            render_child_point(html, child, depth + 1);
+            render_child_point(html, child, project_root, depth + 1);
         }
         html.push_str(&format!("{}    </div>\n", indent));
     }
@@ -332,9 +339,10 @@ fn render_panic_point(html: &mut String, point: &CrateCodePoint, include_tree: b
 }
 
 /// Render a child panic point (simplified view).
-fn render_child_point(html: &mut String, point: &CrateCodePoint, depth: usize) {
+fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &str, depth: usize) {
     let indent = "            ".repeat(depth + 1);
-    let file_url = escape_html(&format!("file://{}", point.file));
+    let absolute_path = make_absolute_path(&point.file, project_root);
+    let file_url = escape_html(&format!("file://{}", absolute_path));
     let location = if let Some(col) = point.column {
         format!("{}:{}:{}", point.file, point.line, col)
     } else {
@@ -374,9 +382,18 @@ fn render_child_point(html: &mut String, point: &CrateCodePoint, depth: usize) {
     if !point.children.is_empty() {
         html.push_str(&format!("{}    <div class=\"children\">\n", indent));
         for child in &point.children {
-            render_child_point(html, child, depth + 1);
+            render_child_point(html, child, project_root, depth + 1);
         }
         html.push_str(&format!("{}    </div>\n", indent));
+    }
+}
+
+/// Make a file path absolute using the project root.
+fn make_absolute_path(file: &str, project_root: &str) -> String {
+    if file.starts_with('/') {
+        file.to_string()
+    } else {
+        format!("{}/{}", project_root.trim_end_matches('/'), file)
     }
 }
 
