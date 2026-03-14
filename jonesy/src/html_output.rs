@@ -197,12 +197,14 @@ pub fn generate_html_report(
     ));
 
     // Panic points section
-    if code_points.is_empty() {
+    // Only show "No panic points" message if truly no panics were found
+    // (not when code_points is empty due to --summary-only mode)
+    if code_points.is_empty() && panic_points == 0 {
         html.push_str(
             r#"        <div class="no-panics">No panic points found in crate!</div>
 "#,
         );
-    } else {
+    } else if !code_points.is_empty() {
         html.push_str(
             r#"        <h2 class="section-title">Panic Points</h2>
         <ul class="panic-list">
@@ -232,7 +234,7 @@ pub fn generate_html_report(
 /// Render a single panic point as HTML.
 fn render_panic_point(html: &mut String, point: &CrateCodePoint, include_tree: bool, depth: usize) {
     let indent = "            ".repeat(depth + 1);
-    let file_url = format!("file://{}", point.file);
+    let file_url = escape_html(&format!("file://{}", point.file));
     let location = if let Some(col) = point.column {
         format!("{}:{}:{}", point.file, point.line, col)
     } else {
@@ -310,7 +312,7 @@ fn render_panic_point(html: &mut String, point: &CrateCodePoint, include_tree: b
 /// Render a child panic point (simplified view).
 fn render_child_point(html: &mut String, point: &CrateCodePoint, depth: usize) {
     let indent = "            ".repeat(depth + 1);
-    let file_url = format!("file://{}", point.file);
+    let file_url = escape_html(&format!("file://{}", point.file));
     let location = if let Some(col) = point.column {
         format!("{}:{}:{}", point.file, point.line, col)
     } else {
