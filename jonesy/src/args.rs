@@ -1,14 +1,87 @@
 use cargo_toml::Manifest;
 use std::path::PathBuf;
 
-/// Output format for analysis results
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Output format and display configuration for analysis results.
+/// Consolidates format selection with display options.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputFormat {
-    /// Human-readable terminal output (default)
-    #[default]
-    Text,
-    /// Machine-readable JSON output
+    /// Human-readable terminal output
+    Text {
+        /// Show full call tree instead of just crate code points
+        tree: bool,
+        /// Only show summary, not detailed panic points
+        summary_only: bool,
+        /// Suppress progress messages
+        quiet: bool,
+        /// Use terminal hyperlinks for file paths
+        hyperlinks: bool,
+    },
+    /// Machine-readable JSON output (implies quiet)
     Json,
+}
+
+impl Default for OutputFormat {
+    fn default() -> Self {
+        OutputFormat::Text {
+            tree: false,
+            summary_only: false,
+            quiet: false,
+            hyperlinks: true,
+        }
+    }
+}
+
+impl OutputFormat {
+    /// Create a text output format with the given options
+    pub fn text(tree: bool, summary_only: bool, quiet: bool, hyperlinks: bool) -> Self {
+        OutputFormat::Text {
+            tree,
+            summary_only,
+            quiet,
+            hyperlinks,
+        }
+    }
+
+    /// Returns true if this is JSON output
+    pub fn is_json(&self) -> bool {
+        matches!(self, OutputFormat::Json)
+    }
+
+    /// Returns true if progress messages should be shown
+    pub fn show_progress(&self) -> bool {
+        match self {
+            OutputFormat::Text {
+                quiet,
+                summary_only,
+                ..
+            } => !quiet && !summary_only,
+            OutputFormat::Json => false,
+        }
+    }
+
+    /// Returns true if only the summary should be shown (no panic point details)
+    pub fn is_summary_only(&self) -> bool {
+        match self {
+            OutputFormat::Text { summary_only, .. } => *summary_only,
+            OutputFormat::Json => false,
+        }
+    }
+
+    /// Returns true if the full call tree should be shown
+    pub fn show_tree(&self) -> bool {
+        match self {
+            OutputFormat::Text { tree, .. } => *tree,
+            OutputFormat::Json => false,
+        }
+    }
+
+    /// Returns true if hyperlinks should be used in output
+    pub fn use_hyperlinks(&self) -> bool {
+        match self {
+            OutputFormat::Text { hyperlinks, .. } => *hyperlinks,
+            OutputFormat::Json => false,
+        }
+    }
 }
 
 /// Represents a workspace member crate with its binaries
@@ -28,22 +101,14 @@ pub(crate) struct Args {
     pub binaries: Vec<PathBuf>,
     /// Workspace members to analyze (for workspace mode)
     pub workspace_members: Option<Vec<WorkspaceMember>>,
-    /// Whether to show the full call tree (--tree flag)
-    pub show_tree: bool,
-    /// Whether to only show summary output (--summary-only flag)
-    pub summary_only: bool,
     /// Whether to show timing information (--show-timings flag)
     pub show_timings: bool,
-    /// Whether to suppress progress messages (--quiet flag)
-    pub quiet: bool,
     /// Maximum number of threads to use for parallel analysis
     pub max_threads: usize,
     /// Optional path to config file (--config flag)
     pub config_path: Option<PathBuf>,
-    /// Whether to disable hyperlinks in output (--no-hyperlinks flag)
-    pub no_hyperlinks: bool,
-    /// Output format (text or json)
-    pub format: OutputFormat,
+    /// Output format and display options
+    pub output: OutputFormat,
 }
 
 /// The version of jonesy, read from Cargo.toml at compile time.
@@ -79,6 +144,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     let show_timings = args.iter().any(|a| a == "--show-timings");
     let quiet = args.iter().any(|a| a == "--quiet");
     let no_hyperlinks = args.iter().any(|a| a == "--no-hyperlinks");
+    let is_json = args.iter().any(|a| a == "--format")
+        && args
+            .iter()
+            .position(|a| a == "--format")
+            .and_then(|i| args.get(i + 1))
+            .is_some_and(|v| v.eq_ignore_ascii_case("json"));
 
     // Parse --max-threads option
     let max_threads = parse_max_threads(args)?;
@@ -86,8 +157,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     // Parse --config option
     let config_path = parse_config_path(args)?;
 
-    // Parse --format option
-    let format = parse_format(args)?;
+    // Build output format from flags
+    let output = if is_json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::text(show_tree, summary_only, quiet, !no_hyperlinks)
+    };
 
     // Filter out standalone flags from args for path parsing
     // Keep --bin and --lib with their arguments for separate processing
@@ -147,14 +222,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     Ok(Args {
         binaries,
         workspace_members,
-        show_tree,
-        summary_only,
         show_timings,
-        quiet,
         max_threads,
         config_path,
-        no_hyperlinks,
-        format,
+        output,
     })
 }
 
@@ -193,26 +264,6 @@ fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
         }
     }
     Ok(None)
-}
-
-/// Parse --format option (text or json)
-fn parse_format(args: &[String]) -> Result<OutputFormat, String> {
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "--format" {
-            let value = args
-                .get(i + 1)
-                .ok_or("--format requires an argument (text or json)")?;
-            return match value.to_lowercase().as_str() {
-                "text" => Ok(OutputFormat::Text),
-                "json" => Ok(OutputFormat::Json),
-                _ => Err(format!(
-                    "Invalid format '{}'. Valid options: text, json",
-                    value
-                )),
-            };
-        }
-    }
-    Ok(OutputFormat::default())
 }
 
 fn usage() -> String {
