@@ -1,6 +1,16 @@
 use cargo_toml::Manifest;
 use std::path::PathBuf;
 
+/// Output format for analysis results
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    /// Human-readable terminal output (default)
+    #[default]
+    Text,
+    /// Machine-readable JSON output
+    Json,
+}
+
 /// Represents a workspace member crate with its binaries
 #[derive(Debug)]
 pub(crate) struct WorkspaceMember {
@@ -32,6 +42,8 @@ pub(crate) struct Args {
     pub config_path: Option<PathBuf>,
     /// Whether to disable hyperlinks in output (--no-hyperlinks flag)
     pub no_hyperlinks: bool,
+    /// Output format (text or json)
+    pub format: OutputFormat,
 }
 
 /// The version of jonesy, read from Cargo.toml at compile time.
@@ -74,6 +86,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     // Parse --config option
     let config_path = parse_config_path(args)?;
 
+    // Parse --format option
+    let format = parse_format(args)?;
+
     // Filter out standalone flags from args for path parsing
     // Keep --bin and --lib with their arguments for separate processing
     let filtered_args: Vec<&String> = args
@@ -87,8 +102,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
                 && *a != "--no-hyperlinks"
                 && *a != "--max-threads"
                 && *a != "--config"
+                && *a != "--format"
                 && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--max-threads"))
                 && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--config"))
+                && !(*i > 0 && args.get(i - 1).is_some_and(|prev| prev == "--format"))
         })
         .map(|(_, a)| a)
         .collect();
@@ -137,6 +154,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         max_threads,
         config_path,
         no_hyperlinks,
+        format,
     })
 }
 
@@ -177,6 +195,26 @@ fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
+/// Parse --format option (text or json)
+fn parse_format(args: &[String]) -> Result<OutputFormat, String> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--format" {
+            let value = args
+                .get(i + 1)
+                .ok_or("--format requires an argument (text or json)")?;
+            return match value.to_lowercase().as_str() {
+                "text" => Ok(OutputFormat::Text),
+                "json" => Ok(OutputFormat::Json),
+                _ => Err(format!(
+                    "Invalid format '{}'. Valid options: text, json",
+                    value
+                )),
+            };
+        }
+    }
+    Ok(OutputFormat::default())
+}
+
 fn usage() -> String {
     format!(
         "jonesy {} - Find panic points in Rust binaries\n\n\
@@ -196,6 +234,7 @@ fn usage() -> String {
          --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
          --config <path>    Path to TOML config file for allow/deny rules\n  \
          --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)\n  \
+         --format <fmt>     Output format: text (default), json\n  \
          --version, -V      Print version and exit",
         VERSION
     )

@@ -1,8 +1,10 @@
-use crate::args::{Args, VERSION, WorkspaceMember, parse_args};
+use crate::args::{Args, OutputFormat, VERSION, WorkspaceMember, parse_args};
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
-    print_call_tree, print_crate_code_points, prune_call_tree,
+    AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel,
+    collect_crate_code_points, count_crate_code_points_summary, print_call_tree,
+    print_crate_code_points, prune_call_tree,
 };
+use crate::json_output::{JsonOutput, convert_to_json_points};
 use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
@@ -26,6 +28,7 @@ mod args;
 mod call_tree;
 mod cargo;
 mod config;
+mod json_output;
 mod panic_cause;
 #[cfg(target_os = "macos")]
 mod sym;
@@ -50,15 +53,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut total_summary = AnalysisSummary::default();
+    let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
+    let is_json = parsed_args.format == OutputFormat::Json;
 
     for binary_path in &parsed_args.binaries {
         // Canonicalize the binary path to ensure absolute paths for clickable links
         let binary_path = binary_path
             .canonicalize()
             .unwrap_or_else(|_| binary_path.clone());
-        if !parsed_args.summary_only && !parsed_args.quiet {
+        if !is_json && !parsed_args.summary_only && !parsed_args.quiet {
             println!("Processing {}", binary_path.display());
         }
 
@@ -100,7 +105,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
-        if !parsed_args.summary_only
+        if !is_json
+            && !parsed_args.summary_only
             && !parsed_args.quiet
             && is_dylib
             && let Some(lib_type) = detect_library_type(&binary_path)
@@ -136,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         match symbols {
             SymbolTable::MachO(Binary(macho)) => {
                 let crate_src_path = derive_crate_src_path(&binary_path);
-                let summary = analyze_macho(
+                let result = analyze_macho(
                     &macho,
                     &binary_buffer,
                     &binary_path,
@@ -148,8 +154,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     parsed_args.no_hyperlinks,
                     &config,
                     project_root.as_deref(),
+                    parsed_args.format,
                 );
-                total_summary.add(&summary);
+                total_summary.add(&result.summary);
+                all_code_points.extend(result.code_points);
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 if !parsed_args.summary_only {
@@ -158,6 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             SymbolTable::Archive(archive) => {
                 // Use relocation-based analysis for library archives
+                // Note: JSON output not yet supported for archives
                 let crate_src_path = derive_crate_src_path(&binary_path);
                 let summary = analyze_archive(
                     &archive,
@@ -176,24 +185,44 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if !parsed_args.summary_only && !parsed_args.quiet {
+        if !is_json && !parsed_args.summary_only && !parsed_args.quiet {
             println!();
         }
     }
 
-    // Print summary
-    println!("Summary (jonesy v{}):", VERSION);
-    if let Some(name) = &project_name {
-        println!("  Project: {}", name);
+    // Output results based on format
+    if is_json {
+        // JSON output
+        let json_points = convert_to_json_points(&all_code_points);
+        let output = JsonOutput::new(
+            project_name.unwrap_or_else(|| "unknown".to_string()),
+            project_root_path.unwrap_or_else(|| ".".to_string()),
+        )
+        .with_summary(total_summary.panic_points(), total_summary.files_affected())
+        .with_panic_points(json_points);
+
+        match output.to_json() {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("Error serializing JSON: {}", e);
+                std::process::exit(255);
+            }
+        }
+    } else {
+        // Text summary
+        println!("Summary (jonesy v{}):", VERSION);
+        if let Some(name) = &project_name {
+            println!("  Project: {}", name);
+        }
+        if let Some(root) = &project_root_path {
+            println!("  Root: {}", root);
+        }
+        println!(
+            "  Panic points: {} in {} file(s)",
+            total_summary.panic_points(),
+            total_summary.files_affected()
+        );
     }
-    if let Some(root) = &project_root_path {
-        println!("  Root: {}", root);
-    }
-    println!(
-        "  Panic points: {} in {} file(s)",
-        total_summary.panic_points(),
-        total_summary.files_affected()
-    );
 
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
@@ -235,8 +264,23 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
     }
 }
 
+/// Result of analyzing a binary, includes summary and optionally code points for JSON output.
+struct AnalysisResult {
+    summary: AnalysisSummary,
+    code_points: Vec<CrateCodePoint>,
+}
+
+impl AnalysisResult {
+    fn empty() -> Self {
+        Self {
+            summary: AnalysisSummary::default(),
+            code_points: Vec::new(),
+        }
+    }
+}
+
 /// Analyze a single MachO binary/object for panic points.
-/// Returns a summary of panic code points found.
+/// Returns a summary of panic code points found, plus code points if JSON output is requested.
 #[allow(clippy::too_many_arguments)]
 fn analyze_macho(
     macho: &MachO,
@@ -250,7 +294,8 @@ fn analyze_macho(
     no_hyperlinks: bool,
     config: &Config,
     project_root: Option<&Path>,
-) -> AnalysisSummary {
+    output_format: OutputFormat,
+) -> AnalysisResult {
     // Helper to print progress messages (respects quiet and summary_only flags)
     let show_progress = !quiet && !summary_only;
     let total_start = Instant::now();
@@ -280,7 +325,7 @@ fn analyze_macho(
 
     let Some(_) = panic_symbol else {
         // No panic symbols found in this object
-        return AnalysisSummary::default();
+        return AnalysisResult::empty();
     };
 
     if show_progress {
@@ -376,25 +421,49 @@ fn analyze_macho(
         eprintln!("  [timing] Prune call tree: {:?}", step_start.elapsed());
     }
 
-    // Print output based on flags
+    // Collect/output based on flags and output format
     let step_start = Instant::now();
-    let result = if summary_only {
+    let result = if output_format == OutputFormat::Json {
+        // JSON output: collect code points without printing
+        if let Some(crate_path) = crate_src_path {
+            let (code_points, summary) = collect_crate_code_points(&root, crate_path, config);
+            AnalysisResult {
+                summary,
+                code_points,
+            }
+        } else {
+            // No crate path - can't collect code points
+            AnalysisResult::empty()
+        }
+    } else if summary_only {
         // Silent mode - just count without printing
-        crate_src_path.map_or(AnalysisSummary::default(), |cp| {
+        let summary = crate_src_path.map_or(AnalysisSummary::default(), |cp| {
             count_crate_code_points_summary(&root, cp, config)
-        })
+        });
+        AnalysisResult {
+            summary,
+            code_points: Vec::new(),
+        }
     } else if show_tree {
         println!("Full call tree:");
         print_call_tree(&root, 0);
-        crate_src_path.map_or(AnalysisSummary::default(), |cp| {
+        let summary = crate_src_path.map_or(AnalysisSummary::default(), |cp| {
             count_crate_code_points_summary(&root, cp, config)
-        })
+        });
+        AnalysisResult {
+            summary,
+            code_points: Vec::new(),
+        }
     } else if let Some(crate_path) = crate_src_path {
-        print_crate_code_points(&root, crate_path, project_root, config, no_hyperlinks)
+        let summary = print_crate_code_points(&root, crate_path, project_root, config, no_hyperlinks);
+        AnalysisResult {
+            summary,
+            code_points: Vec::new(),
+        }
     } else {
         println!("Could not determine crate source path, showing full tree");
         print_call_tree(&root, 0);
-        AnalysisSummary::default()
+        AnalysisResult::empty()
     };
     if show_timings {
         eprintln!("  [timing] Collect/output: {:?}", step_start.elapsed());
@@ -741,7 +810,8 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             match symbols {
                 SymbolTable::MachO(Binary(macho)) => {
                     // Use workspace root path to include panics from all member crates
-                    let summary = analyze_macho(
+                    // Note: JSON output uses Text mode in workspace analysis for now
+                    let result = analyze_macho(
                         &macho,
                         &binary_buffer,
                         &binary_path,
@@ -753,8 +823,9 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         args.no_hyperlinks,
                         &config,
                         Some(workspace_root.as_path()),
+                        OutputFormat::Text, // Workspace uses text output for now
                     );
-                    member_summary.add(&summary);
+                    member_summary.add(&result.summary);
                 }
                 SymbolTable::MachO(Fat(multi_arch)) => {
                     if !args.summary_only {

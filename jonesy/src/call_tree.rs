@@ -418,6 +418,28 @@ pub fn print_crate_code_points(
     summary
 }
 
+/// Collect crate code points without printing (for JSON output).
+/// Returns the filtered, deduplicated, and sorted code points along with summary.
+pub fn collect_crate_code_points(
+    node: &CallTreeNode,
+    crate_src_path: &str,
+    config: &Config,
+) -> (Vec<CrateCodePoint>, AnalysisSummary) {
+    let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
+
+    // Filter out code points with allowed causes
+    filter_allowed_causes(&mut roots, config);
+
+    // Deduplicate roots by (file, line)
+    dedupe_crate_points(&mut roots);
+
+    // Sort roots by file then line number
+    roots.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
+    let summary = count_crate_points_and_files(&roots);
+    (roots, summary)
+}
+
 /// Print panic points grouped by directory in a tree format.
 /// Groups consecutive files in the same directory under a directory header.
 fn print_directory_tree(
