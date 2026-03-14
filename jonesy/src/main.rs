@@ -191,14 +191,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Output results based on format
     if parsed_args.output.is_json() {
-        // JSON output
-        let json_points = convert_to_json_points(&all_code_points);
-        let output = JsonOutput::new(
+        // JSON output - respect --tree and --summary-only flags
+        let mut output = JsonOutput::new(
             project_name.unwrap_or_else(|| "unknown".to_string()),
             project_root_path.unwrap_or_else(|| ".".to_string()),
         )
-        .with_summary(total_summary.panic_points(), total_summary.files_affected())
-        .with_panic_points(json_points);
+        .with_summary(total_summary.panic_points(), total_summary.files_affected());
+
+        // Only include panic points if not summary-only
+        if !parsed_args.output.is_summary_only() {
+            let include_tree = parsed_args.output.show_tree();
+            let json_points = convert_to_json_points(&all_code_points, include_tree);
+            output = output.with_panic_points(json_points);
+        }
 
         match output.to_json() {
             Ok(json) => println!("{}", json),

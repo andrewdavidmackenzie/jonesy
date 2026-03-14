@@ -17,7 +17,12 @@ pub enum OutputFormat {
         hyperlinks: bool,
     },
     /// Machine-readable JSON output (implies quiet)
-    Json,
+    Json {
+        /// Show full call tree (children) instead of flat list
+        tree: bool,
+        /// Only include summary, not detailed panic points
+        summary_only: bool,
+    },
 }
 
 impl Default for OutputFormat {
@@ -42,9 +47,14 @@ impl OutputFormat {
         }
     }
 
+    /// Create a JSON output format with the given options
+    pub fn json(tree: bool, summary_only: bool) -> Self {
+        OutputFormat::Json { tree, summary_only }
+    }
+
     /// Returns true if this is JSON output
     pub fn is_json(&self) -> bool {
-        matches!(self, OutputFormat::Json)
+        matches!(self, OutputFormat::Json { .. })
     }
 
     /// Returns true if progress messages should be shown
@@ -55,7 +65,7 @@ impl OutputFormat {
                 summary_only,
                 ..
             } => !quiet && !summary_only,
-            OutputFormat::Json => false,
+            OutputFormat::Json { .. } => false,
         }
     }
 
@@ -63,7 +73,7 @@ impl OutputFormat {
     pub fn is_summary_only(&self) -> bool {
         match self {
             OutputFormat::Text { summary_only, .. } => *summary_only,
-            OutputFormat::Json => false,
+            OutputFormat::Json { summary_only, .. } => *summary_only,
         }
     }
 
@@ -71,7 +81,7 @@ impl OutputFormat {
     pub fn show_tree(&self) -> bool {
         match self {
             OutputFormat::Text { tree, .. } => *tree,
-            OutputFormat::Json => false,
+            OutputFormat::Json { tree, .. } => *tree,
         }
     }
 
@@ -79,7 +89,7 @@ impl OutputFormat {
     pub fn use_hyperlinks(&self) -> bool {
         match self {
             OutputFormat::Text { hyperlinks, .. } => *hyperlinks,
-            OutputFormat::Json => false,
+            OutputFormat::Json { .. } => false,
         }
     }
 }
@@ -276,7 +286,7 @@ fn parse_output_format(
                     quiet,
                     !no_hyperlinks,
                 )),
-                "json" => Ok(OutputFormat::Json),
+                "json" => Ok(OutputFormat::json(show_tree, summary_only)),
                 _ => Err(format!(
                     "Invalid format '{}'. Valid options: text, json",
                     value

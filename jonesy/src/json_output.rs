@@ -118,8 +118,9 @@ impl JsonOutput {
     }
 }
 
-impl From<&CrateCodePoint> for JsonPanicPoint {
-    fn from(point: &CrateCodePoint) -> Self {
+impl JsonPanicPoint {
+    /// Convert from CrateCodePoint with option to include children
+    pub fn from_code_point(point: &CrateCodePoint, include_children: bool) -> Self {
         // Get the primary cause (first one, sorted for determinism)
         let cause = {
             let mut causes: Vec<_> = point.causes.iter().collect();
@@ -133,8 +134,23 @@ impl From<&CrateCodePoint> for JsonPanicPoint {
             column: point.column,
             function: point.name.clone(),
             cause,
-            children: point.children.iter().map(JsonPanicPoint::from).collect(),
+            children: if include_children {
+                point
+                    .children
+                    .iter()
+                    .map(|c| JsonPanicPoint::from_code_point(c, true))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         }
+    }
+}
+
+impl From<&CrateCodePoint> for JsonPanicPoint {
+    fn from(point: &CrateCodePoint) -> Self {
+        // Default: include children (for backwards compatibility)
+        JsonPanicPoint::from_code_point(point, true)
     }
 }
 
@@ -155,6 +171,14 @@ impl From<&PanicCause> for JsonPanicCause {
 }
 
 /// Convert a list of CrateCodePoints to JSON panic points
-pub fn convert_to_json_points(points: &[CrateCodePoint]) -> Vec<JsonPanicPoint> {
-    points.iter().map(JsonPanicPoint::from).collect()
+/// If `include_tree` is true, includes the full call tree (children).
+/// If false, returns a flat list with no children.
+pub fn convert_to_json_points(
+    points: &[CrateCodePoint],
+    include_tree: bool,
+) -> Vec<JsonPanicPoint> {
+    points
+        .iter()
+        .map(|p| JsonPanicPoint::from_code_point(p, include_tree))
+        .collect()
 }
