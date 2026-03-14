@@ -4,11 +4,11 @@ use crate::call_tree::{
     collect_crate_code_points, count_crate_code_points_summary, print_call_tree,
     print_crate_code_points, prune_call_tree,
 };
-use crate::json_output::{JsonOutput, convert_to_json_points};
 use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use crate::config::Config;
+use crate::json_output::{JsonOutput, convert_to_json_points};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
     find_symbol_containing, load_debug_info, read_symbols,
@@ -455,7 +455,8 @@ fn analyze_macho(
             code_points: Vec::new(),
         }
     } else if let Some(crate_path) = crate_src_path {
-        let summary = print_crate_code_points(&root, crate_path, project_root, config, no_hyperlinks);
+        let summary =
+            print_crate_code_points(&root, crate_path, project_root, config, no_hyperlinks);
         AnalysisResult {
             summary,
             code_points: Vec::new(),
