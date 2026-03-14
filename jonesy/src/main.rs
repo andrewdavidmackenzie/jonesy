@@ -435,6 +435,7 @@ struct PanicCaller {
     file: String,
     name: String,
     line: u32,
+    column: Option<u32>,
 }
 
 /// Check if a function name belongs to the standard library.
@@ -596,6 +597,7 @@ fn analyze_archive(
                     file: file.clone(),
                     name: caller_info.caller.name.clone(),
                     line,
+                    column: caller_info.column,
                 });
             }
         }
@@ -632,7 +634,8 @@ fn analyze_archive(
         println!("\nPanic code points in library:");
         for caller in &sorted_callers {
             // Output in format expected by test framework: " --> file:line:col"
-            println!(" --> {}:{}:1", caller.file, caller.line);
+            let column = caller.column.unwrap_or(1);
+            println!(" --> {}:{}:{}", caller.file, caller.line, column);
         }
     }
 

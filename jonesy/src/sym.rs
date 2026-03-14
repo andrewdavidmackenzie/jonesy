@@ -8,8 +8,8 @@ use dashmap::DashMap;
 /// Note that DWARF doesn't directly encode "function A calls
 /// function B" - it provides accurate function boundaries and source locations, which you combine with disassembly.
 use gimli::{
-    AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian,
-    SectionId, Unit,
+    AttributeValue, ColumnType, DebuggingInformationEntry, Dwarf, EndianSlice, Reader,
+    RunTimeEndian, SectionId, Unit,
 };
 use goblin::Object;
 use goblin::archive::Archive;
@@ -47,6 +47,7 @@ pub enum SymbolTable<'a> {
 pub struct CrateLineEntry {
     pub address: u64,
     pub line: u32,
+    pub column: Option<u32>,
 }
 
 /// Pre-built line table containing only crate source entries, sorted by address.
@@ -93,9 +94,14 @@ impl CrateLineTable {
                         if matches_crate_pattern(&full_path, crate_src_path)
                             && let Some(line) = row.line()
                         {
+                            let column = match row.column() {
+                                ColumnType::LeftEdge => None,
+                                ColumnType::Column(c) => Some(c.get() as u32),
+                            };
                             entries.push(CrateLineEntry {
                                 address: row.address(),
                                 line: line.get() as u32,
+                                column,
                             });
                         }
                     }
@@ -109,9 +115,9 @@ impl CrateLineTable {
         Ok(Self { entries })
     }
 
-    /// Find the crate line at a specific address within a function.
-    /// Returns the line of the last entry in [func_start, call_site_addr].
-    pub fn get_line(&self, func_start: u64, call_site_addr: u64) -> Option<u32> {
+    /// Find the crate line and column at a specific address within a function.
+    /// Returns the line and column of the last entry in [func_start, call_site_addr].
+    pub fn get_line(&self, func_start: u64, call_site_addr: u64) -> (Option<u32>, Option<u32>) {
         // Find entries in range [func_start, call_site_addr]
         let start_idx = self.entries.partition_point(|e| e.address < func_start);
         let end_idx = self
@@ -120,9 +126,10 @@ impl CrateLineTable {
 
         // Return the last entry in range (highest address)
         if end_idx > start_idx {
-            Some(self.entries[end_idx - 1].line)
+            let entry = &self.entries[end_idx - 1];
+            (Some(entry.line), entry.column)
         } else {
-            None
+            (None, None)
         }
     }
 
@@ -162,6 +169,8 @@ pub struct CallerInfo {
     pub file: Option<String>,
     /// Line number of the calling instruction
     pub line: Option<u32>,
+    /// Column number of the calling instruction
+    pub column: Option<u32>,
 }
 
 /// Self-referencing struct that owns the buffer and the parsed MachO that borrows from it
@@ -732,7 +741,7 @@ impl CallGraph {
         // Cache source location lookups since many instructions are in the same function
         let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
-        let source_cache: DashMap<u64, (Option<String>, Option<u32>)> = DashMap::new();
+        let source_cache: DashMap<u64, (Option<String>, Option<u32>, Option<u32>)> = DashMap::new();
         // Precompute symbol index once for efficient fallback lookups
         let symbol_index = SymbolIndex::new(binary_macho);
 
@@ -789,6 +798,7 @@ struct ObjectLineEntry {
     address: u64,
     file: String,
     line: u32,
+    column: Option<u32>,
 }
 
 /// Line table built from DWARF debug info for address -> file/line lookups.
@@ -842,10 +852,15 @@ impl ObjectLineTable {
                     let file_idx = row.file_index() as usize;
                     if let Some(line) = row.line() {
                         if file_idx < file_paths.len() && file_idx > 0 {
+                            let column = match row.column() {
+                                ColumnType::LeftEdge => None,
+                                ColumnType::Column(c) => Some(c.get() as u32),
+                            };
                             entries.push(ObjectLineEntry {
                                 address: row.address(),
                                 file: file_paths[file_idx].clone(),
                                 line: line.get() as u32,
+                                column,
                             });
                         }
                     }
@@ -859,8 +874,8 @@ impl ObjectLineTable {
         Ok(Self { entries })
     }
 
-    /// Look up file/line for an address. Returns (file, line) if found.
-    fn lookup(&self, address: u64) -> Option<(Option<String>, Option<u32>)> {
+    /// Look up file/line/column for an address. Returns (file, line, column) if found.
+    fn lookup(&self, address: u64) -> Option<(Option<String>, Option<u32>, Option<u32>)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -873,7 +888,7 @@ impl ObjectLineTable {
         };
 
         let entry = &self.entries[idx];
-        Some((Some(entry.file.clone()), Some(entry.line)))
+        Some((Some(entry.file.clone()), Some(entry.line), entry.column))
     }
 }
 
@@ -981,15 +996,15 @@ impl LibraryCallGraph {
                             format!("{:#}", demangle(stripped))
                         };
 
-                        // Look up file/line from DWARF at call site
-                        let (file, line) = line_lookup
+                        // Look up file/line/column from DWARF at call site
+                        let (file, line, column) = line_lookup
                             .as_ref()
                             .and_then(|lt| lt.lookup(call_site_addr))
-                            .unwrap_or_else(|| (None, None));
+                            .unwrap_or_else(|| (None, None, None));
 
                         // If call site points to library code, try the function start
                         // address as fallback (the caller function is in user code)
-                        let (file, line) = if file.as_ref().map_or(false, |f| {
+                        let (file, line, column) = if file.as_ref().map_or(false, |f| {
                             f.starts_with("/rustc/")
                                 || f.contains("/.cargo/")
                                 || f.contains("/deps/")
@@ -998,9 +1013,9 @@ impl LibraryCallGraph {
                             line_lookup
                                 .as_ref()
                                 .and_then(|lt| lt.lookup(func_addr))
-                                .unwrap_or_else(|| (None, None))
+                                .unwrap_or_else(|| (None, None, None))
                         } else {
-                            (file, line)
+                            (file, line, column)
                         };
 
                         // Record the call: target_symbol -> caller
@@ -1008,12 +1023,13 @@ impl LibraryCallGraph {
                             caller: FunctionInfo {
                                 name: func_name,
                                 start_address: func_addr,
-                                file,
+                                file: file.clone(),
                                 ..Default::default()
                             },
                             call_site_addr,
+                            file,
                             line,
-                            ..Default::default()
+                            column,
                         });
                     }
                 }
@@ -1102,7 +1118,7 @@ fn process_instruction_data_with_crate_table(
     functions: &[FunctionInfo],
     dwarf: &Dwarf<DwarfReader>,
     crate_src_path: Option<&str>,
-    source_cache: &DashMap<u64, (Option<String>, Option<u32>)>,
+    source_cache: &DashMap<u64, (Option<String>, Option<u32>, Option<u32>)>,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&SymbolIndex>,
 ) -> Option<(u64, CallerInfo)> {
@@ -1111,15 +1127,16 @@ fn process_instruction_data_with_crate_table(
     // Find the function containing this call - try DWARF first, fall back to symbol table
     if let Some(func) = find_function_at_address(functions, data.address) {
         // Found in DWARF - use full debug info
-        let (func_file, func_line) = source_cache
+        let (func_file, func_line, func_column) = source_cache
             .entry(func.start_address)
             .or_insert_with(|| {
-                get_source_location(dwarf, func.start_address).unwrap_or((None, None))
+                get_source_location(dwarf, func.start_address).unwrap_or((None, None, None))
             })
             .clone();
 
         let file = func.file.clone().or(func_file);
         let mut line = func.line.or(func_line);
+        let mut column = func_column;
 
         // For functions in the crate source, find actual call line using pre-built table
         let file_in_crate = file.as_ref().is_some_and(|f| {
@@ -1127,10 +1144,12 @@ fn process_instruction_data_with_crate_table(
         });
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
-            if let Some(table) = crate_line_table
-                && let Some(crate_line) = table.get_line(func.start_address, data.address)
-            {
-                line = Some(crate_line);
+            if let Some(table) = crate_line_table {
+                let (crate_line, crate_column) = table.get_line(func.start_address, data.address);
+                if crate_line.is_some() {
+                    line = crate_line;
+                    column = crate_column;
+                }
             }
         }
 
@@ -1141,6 +1160,7 @@ fn process_instruction_data_with_crate_table(
                 call_site_addr: data.address,
                 file,
                 line,
+                column,
             },
         ))
     } else if let Some((func_addr, func_name)) = symbol_index
@@ -1149,9 +1169,9 @@ fn process_instruction_data_with_crate_table(
     {
         // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
         // Try to get source info from DWARF line tables
-        let (file, line) = source_cache
+        let (file, line, column) = source_cache
             .entry(func_addr)
-            .or_insert_with(|| get_source_location(dwarf, func_addr).unwrap_or((None, None)))
+            .or_insert_with(|| get_source_location(dwarf, func_addr).unwrap_or((None, None, None)))
             .clone();
 
         Some((
@@ -1165,6 +1185,7 @@ fn process_instruction_data_with_crate_table(
                 call_site_addr: data.address,
                 file,
                 line,
+                column,
             },
         ))
     } else {
@@ -1449,16 +1470,18 @@ pub fn find_callers_with_debug_info(
                 // Find the function containing this call - try DWARF first, fall back to symbol table
                 if let Some(func) = find_function_at_address(&functions, instruction.address()) {
                     // Found in DWARF - use full debug info
-                    let (func_file, func_line) = get_source_location(&dwarf, func.start_address)?;
+                    let (func_file, func_line, func_column) =
+                        get_source_location(&dwarf, func.start_address)?;
 
                     // Prefer function's declaration file/line if available, then function start's line info
                     let file = func.file.clone().or(func_file);
                     let mut line = func.line.or(func_line);
+                    let mut column = func_column;
 
                     // For functions in the crate source, find the actual line where the call originates
                     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
                         && f.contains(crate_path)
-                        && let Ok(Some(crate_line)) = get_crate_line_at_address(
+                        && let Ok(Some((crate_line, crate_column))) = get_crate_line_at_address(
                             &dwarf,
                             func.start_address,
                             instruction.address(),
@@ -1466,6 +1489,7 @@ pub fn find_callers_with_debug_info(
                         )
                     {
                         line = Some(crate_line);
+                        column = crate_column;
                     }
 
                     callers.push(CallerInfo {
@@ -1473,6 +1497,7 @@ pub fn find_callers_with_debug_info(
                         call_site_addr: instruction.address(),
                         file,
                         line,
+                        column,
                     });
                 } else if let Some((func_addr, func_name)) = symbol_index
                     .as_ref()
@@ -1480,8 +1505,8 @@ pub fn find_callers_with_debug_info(
                     .map(|(addr, name)| (addr, name.to_string()))
                 {
                     // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
-                    let (file, line) =
-                        get_source_location(&dwarf, func_addr).unwrap_or((None, None));
+                    let (file, line, column) =
+                        get_source_location(&dwarf, func_addr).unwrap_or((None, None, None));
 
                     callers.push(CallerInfo {
                         caller: FunctionInfo {
@@ -1492,6 +1517,7 @@ pub fn find_callers_with_debug_info(
                         call_site_addr: instruction.address(),
                         file,
                         line,
+                        column,
                     });
                 }
             }
@@ -1501,11 +1527,11 @@ pub fn find_callers_with_debug_info(
     Ok(callers)
 }
 
-/// Get source file and line for an address using DWARF line info
+/// Get source file, line, and column for an address using DWARF line info
 fn get_source_location<R: Reader>(
     dwarf: &Dwarf<R>,
     addr: u64,
-) -> Result<(Option<String>, Option<u32>), gimli::Error> {
+) -> Result<(Option<String>, Option<u32>, Option<u32>), gimli::Error> {
     let mut units = dwarf.units();
 
     while let Some(header) = units.next()? {
@@ -1513,13 +1539,13 @@ fn get_source_location<R: Reader>(
 
         if let Some(program) = &unit.line_program {
             let mut rows = program.clone().rows();
-            let mut prev_row: Option<(String, u32)> = None;
+            let mut prev_row: Option<(String, u32, Option<u32>)> = None;
 
             while let Some((header, row)) = rows.next_row()? {
                 if row.address() > addr {
                     // The previous row covers this address
-                    if let Some((file, line)) = prev_row {
-                        return Ok((Some(file), Some(line)));
+                    if let Some((file, line, column)) = prev_row {
+                        return Ok((Some(file), Some(line), column));
                     }
                 }
 
@@ -1544,25 +1570,34 @@ fn get_source_location<R: Reader>(
                         file_name
                     };
 
-                    prev_row = Some((full_path, row.line().map(|l| l.get() as u32).unwrap_or(0)));
+                    let column = match row.column() {
+                        ColumnType::LeftEdge => None,
+                        ColumnType::Column(c) => Some(c.get() as u32),
+                    };
+                    prev_row = Some((
+                        full_path,
+                        row.line().map(|l| l.get() as u32).unwrap_or(0),
+                        column,
+                    ));
                 }
             }
         }
     }
 
-    Ok((None, None))
+    Ok((None, None, None))
 }
 
-/// Find the user code line closest to a specific address within a function.
+/// Find the user code line and column closest to a specific address within a function.
 /// This finds the last line entry in user code before the given call site address.
 fn get_crate_line_at_address<R: Reader>(
     dwarf: &Dwarf<R>,
     func_start: u64,
     call_site_addr: u64,
     crate_src_path: &str,
-) -> Result<Option<u32>, gimli::Error> {
+) -> Result<Option<(u32, Option<u32>)>, gimli::Error> {
     let mut units = dwarf.units();
     let mut best_line: Option<u32> = None;
+    let mut best_column: Option<u32> = None;
     let mut best_addr: u64 = 0;
 
     while let Some(header) = units.next()? {
@@ -1605,13 +1640,17 @@ fn get_crate_line_at_address<R: Reader>(
                     {
                         best_addr = addr;
                         best_line = Some(line.get() as u32);
+                        best_column = match row.column() {
+                            ColumnType::LeftEdge => None,
+                            ColumnType::Column(c) => Some(c.get() as u32),
+                        };
                     }
                 }
             }
         }
     }
 
-    Ok(best_line)
+    Ok(best_line.map(|l| (l, best_column)))
 }
 
 pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
