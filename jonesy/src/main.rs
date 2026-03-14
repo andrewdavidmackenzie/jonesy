@@ -8,6 +8,7 @@ use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use crate::config::Config;
+use crate::html_output::generate_html_report;
 use crate::json_output::{JsonOutput, convert_to_json_points};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
@@ -28,6 +29,7 @@ mod args;
 mod call_tree;
 mod cargo;
 mod config;
+mod html_output;
 mod json_output;
 mod panic_cause;
 #[cfg(target_os = "macos")]
@@ -167,11 +169,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             SymbolTable::Archive(archive) => {
-                // JSON output is not yet supported for archives
-                if parsed_args.output.is_json() {
+                // JSON/HTML output is not yet supported for archives
+                if parsed_args.output.is_json() || parsed_args.output.is_html() {
+                    let format = if parsed_args.output.is_json() {
+                        "json"
+                    } else {
+                        "html"
+                    };
                     eprintln!(
-                        "Error: JSON output (--format json) is not yet supported for archives. \
-                        Use text output or analyze a binary instead."
+                        "Error: {} output (--format {}) is not yet supported for archives. \
+                        Use text output or analyze a binary instead.",
+                        format.to_uppercase(),
+                        format
                     );
                     std::process::exit(255);
                 }
@@ -219,6 +228,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                 std::process::exit(255);
             }
         }
+    } else if parsed_args.output.is_html() {
+        // HTML output - respect --tree and --summary-only flags
+        let points = if parsed_args.output.is_summary_only() {
+            &[][..] // Empty slice for summary-only
+        } else {
+            &all_code_points[..]
+        };
+        let html = generate_html_report(
+            &project_name.unwrap_or_else(|| "unknown".to_string()),
+            &project_root_path.unwrap_or_else(|| ".".to_string()),
+            total_summary.panic_points(),
+            total_summary.files_affected(),
+            points,
+            parsed_args.output.show_tree(),
+        );
+        println!("{}", html);
     } else {
         // Text summary
         println!("Summary (jonesy v{}):", VERSION);
@@ -428,8 +453,8 @@ fn analyze_macho(
 
     // Collect/output based on output format
     let step_start = Instant::now();
-    let result = if output.is_json() {
-        // JSON output: collect code points without printing
+    let result = if output.is_json() || output.is_html() {
+        // JSON/HTML output: collect code points without printing
         if let Some(crate_path) = crate_src_path {
             let (code_points, summary) = collect_crate_code_points(&root, crate_path, config);
             AnalysisResult {
@@ -726,13 +751,20 @@ fn analyze_archive(
 /// Analyze a workspace with multiple member crates.
 /// Produces per-crate reports and an aggregate workspace summary.
 fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box<dyn Error>> {
-    // JSON output is not yet supported for workspaces
-    if args.output.is_json() {
-        return Err(
-            "JSON output (--format json) is not yet supported for workspaces. \
-            Use text output or analyze individual crates."
-                .into(),
-        );
+    // JSON/HTML output is not yet supported for workspaces
+    if args.output.is_json() || args.output.is_html() {
+        let format = if args.output.is_json() {
+            "json"
+        } else {
+            "html"
+        };
+        return Err(format!(
+            "{} output (--format {}) is not yet supported for workspaces. \
+            Use text output or analyze individual crates.",
+            format.to_uppercase(),
+            format
+        )
+        .into());
     }
 
     let workspace_root = std::env::current_dir()?;

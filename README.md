@@ -110,7 +110,7 @@ Usage:
 Options:
   --tree             Show full call tree instead of just crate code points
   --summary-only     Only show summary, not detailed panic points
-  --format <fmt>     Output format: text (default) or json
+  --format <fmt>     Output format: text (default), json, or html
   --config <path>    Path to a TOML config file for allow/deny rules
   --max-threads N    Maximum threads for parallel analysis (default: CPU count)
   --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)
@@ -232,7 +232,30 @@ The `--tree` and `--summary-only` flags work with JSON output:
 - `--format json --tree` — Full hierarchical tree with `children` arrays
 - `--format json --summary-only` — Summary only, empty `panic_points` array
 
-**Note:** JSON output is not yet supported for workspace-level analysis. Use it on individual crates.
+**Note:** JSON output is not yet supported for workspace-level analysis or archives. Use it on individual crates.
+
+### `--format html`
+
+Generate a self-contained HTML report that can be viewed in any browser:
+
+```bash
+jonesy --format html > report.html
+```
+
+The HTML report includes:
+- Project summary with panic point counts
+- Clickable `file://` links to source locations
+- Visual hierarchy for panic call chains (with `--tree`)
+- Panic cause descriptions and suggestions
+- Dark theme with responsive design
+
+The `--tree` and `--summary-only` flags work with HTML output:
+
+- `--format html` — Flat list of panic points
+- `--format html --tree` — Full hierarchical tree with nested children
+- `--format html --summary-only` — Summary statistics only, no panic point list
+
+**Note:** HTML output is not yet supported for workspace-level analysis or archives. Use it on individual crates.
 
 ## Configuration
 

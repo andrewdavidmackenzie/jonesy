@@ -23,6 +23,13 @@ pub enum OutputFormat {
         /// Only include summary, not detailed panic points
         summary_only: bool,
     },
+    /// Self-contained HTML report (implies quiet)
+    Html {
+        /// Show full call tree instead of flat list
+        tree: bool,
+        /// Only include summary, not detailed panic points
+        summary_only: bool,
+    },
 }
 
 impl Default for OutputFormat {
@@ -52,9 +59,19 @@ impl OutputFormat {
         OutputFormat::Json { tree, summary_only }
     }
 
+    /// Create an HTML output format with the given options
+    pub fn html(tree: bool, summary_only: bool) -> Self {
+        OutputFormat::Html { tree, summary_only }
+    }
+
     /// Returns true if this is JSON output
     pub fn is_json(&self) -> bool {
         matches!(self, OutputFormat::Json { .. })
+    }
+
+    /// Returns true if this is HTML output
+    pub fn is_html(&self) -> bool {
+        matches!(self, OutputFormat::Html { .. })
     }
 
     /// Returns true if progress messages should be shown
@@ -65,23 +82,25 @@ impl OutputFormat {
                 summary_only,
                 ..
             } => !quiet && !summary_only,
-            OutputFormat::Json { .. } => false,
+            OutputFormat::Json { .. } | OutputFormat::Html { .. } => false,
         }
     }
 
     /// Returns true if only the summary should be shown (no panic point details)
     pub fn is_summary_only(&self) -> bool {
         match self {
-            OutputFormat::Text { summary_only, .. } => *summary_only,
-            OutputFormat::Json { summary_only, .. } => *summary_only,
+            OutputFormat::Text { summary_only, .. }
+            | OutputFormat::Json { summary_only, .. }
+            | OutputFormat::Html { summary_only, .. } => *summary_only,
         }
     }
 
     /// Returns true if the full call tree should be shown
     pub fn show_tree(&self) -> bool {
         match self {
-            OutputFormat::Text { tree, .. } => *tree,
-            OutputFormat::Json { tree, .. } => *tree,
+            OutputFormat::Text { tree, .. }
+            | OutputFormat::Json { tree, .. }
+            | OutputFormat::Html { tree, .. } => *tree,
         }
     }
 
@@ -89,7 +108,7 @@ impl OutputFormat {
     pub fn use_hyperlinks(&self) -> bool {
         match self {
             OutputFormat::Text { hyperlinks, .. } => *hyperlinks,
-            OutputFormat::Json { .. } => false,
+            OutputFormat::Json { .. } | OutputFormat::Html { .. } => false,
         }
     }
 }
@@ -278,7 +297,7 @@ fn parse_output_format(
         if arg == "--format" {
             let value = args
                 .get(i + 1)
-                .ok_or("--format requires an argument (text or json)")?;
+                .ok_or("--format requires an argument (text, json, or html)")?;
             return match value.to_lowercase().as_str() {
                 "text" => Ok(OutputFormat::text(
                     show_tree,
@@ -287,8 +306,9 @@ fn parse_output_format(
                     !no_hyperlinks,
                 )),
                 "json" => Ok(OutputFormat::json(show_tree, summary_only)),
+                "html" => Ok(OutputFormat::html(show_tree, summary_only)),
                 _ => Err(format!(
-                    "Invalid format '{}'. Valid options: text, json",
+                    "Invalid format '{}'. Valid options: text, json, html",
                     value
                 )),
             };
@@ -322,7 +342,7 @@ fn usage() -> String {
          --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
          --config <path>    Path to TOML config file for allow/deny rules\n  \
          --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)\n  \
-         --format <fmt>     Output format: text (default), json\n  \
+         --format <fmt>     Output format: text (default), json, html\n  \
          --version, -V      Print version and exit",
         VERSION
     )
