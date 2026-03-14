@@ -103,18 +103,21 @@ There are two ways to build a Rust dynamic library:
 
 ```
 Usage:
-  jonesy[OPTIONS]
-  jonesy[OPTIONS] --bin <path_to_binary>
-  jonesy[OPTIONS] --lib <path_to_lib_object>
+  jonesy [OPTIONS]
+  jonesy [OPTIONS] --bin <path_to_binary>
+  jonesy [OPTIONS] --lib <path_to_lib_object>
 
 Options:
   --tree             Show full call tree instead of just crate code points
   --summary-only     Only show summary, not detailed panic points
+  --format <fmt>     Output format: text (default) or json
   --config <path>    Path to a TOML config file for allow/deny rules
   --max-threads N    Maximum threads for parallel analysis (default: CPU count)
   --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)
+  --quiet            Suppress progress messages
   --bin              Analyze a specific binary file
   --lib              Analyze a specific library object file
+  --version, -V      Print version and exit
 ```
 
 ### `--tree`
@@ -184,6 +187,52 @@ jonesy --config my-config.toml
 ```
 
 See the [Configuration](#configuration) section for details on the config file format.
+
+### `--format json`
+
+Output results as machine-readable JSON instead of human-readable text:
+
+```bash
+jonesy --format json
+```
+
+The JSON output includes a versioned schema for compatibility:
+
+```json
+{
+  "version": "1.0",
+  "jonesy_version": "0.4.0",
+  "project": {
+    "name": "my-crate",
+    "root": "/path/to/project"
+  },
+  "summary": {
+    "panic_points": 5,
+    "files_affected": 2
+  },
+  "panic_points": [
+    {
+      "file": "src/main.rs",
+      "line": 10,
+      "column": 5,
+      "function": "main",
+      "cause": {
+        "type": "unwrap_option",
+        "description": "unwrap() on None",
+        "suggestion": "Use if-let, match, or unwrap_or instead"
+      }
+    }
+  ]
+}
+```
+
+The `--tree` and `--summary-only` flags work with JSON output:
+
+- `--format json` — Flat list of panic points (no call tree)
+- `--format json --tree` — Full hierarchical tree with `children` arrays
+- `--format json --summary-only` — Summary only, empty `panic_points` array
+
+**Note:** JSON output is not yet supported for workspace-level analysis. Use it on individual crates.
 
 ## Configuration
 
