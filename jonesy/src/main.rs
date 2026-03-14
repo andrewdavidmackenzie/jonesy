@@ -14,6 +14,7 @@ use crate::sym::{
 use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
 use goblin::mach::MachO;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -210,6 +211,30 @@ const PANIC_SYMBOL_PATTERNS: &[&str] = &[
     "str_index_overflow", // String slice boundary panics
 ];
 
+/// Create a spinner for long-running operations.
+/// Returns None if progress display is disabled.
+fn create_spinner(show_progress: bool, message: &str) -> Option<ProgressBar> {
+    if !show_progress {
+        return None;
+    }
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {spinner:.cyan} {msg} [{elapsed}]")
+            .expect("valid template"),
+    );
+    spinner.set_message(message.to_string());
+    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    Some(spinner)
+}
+
+/// Finish a spinner with a completion message.
+fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
+    if let Some(s) = spinner {
+        s.finish_with_message(message.to_string());
+    }
+}
+
 /// Analyze a single MachO binary/object for panic points.
 /// Returns a summary of panic code points found.
 #[allow(clippy::too_many_arguments)]
@@ -269,9 +294,7 @@ fn analyze_macho(
 
     // Pre-compute the call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
-    if show_progress {
-        eprintln!("  Scanning for function calls...");
-    }
+    let spinner = create_spinner(show_progress, "Scanning for function calls...");
     let step_start = Instant::now();
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
@@ -317,6 +340,7 @@ fn analyze_macho(
             })
         }
     };
+    finish_spinner(spinner, "Scanning complete");
     if show_timings {
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
@@ -329,23 +353,25 @@ fn analyze_macho(
     visited.insert(target_addr);
 
     // Build the call tree in parallel
-    if show_progress {
-        eprintln!("  Building call tree...");
-    }
+    let spinner = create_spinner(show_progress, "Building call tree...");
     let step_start = Instant::now();
     root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
+    let nodes_visited = visited.len();
+    finish_spinner(
+        spinner,
+        &format!("Built call tree ({} nodes)", nodes_visited),
+    );
     if show_timings {
         eprintln!("  [timing] Build call tree: {:?}", step_start.elapsed());
     }
 
     // Prune to only show paths leading to user code
-    if show_progress {
-        eprintln!("  Pruning to crate code...");
-    }
+    let spinner = create_spinner(show_progress, "Pruning to crate code...");
     let step_start = Instant::now();
     if let Some(crate_path) = crate_src_path {
         prune_call_tree(&mut root, crate_path);
     }
+    finish_spinner(spinner, "Pruning complete");
     if show_timings {
         eprintln!("  [timing] Prune call tree: {:?}", step_start.elapsed());
     }
