@@ -1,4 +1,4 @@
-use crate::args::{Args, WorkspaceMember, parse_args};
+use crate::args::{Args, VERSION, WorkspaceMember, parse_args};
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, build_call_tree_parallel, count_crate_code_points_summary,
     print_call_tree, print_crate_code_points, prune_call_tree,
@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Print summary
-    println!("Summary:");
+    println!("Summary (jonesy v{}):", VERSION);
     if let Some(name) = &project_name {
         println!("  Project: {}", name);
     }
@@ -765,7 +765,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
     }
 
     // Print workspace summary
-    println!("=== Workspace Summary ===");
+    println!("=== Workspace Summary (jonesy v{}) ===", VERSION);
     println!("  Root: {}", workspace_root.display());
     println!("  Members analyzed: {}", members.len());
     for (name, summary) in &crate_summaries {

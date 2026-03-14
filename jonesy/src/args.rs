@@ -34,6 +34,9 @@ pub(crate) struct Args {
     pub no_hyperlinks: bool,
 }
 
+/// The version of jonesy, read from Cargo.toml at compile time.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Parse command line arguments.
 ///
 /// Modes:
@@ -50,7 +53,14 @@ pub(crate) struct Args {
 /// --summary-only   Only show summary output, not detailed panic points
 /// --max-threads N  Maximum threads for parallel analysis (default: number of CPUs)
 /// --config <path>  Path to a TOML config file for allow/deny rules
+/// --version        Print version and exit
 pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
+    // Handle --version flag early
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("jonesy {}", VERSION);
+        std::process::exit(0);
+    }
+
     // Check for flags
     let show_tree = args.iter().any(|a| a == "--tree");
     let summary_only = args.iter().any(|a| a == "--summary-only");
@@ -168,23 +178,27 @@ fn parse_config_path(args: &[String]) -> Result<Option<PathBuf>, String> {
 }
 
 fn usage() -> String {
-    "Usage:\n  \
-     jonesy [OPTIONS]\n  \
-     jonesy [OPTIONS] --bin <name_or_path>\n  \
-     jonesy [OPTIONS] --lib [path_to_lib_object]\n\n\
-     When run without --bin or --lib, jonesy looks for Cargo.toml in the current\n\
-     directory and analyzes all binary targets found in target/debug/.\n\n\
-     Options:\n  \
-     --bin <name>       Analyze only the specified binary (by name or path)\n  \
-     --lib              Analyze only the library target\n  \
-     --tree             Show full call tree instead of just crate code points\n  \
-     --summary-only     Only show summary, not detailed panic points\n  \
-     --quiet            Suppress progress messages (keeps panic points and summary)\n  \
-     --show-timings     Show timing information for each analysis step\n  \
-     --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
-     --config <path>    Path to TOML config file for allow/deny rules\n  \
-     --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)"
-        .to_string()
+    format!(
+        "jonesy {} - Find panic points in Rust binaries\n\n\
+         Usage:\n  \
+         jonesy [OPTIONS]\n  \
+         jonesy [OPTIONS] --bin <name_or_path>\n  \
+         jonesy [OPTIONS] --lib [path_to_lib_object]\n\n\
+         When run without --bin or --lib, jonesy looks for Cargo.toml in the current\n\
+         directory and analyzes all binary targets found in target/debug/.\n\n\
+         Options:\n  \
+         --bin <name>       Analyze only the specified binary (by name or path)\n  \
+         --lib              Analyze only the library target\n  \
+         --tree             Show full call tree instead of just crate code points\n  \
+         --summary-only     Only show summary, not detailed panic points\n  \
+         --quiet            Suppress progress messages (keeps panic points and summary)\n  \
+         --show-timings     Show timing information for each analysis step\n  \
+         --max-threads N    Maximum threads for parallel analysis (default: CPU count)\n  \
+         --config <path>    Path to TOML config file for allow/deny rules\n  \
+         --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)\n  \
+         --version, -V      Print version and exit",
+        VERSION
+    )
 }
 
 /// Find target/debug directory, checking current directory and walking up to workspace root
