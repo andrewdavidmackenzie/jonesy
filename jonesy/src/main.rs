@@ -1,15 +1,15 @@
 use crate::args::{Args, OutputFormat, VERSION, WorkspaceMember, parse_args};
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel,
-    collect_crate_code_points, count_crate_code_points_summary, print_call_tree,
-    print_crate_code_points, prune_call_tree,
+    AnalysisResult, AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel,
+    collect_crate_code_points, prune_call_tree,
 };
 use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use crate::config::Config;
-use crate::html_output::generate_html_report;
-use crate::json_output::{JsonOutput, convert_to_json_points};
+use crate::html_output::generate_html_output;
+use crate::json_output::generate_json_output;
+use crate::text_output::generate_text_output;
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
     find_symbol_containing, load_debug_info, read_symbols,
@@ -34,6 +34,7 @@ mod json_output;
 mod panic_cause;
 #[cfg(target_os = "macos")]
 mod sym;
+mod text_output;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -205,23 +206,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // Create unified analysis result
+    let result = AnalysisResult::new(
+        project_name.unwrap_or_else(|| "unknown".to_string()),
+        project_root_path.unwrap_or_else(|| ".".to_string()),
+        all_code_points,
+    );
+
     // Output results based on format
+    let tree = parsed_args.output.show_tree();
+    let summary_only = parsed_args.output.is_summary_only();
+
     if parsed_args.output.is_json() {
-        // JSON output - respect --tree and --summary-only flags
-        let mut output = JsonOutput::new(
-            project_name.unwrap_or_else(|| "unknown".to_string()),
-            project_root_path.unwrap_or_else(|| ".".to_string()),
-        )
-        .with_summary(total_summary.panic_points(), total_summary.files_affected());
-
-        // Only include panic points if not summary-only
-        if !parsed_args.output.is_summary_only() {
-            let include_tree = parsed_args.output.show_tree();
-            let json_points = convert_to_json_points(&all_code_points, include_tree);
-            output = output.with_panic_points(json_points);
-        }
-
-        match output.to_json() {
+        match generate_json_output(&result, tree, summary_only) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Error serializing JSON: {}", e);
@@ -229,40 +226,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     } else if parsed_args.output.is_html() {
-        // HTML output - respect --tree and --summary-only flags
-        let points = if parsed_args.output.is_summary_only() {
-            &[][..] // Empty slice for summary-only
-        } else {
-            &all_code_points[..]
-        };
-        let html = generate_html_report(
-            &project_name.unwrap_or_else(|| "unknown".to_string()),
-            &project_root_path.unwrap_or_else(|| ".".to_string()),
-            total_summary.panic_points(),
-            total_summary.files_affected(),
-            points,
-            parsed_args.output.show_tree(),
-        );
+        let html = generate_html_output(&result, tree, summary_only);
         println!("{}", html);
     } else {
-        // Text summary
-        println!("Summary (jonesy v{}):", VERSION);
-        if let Some(name) = &project_name {
-            println!("  Project: {}", name);
-        }
-        if let Some(root) = &project_root_path {
-            println!("  Root: {}", root);
-        }
-        println!(
-            "  Panic points: {} in {} file(s)",
-            total_summary.panic_points(),
-            total_summary.files_affected()
-        );
+        let no_hyperlinks = !parsed_args.output.use_hyperlinks();
+        generate_text_output(&result, tree, summary_only, no_hyperlinks);
     }
 
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
-    std::process::exit(total_summary.panic_points() as i32);
+    std::process::exit(result.panic_points() as i32);
 }
 
 /// Panic symbol patterns to search for, in order of preference.
@@ -300,13 +273,13 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
     }
 }
 
-/// Result of analyzing a binary, includes summary and optionally code points for JSON output.
-struct AnalysisResult {
+/// Result of analyzing a single binary, includes summary and optionally code points.
+struct BinaryAnalysisResult {
     summary: AnalysisSummary,
     code_points: Vec<CrateCodePoint>,
 }
 
-impl AnalysisResult {
+impl BinaryAnalysisResult {
     fn empty() -> Self {
         Self {
             summary: AnalysisSummary::default(),
@@ -316,7 +289,7 @@ impl AnalysisResult {
 }
 
 /// Analyze a single MachO binary/object for panic points.
-/// Returns a summary of panic code points found, plus code points if JSON output is requested.
+/// Returns a summary of panic code points found, plus code points.
 fn analyze_macho(
     macho: &MachO,
     buffer: &[u8],
@@ -324,9 +297,9 @@ fn analyze_macho(
     crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
-    project_root: Option<&Path>,
+    _project_root: Option<&Path>,
     output: &OutputFormat,
-) -> AnalysisResult {
+) -> BinaryAnalysisResult {
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 
@@ -355,7 +328,7 @@ fn analyze_macho(
 
     let Some(_) = panic_symbol else {
         // No panic symbols found in this object
-        return AnalysisResult::empty();
+        return BinaryAnalysisResult::empty();
     };
 
     if show_progress {
@@ -451,55 +424,17 @@ fn analyze_macho(
         eprintln!("  [timing] Prune call tree: {:?}", step_start.elapsed());
     }
 
-    // Collect/output based on output format
+    // Always collect code points for unified output handling in main
     let step_start = Instant::now();
-    let result = if output.is_json() || output.is_html() {
-        // JSON/HTML output: collect code points without printing
-        if let Some(crate_path) = crate_src_path {
-            let (code_points, summary) = collect_crate_code_points(&root, crate_path, config);
-            AnalysisResult {
-                summary,
-                code_points,
-            }
-        } else {
-            // No crate path - can't collect code points
-            AnalysisResult::empty()
-        }
-    } else if output.is_summary_only() {
-        // Silent mode - just count without printing
-        let summary = crate_src_path.map_or(AnalysisSummary::default(), |cp| {
-            count_crate_code_points_summary(&root, cp, config)
-        });
-        AnalysisResult {
+    let result = if let Some(crate_path) = crate_src_path {
+        let (code_points, summary) = collect_crate_code_points(&root, crate_path, config);
+        BinaryAnalysisResult {
             summary,
-            code_points: Vec::new(),
-        }
-    } else if output.show_tree() {
-        println!("Full call tree:");
-        print_call_tree(&root, 0);
-        let summary = crate_src_path.map_or(AnalysisSummary::default(), |cp| {
-            count_crate_code_points_summary(&root, cp, config)
-        });
-        AnalysisResult {
-            summary,
-            code_points: Vec::new(),
-        }
-    } else if let Some(crate_path) = crate_src_path {
-        let summary = print_crate_code_points(
-            &root,
-            crate_path,
-            project_root,
-            config,
-            !output.use_hyperlinks(),
-        );
-        AnalysisResult {
-            summary,
-            code_points: Vec::new(),
+            code_points,
         }
     } else {
-        println!("Could not determine crate source path, showing full tree");
-        print_call_tree(&root, 0);
-        AnalysisResult::empty()
+        // No crate path - can't collect code points
+        BinaryAnalysisResult::empty()
     };
     if show_timings {
         eprintln!("  [timing] Collect/output: {:?}", step_start.elapsed());
@@ -817,6 +752,9 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         }
 
         let mut member_summary = AnalysisSummary::default();
+        let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
+        let mut seen_code_points: std::collections::HashSet<(String, u32)> =
+            std::collections::HashSet::new();
 
         for binary_path in &member.binaries {
             let binary_path = binary_path
@@ -869,6 +807,13 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         &args.output,
                     );
                     member_summary.add(&result.summary);
+                    // Collect code points with deduplication
+                    for point in result.code_points {
+                        let key = (point.file.clone(), point.line);
+                        if seen_code_points.insert(key) {
+                            member_code_points.push(point);
+                        }
+                    }
                 }
                 SymbolTable::MachO(Fat(multi_arch)) => {
                     if !args.output.is_summary_only() {
@@ -892,7 +837,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             }
         }
 
-        if args.output.show_progress() {
+        // Output code points for this member using text output
+        if !args.output.is_summary_only() {
+            let member_result = AnalysisResult::new(
+                member.name.clone(),
+                workspace_root.to_string_lossy().to_string(),
+                member_code_points,
+            );
+            let no_hyperlinks = !args.output.use_hyperlinks();
+            generate_text_output(&member_result, args.output.show_tree(), false, no_hyperlinks);
+        } else if args.output.show_progress() {
             println!(
                 "Panic points: {} in {} file(s)\n",
                 member_summary.panic_points(),

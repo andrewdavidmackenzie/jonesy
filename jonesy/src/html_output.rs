@@ -4,10 +4,32 @@
 //! for viewing panic analysis results in a browser.
 
 use crate::args::VERSION;
-use crate::call_tree::CrateCodePoint;
+use crate::call_tree::{AnalysisResult, CrateCodePoint};
+
+/// Generate HTML output from analysis results.
+///
+/// When `summary_only` is true, the panic points section will be empty.
+/// When `tree` is true, includes the full call tree with children.
+pub fn generate_html_output(result: &AnalysisResult, tree: bool, summary_only: bool) -> String {
+    let summary = result.summary();
+    let code_points = if summary_only {
+        &[][..]
+    } else {
+        &result.code_points[..]
+    };
+
+    generate_html_report(
+        &result.project_name,
+        &result.project_root,
+        summary.panic_points(),
+        summary.files_affected(),
+        code_points,
+        tree,
+    )
+}
 
 /// Generate a complete HTML report from analysis results.
-pub fn generate_html_report(
+fn generate_html_report(
     project_name: &str,
     project_root: &str,
     panic_points: usize,

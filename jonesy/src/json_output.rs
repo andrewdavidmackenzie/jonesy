@@ -4,128 +4,107 @@
 //! JSON output of panic analysis results.
 
 use crate::args::VERSION;
-use crate::call_tree::CrateCodePoint;
+use crate::call_tree::{AnalysisResult, CrateCodePoint};
 use crate::panic_cause::PanicCause;
 use serde::Serialize;
 
 /// Schema version for JSON output format
 pub const JSON_SCHEMA_VERSION: &str = "1.0";
 
-/// Root structure for JSON output
+/// Root structure for JSON output (serialization format)
 #[derive(Debug, Serialize)]
-pub struct JsonOutput {
-    /// Schema version for compatibility
-    pub version: String,
-    /// Jonesy version that produced this output
-    pub jonesy_version: String,
-    /// Project information
-    pub project: ProjectInfo,
-    /// Summary statistics
-    pub summary: Summary,
-    /// List of panic points found
-    pub panic_points: Vec<JsonPanicPoint>,
+struct JsonOutput {
+    version: String,
+    jonesy_version: String,
+    project: ProjectInfo,
+    summary: Summary,
+    panic_points: Vec<JsonPanicPoint>,
 }
 
-/// Project information
+/// Project information (serialization format)
 #[derive(Debug, Serialize)]
-pub struct ProjectInfo {
-    /// Name of the project/crate
-    pub name: String,
-    /// Root path of the project
-    pub root: String,
+struct ProjectInfo {
+    name: String,
+    root: String,
 }
 
-/// Summary statistics
+/// Summary statistics (serialization format)
 #[derive(Debug, Serialize)]
-pub struct Summary {
-    /// Total number of panic points
-    pub panic_points: usize,
-    /// Number of unique files affected
-    pub files_affected: usize,
+struct Summary {
+    panic_points: usize,
+    files_affected: usize,
 }
 
-/// A single panic point in JSON format
+/// A single panic point (serialization format)
 #[derive(Debug, Serialize)]
-pub struct JsonPanicPoint {
-    /// Source file path
-    pub file: String,
-    /// Line number
-    pub line: u32,
-    /// Column number (if available)
-    pub column: Option<u32>,
-    /// Function name
-    pub function: String,
-    /// Panic cause information (if detected)
+struct JsonPanicPoint {
+    file: String,
+    line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cause: Option<JsonPanicCause>,
-    /// Child panic points (called from this point)
+    column: Option<u32>,
+    function: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause: Option<JsonPanicCause>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<JsonPanicPoint>,
+    children: Vec<JsonPanicPoint>,
 }
 
-/// Panic cause information
+/// Panic cause information (serialization format)
 #[derive(Debug, Serialize)]
-pub struct JsonPanicCause {
-    /// Type identifier for the panic cause
+struct JsonPanicCause {
     #[serde(rename = "type")]
-    pub cause_type: String,
-    /// Human-readable description
-    pub description: String,
-    /// Suggestion for fixing the issue
+    cause_type: String,
+    description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggestion: Option<String>,
-    /// Warning about behavior in release builds
+    suggestion: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub warning: Option<String>,
+    warning: Option<String>,
 }
 
-impl JsonOutput {
-    /// Create a new JSON output structure
-    pub fn new(project_name: String, project_root: String) -> Self {
-        Self {
-            version: JSON_SCHEMA_VERSION.to_string(),
-            jonesy_version: VERSION.to_string(),
-            project: ProjectInfo {
-                name: project_name,
-                root: project_root,
-            },
-            summary: Summary {
-                panic_points: 0,
-                files_affected: 0,
-            },
-            panic_points: Vec::new(),
-        }
-    }
+/// Generate JSON output from analysis results.
+///
+/// When `summary_only` is true, the panic_points array will be empty.
+/// When `tree` is true, includes the full call tree with children.
+pub fn generate_json_output(
+    result: &AnalysisResult,
+    tree: bool,
+    summary_only: bool,
+) -> Result<String, serde_json::Error> {
+    let summary = result.summary();
 
-    /// Set the summary statistics
-    pub fn with_summary(mut self, panic_points: usize, files_affected: usize) -> Self {
-        self.summary = Summary {
-            panic_points,
-            files_affected,
-        };
-        self
-    }
+    let panic_points = if summary_only {
+        Vec::new()
+    } else {
+        result
+            .code_points
+            .iter()
+            .map(|p| JsonPanicPoint::from_code_point(p, tree))
+            .collect()
+    };
 
-    /// Set the panic points
-    pub fn with_panic_points(mut self, points: Vec<JsonPanicPoint>) -> Self {
-        self.panic_points = points;
-        self
-    }
+    let output = JsonOutput {
+        version: JSON_SCHEMA_VERSION.to_string(),
+        jonesy_version: VERSION.to_string(),
+        project: ProjectInfo {
+            name: result.project_name.clone(),
+            root: result.project_root.clone(),
+        },
+        summary: Summary {
+            panic_points: summary.panic_points(),
+            files_affected: summary.files_affected(),
+        },
+        panic_points,
+    };
 
-    /// Serialize to JSON string
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string_pretty(self)
-    }
+    serde_json::to_string_pretty(&output)
 }
 
 impl JsonPanicPoint {
-    /// Convert from CrateCodePoint with option to include children
-    pub fn from_code_point(point: &CrateCodePoint, include_children: bool) -> Self {
-        // Get the primary cause (first one, sorted for determinism)
+    fn from_code_point(point: &CrateCodePoint, include_children: bool) -> Self {
         let cause = {
             let mut causes: Vec<_> = point.causes.iter().collect();
             causes.sort_by_key(|c| c.description());
-            causes.first().map(|c| JsonPanicCause::from(*c))
+            causes.first().map(|c| JsonPanicCause::from_cause(c))
         };
 
         JsonPanicPoint {
@@ -147,15 +126,8 @@ impl JsonPanicPoint {
     }
 }
 
-impl From<&CrateCodePoint> for JsonPanicPoint {
-    fn from(point: &CrateCodePoint) -> Self {
-        // Default: include children (for backwards compatibility)
-        JsonPanicPoint::from_code_point(point, true)
-    }
-}
-
-impl From<&PanicCause> for JsonPanicCause {
-    fn from(cause: &PanicCause) -> Self {
+impl JsonPanicCause {
+    fn from_cause(cause: &PanicCause) -> Self {
         let suggestion = cause.suggestion();
         JsonPanicCause {
             cause_type: cause.id().to_string(),
@@ -168,17 +140,4 @@ impl From<&PanicCause> for JsonPanicCause {
             warning: cause.release_warning().map(str::to_string),
         }
     }
-}
-
-/// Convert a list of CrateCodePoints to JSON panic points
-/// If `include_tree` is true, includes the full call tree (children).
-/// If false, returns a flat list with no children.
-pub fn convert_to_json_points(
-    points: &[CrateCodePoint],
-    include_tree: bool,
-) -> Vec<JsonPanicPoint> {
-    points
-        .iter()
-        .map(|p| JsonPanicPoint::from_code_point(p, include_tree))
-        .collect()
 }
