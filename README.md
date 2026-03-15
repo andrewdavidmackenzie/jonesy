@@ -495,15 +495,18 @@ The LSP server communicates via stdin/stdout using the standard LSP protocol.
 
 ### VS Code Setup
 
-Create `.vscode/settings.json` in your project:
+VS Code requires a language server client extension to connect to `jonesy lsp`. You can use the [Generic LSP Client](https://marketplace.visualstudio.com/items?itemName=llllvvuu.llllvvuu-glspc) extension or similar.
+
+After installing an LSP client extension, configure it in `.vscode/settings.json`:
 
 ```json
 {
-  "jonesy.enable": true
+  "glspc.serverCommand": "jonesy lsp",
+  "glspc.languageId": "rust"
 }
 ```
 
-Or configure manually in VS Code's language server settings to run `jonesy lsp` as an external language server for Rust files.
+The exact configuration varies by extension. The key is to run `jonesy lsp` and associate it with Rust files.
 
 ### Other Editors
 

@@ -130,16 +130,25 @@ impl JonesyLspServer {
 
         // Update state and publish diagnostics
         let mut state = self.state.write().await;
+        let old_files: std::collections::HashSet<_> = state.panic_points.keys().cloned().collect();
         state.panic_points = points_by_file.clone();
         drop(state);
 
         // Publish diagnostics for each file
+        let new_files: std::collections::HashSet<_> = points_by_file.keys().cloned().collect();
         for (uri, points) in points_by_file {
             let diagnostics: Vec<Diagnostic> =
                 points.iter().map(Self::code_point_to_diagnostic).collect();
 
             self.client
                 .publish_diagnostics(uri, diagnostics, None)
+                .await;
+        }
+
+        // Clear diagnostics for files that no longer have panic points
+        for uri in old_files.difference(&new_files) {
+            self.client
+                .publish_diagnostics(uri.clone(), vec![], None)
                 .await;
         }
 
@@ -382,17 +391,24 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
     // Check for workspace members
     if let Some(workspace) = &manifest.workspace {
         for member in &workspace.members {
-            if member.contains('*') {
-                continue; // Skip glob patterns for simplicity
-            }
-            let member_path = workspace_root.join(member);
-            let member_cargo = member_path.join("Cargo.toml");
-            if let Ok(content) = std::fs::read_to_string(&member_cargo) {
-                if let Ok(member_manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                    if let Some(pkg) = &member_manifest.package {
-                        let bin_path = target_debug.join(&pkg.name);
-                        if bin_path.exists() {
-                            binaries.push(bin_path);
+            let member_paths: Vec<PathBuf> = if member.contains('*') {
+                // Expand glob patterns like "crates/*"
+                expand_workspace_glob(workspace_root, member)
+            } else {
+                vec![workspace_root.join(member)]
+            };
+
+            for member_path in member_paths {
+                let member_cargo = member_path.join("Cargo.toml");
+                if let Ok(content) = std::fs::read_to_string(&member_cargo) {
+                    if let Ok(member_manifest) =
+                        cargo_toml::Manifest::from_slice(content.as_bytes())
+                    {
+                        if let Some(pkg) = &member_manifest.package {
+                            let bin_path = target_debug.join(&pkg.name);
+                            if bin_path.exists() && !binaries.contains(&bin_path) {
+                                binaries.push(bin_path);
+                            }
                         }
                     }
                 }
@@ -401,6 +417,22 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
     }
 
     Ok(binaries)
+}
+
+/// Expand a workspace glob pattern like "crates/*" to actual paths
+fn expand_workspace_glob(workspace_root: &Path, pattern: &str) -> Vec<PathBuf> {
+    // Handle simple patterns like "crates/*" or "packages/*"
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        let dir = workspace_root.join(prefix);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            return entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir() && p.join("Cargo.toml").exists())
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 /// Run the LSP server
