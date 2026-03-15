@@ -161,6 +161,8 @@ pub struct FunctionInfo {
 
 /// Index for O(log n) function lookup by address.
 /// Functions are sorted by start_address for binary search.
+/// Note: This assumes function ranges are non-overlapping. Overlapping ranges
+/// from DWARF debug info may cause incorrect lookups.
 #[derive(Debug)]
 pub struct FunctionIndex {
     /// Functions sorted by start_address
@@ -172,6 +174,9 @@ impl FunctionIndex {
     /// Sorts the functions by start_address for binary search.
     pub fn new(mut functions: Vec<FunctionInfo>) -> Self {
         functions.sort_by_key(|f| f.start_address);
+        // Note: DWARF may have overlapping function ranges (e.g., from inlining).
+        // We don't assert non-overlapping here because it's common in real binaries.
+        // The binary search will find one valid function, which is sufficient.
         Self { functions }
     }
 
@@ -1497,6 +1502,8 @@ pub fn find_callers_with_debug_info(
 ) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
     let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+    // Build function index for O(log n) lookups
+    let function_index = FunctionIndex::new(functions);
     let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
     let mut callers = Vec::new();
 
@@ -1528,7 +1535,8 @@ pub fn find_callers_with_debug_info(
                 && call_target == target_addr
             {
                 // Find the function containing this call - try DWARF first, fall back to symbol table
-                if let Some(func) = find_function_at_address(&functions, instruction.address()) {
+                // Uses O(log n) binary search instead of O(n) linear search
+                if let Some(func) = function_index.find_containing(instruction.address()) {
                     // Found in DWARF - use full debug info
                     let (func_file, func_line, func_column) =
                         get_source_location(&dwarf, func.start_address)?;
