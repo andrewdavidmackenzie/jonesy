@@ -232,7 +232,32 @@ The `--tree` and `--summary-only` flags work with JSON output:
 - `--format json --tree` — Full hierarchical tree with `children` arrays
 - `--format json --summary-only` — Summary only, empty `panic_points` array
 
-**Note:** JSON output is not yet supported for workspace-level analysis or archives. Use it on individual crates.
+#### Workspace JSON Output
+
+For workspaces, JSON output uses schema version `1.1` with a hierarchical structure:
+
+```json
+{
+  "version": "1.1",
+  "jonesy_version": "0.4.0",
+  "workspace": {
+    "root": "/path/to/workspace",
+    "members": [
+      {
+        "name": "crate-a",
+        "path": "crate-a",
+        "summary": { "panic_points": 5, "files_affected": 2 },
+        "panic_points": [...]
+      }
+    ]
+  },
+  "summary": {
+    "total_panic_points": 8,
+    "total_files_affected": 3,
+    "members_analyzed": 2
+  }
+}
+```
 
 ### `--format html`
 
@@ -255,7 +280,7 @@ The `--tree` and `--summary-only` flags work with HTML output:
 - `--format html --tree` — Full hierarchical tree with nested children
 - `--format html --summary-only` — Summary statistics only, no panic point list
 
-**Note:** HTML output is not yet supported for workspace-level analysis or archives. Use it on individual crates.
+For workspaces, HTML output includes collapsible sections for each workspace member with individual summaries and panic points.
 
 ## Configuration
 

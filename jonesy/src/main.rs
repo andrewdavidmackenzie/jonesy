@@ -7,8 +7,10 @@ use crate::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use crate::config::Config;
-use crate::html_output::generate_html_output;
-use crate::json_output::generate_json_output;
+use crate::html_output::{generate_html_output, generate_workspace_html_output};
+use crate::json_output::{
+    WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
+};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
     find_symbol_containing, load_debug_info, read_symbols,
@@ -156,11 +158,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &parsed_args.output,
                 );
                 total_summary.add(&result.summary);
-                // Deduplicate code points across binaries using (file, line) as key
+                // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
                     let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
+                    if seen_code_points.insert(key.clone()) {
                         all_code_points.push(point);
+                    } else if let Some(existing) = all_code_points
+                        .iter_mut()
+                        .find(|p| p.file == key.0 && p.line == key.1)
+                    {
+                        existing.causes.extend(point.causes);
                     }
                 }
             }
@@ -170,24 +177,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             SymbolTable::Archive(archive) => {
-                // JSON/HTML output is not yet supported for archives
-                if parsed_args.output.is_json() || parsed_args.output.is_html() {
-                    let format = if parsed_args.output.is_json() {
-                        "json"
-                    } else {
-                        "html"
-                    };
-                    eprintln!(
-                        "Error: {} output (--format {}) is not yet supported for archives. \
-                        Use text output or analyze a binary instead.",
-                        format.to_uppercase(),
-                        format
-                    );
-                    std::process::exit(255);
-                }
                 // Use relocation-based analysis for library archives
                 let crate_src_path = derive_crate_src_path(&binary_path);
-                let summary = analyze_archive(
+                let result = analyze_archive(
                     &archive,
                     &binary_buffer,
                     &binary_path,
@@ -197,7 +189,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     project_root.as_deref(),
                     &parsed_args.output,
                 );
-                total_summary.add(&summary);
+                total_summary.add(&result.summary);
+                // Deduplicate code points across binaries, merging causes
+                for point in result.code_points {
+                    let key = (point.file.clone(), point.line);
+                    if seen_code_points.insert(key.clone()) {
+                        all_code_points.push(point);
+                    } else if let Some(existing) = all_code_points
+                        .iter_mut()
+                        .find(|p| p.file == key.0 && p.line == key.1)
+                    {
+                        existing.causes.extend(point.causes);
+                    }
+                }
             }
         }
 
@@ -290,6 +294,7 @@ impl BinaryAnalysisResult {
 
 /// Analyze a single MachO binary/object for panic points.
 /// Returns a summary of panic code points found, plus code points.
+#[allow(clippy::too_many_arguments)]
 fn analyze_macho(
     macho: &MachO,
     buffer: &[u8],
@@ -476,6 +481,8 @@ struct PanicCaller {
     name: String,
     line: u32,
     column: Option<u32>,
+    /// The panic symbol being called (e.g., "core::option::unwrap_failed")
+    target: String,
 }
 
 /// Check if a function name belongs to the standard library.
@@ -497,28 +504,36 @@ fn is_stdlib_function(name: &str) -> bool {
 
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
+#[allow(clippy::too_many_arguments)]
 fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
     _binary_path: &Path,
     crate_src_path: Option<&str>,
     show_timings: bool,
-    _config: &Config,
+    config: &Config,
     _project_root: Option<&Path>,
     output: &OutputFormat,
-) -> AnalysisSummary {
+) -> BinaryAnalysisResult {
     // See issue #56 for planned enhancements to these unused parameters
     use std::collections::HashSet;
 
     // Helper to check if a file path is within the crate/workspace scope
+    // Uses path prefix matching to avoid false positives from substring matching
     let file_in_scope = |file: &str| {
-        crate_src_path.map_or(true, |paths| {
-            paths.split('|').any(|p| !p.is_empty() && file.contains(p))
+        crate_src_path.is_none_or(|paths| {
+            let file = file.replace('\\', "/");
+            paths.split('|').any(|p| {
+                if p.is_empty() {
+                    return false;
+                }
+                // Match if file starts with pattern or contains /pattern
+                file.starts_with(p) || file.contains(&format!("/{}", p))
+            })
         })
     };
 
     let show_progress = output.show_progress();
-    let summary_only = output.is_summary_only();
     let total_start = Instant::now();
 
     if show_progress {
@@ -581,7 +596,7 @@ fn analyze_archive(
         if show_progress {
             println!("\nNo call graph data found in archive");
         }
-        return AnalysisSummary::default();
+        return BinaryAnalysisResult::empty();
     }
 
     // Find all callers of panic-related functions
@@ -635,6 +650,7 @@ fn analyze_archive(
                     name: caller_info.caller.name.clone(),
                     line,
                     column: caller_info.column,
+                    target: target_sym.to_string(),
                 });
             }
         }
@@ -649,30 +665,60 @@ fn analyze_archive(
         if show_progress {
             println!("\nNo panics in crate");
         }
-        return AnalysisSummary::default();
+        return BinaryAnalysisResult::empty();
     }
 
-    // Build the summary from collected panic points
-    let mut points: HashSet<(String, u32)> = HashSet::new();
-    let mut files_affected: HashSet<String> = HashSet::new();
-
+    // Convert PanicCaller to CrateCodePoint
     // Sort for deterministic output
     let mut sorted_callers: Vec<_> = panic_callers.into_iter().collect();
     sorted_callers.sort_by(|a, b| (&a.file, a.line, &a.name).cmp(&(&b.file, b.line, &b.name)));
 
-    // Collect points for summary
-    for caller in &sorted_callers {
-        points.insert((caller.file.clone(), caller.line));
-        files_affected.insert(caller.file.clone());
+    // Convert to CrateCodePoint structures with panic cause detection
+    let mut code_points: Vec<CrateCodePoint> = sorted_callers
+        .into_iter()
+        .map(|caller| {
+            let mut causes = std::collections::HashSet::new();
+            // Detect panic cause from the panic symbol being called (target),
+            // not from the user's function name (caller.name)
+            if let Some(cause) =
+                crate::panic_cause::detect_panic_cause(&caller.target, Some(&caller.file))
+            {
+                causes.insert(cause);
+            }
+            CrateCodePoint {
+                name: caller.name,
+                file: caller.file,
+                line: caller.line,
+                column: caller.column,
+                causes,
+                children: Vec::new(), // Archives don't have call tree hierarchy
+            }
+        })
+        .collect();
+
+    // Filter out code points whose causes are ALL allowed (not denied) by config
+    code_points.retain(|point| {
+        // Keep if no causes (conservative) or any denied cause
+        point.causes.is_empty() || point.causes.iter().any(|c| config.is_denied(c))
+    });
+
+    // Remove allowed causes, keeping only denied ones
+    for point in &mut code_points {
+        point.causes.retain(|c| config.is_denied(c));
     }
 
-    // Print details if not summary-only
-    if !summary_only {
-        println!("\nPanic code points in library:");
-        for caller in &sorted_callers {
-            // Output in format expected by test framework: " --> file:line:col"
-            let column = caller.column.unwrap_or(1);
-            println!(" --> {}:{}:{}", caller.file, caller.line, column);
+    // Deduplicate by (file, line)
+    let mut seen: std::collections::HashMap<(String, u32), usize> =
+        std::collections::HashMap::new();
+    let mut deduped: Vec<CrateCodePoint> = Vec::new();
+    for point in code_points {
+        let key = (point.file.clone(), point.line);
+        if let Some(&idx) = seen.get(&key) {
+            // Merge causes into existing point
+            deduped[idx].causes.extend(point.causes);
+        } else {
+            seen.insert(key, deduped.len());
+            deduped.push(point);
         }
     }
 
@@ -680,28 +726,23 @@ fn analyze_archive(
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
 
-    AnalysisSummary::from_points(points, files_affected)
+    // Build summary from code points
+    let mut points: HashSet<(String, u32)> = HashSet::new();
+    let mut files_affected: HashSet<String> = HashSet::new();
+    for point in &deduped {
+        points.insert((point.file.clone(), point.line));
+        files_affected.insert(point.file.clone());
+    }
+
+    BinaryAnalysisResult {
+        summary: AnalysisSummary::from_points(points, files_affected),
+        code_points: deduped,
+    }
 }
 
 /// Analyze a workspace with multiple member crates.
 /// Produces per-crate reports and an aggregate workspace summary.
 fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box<dyn Error>> {
-    // JSON/HTML output is not yet supported for workspaces
-    if args.output.is_json() || args.output.is_html() {
-        let format = if args.output.is_json() {
-            "json"
-        } else {
-            "html"
-        };
-        return Err(format!(
-            "{} output (--format {}) is not yet supported for workspaces. \
-            Use text output or analyze individual crates.",
-            format.to_uppercase(),
-            format
-        )
-        .into());
-    }
-
     let workspace_root = std::env::current_dir()?;
 
     if args.output.show_progress() {
@@ -712,7 +753,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
     }
 
     let mut workspace_summary = AnalysisSummary::default();
-    let mut crate_summaries: Vec<(String, AnalysisSummary)> = Vec::new();
+    let mut member_results: Vec<WorkspaceMemberResult> = Vec::new();
 
     // Collect all member source paths for filtering
     // File paths in debug info are relative like "crate_a/src/main.rs"
@@ -807,11 +848,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         &args.output,
                     );
                     member_summary.add(&result.summary);
-                    // Collect code points with deduplication
+                    // Collect code points with deduplication, merging causes
                     for point in result.code_points {
                         let key = (point.file.clone(), point.line);
-                        if seen_code_points.insert(key) {
+                        if seen_code_points.insert(key.clone()) {
                             member_code_points.push(point);
+                        } else if let Some(existing) = member_code_points
+                            .iter_mut()
+                            .find(|p| p.file == key.0 && p.line == key.1)
+                        {
+                            existing.causes.extend(point.causes);
                         }
                     }
                 }
@@ -822,7 +868,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 }
                 SymbolTable::Archive(archive) => {
                     // Use relocation-based analysis for consistent cross-object resolution
-                    let summary = analyze_archive(
+                    let result = analyze_archive(
                         &archive,
                         &binary_buffer,
                         &binary_path,
@@ -832,54 +878,98 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         Some(workspace_root.as_path()),
                         &args.output,
                     );
-                    member_summary.add(&summary);
+                    member_summary.add(&result.summary);
+                    // Collect code points with deduplication, merging causes
+                    for point in result.code_points {
+                        let key = (point.file.clone(), point.line);
+                        if seen_code_points.insert(key.clone()) {
+                            member_code_points.push(point);
+                        } else if let Some(existing) = member_code_points
+                            .iter_mut()
+                            .find(|p| p.file == key.0 && p.line == key.1)
+                        {
+                            existing.causes.extend(point.causes);
+                        }
+                    }
                 }
             }
         }
 
-        // Output code points for this member using text output
-        if !args.output.is_summary_only() {
-            let member_result = AnalysisResult::new(
-                member.name.clone(),
-                workspace_root.to_string_lossy().to_string(),
-                member_code_points,
-            );
-            let no_hyperlinks = !args.output.use_hyperlinks();
-            generate_text_output(
-                &member_result,
-                args.output.show_tree(),
-                false,
-                no_hyperlinks,
-            );
-        } else if args.output.show_progress() {
-            println!(
-                "Panic points: {} in {} file(s)\n",
-                member_summary.panic_points(),
-                member_summary.files_affected()
-            );
+        // For text output, print immediately; for JSON/HTML, collect for later
+        if args.output.is_text() {
+            if !args.output.is_summary_only() {
+                let member_result = AnalysisResult::new(
+                    member.name.clone(),
+                    workspace_root.to_string_lossy().to_string(),
+                    member_code_points.clone(),
+                );
+                let no_hyperlinks = !args.output.use_hyperlinks();
+                generate_text_output(
+                    &member_result,
+                    args.output.show_tree(),
+                    false,
+                    no_hyperlinks,
+                );
+            } else if args.output.show_progress() {
+                println!(
+                    "Panic points: {} in {} file(s)\n",
+                    member_summary.panic_points(),
+                    member_summary.files_affected()
+                );
+            }
         }
 
-        crate_summaries.push((member.name.clone(), member_summary.clone()));
+        // Store member results for workspace output
+        member_results.push(WorkspaceMemberResult {
+            name: member.name.clone(),
+            path: member.path.to_string_lossy().to_string(),
+            summary: member_summary.clone(),
+            code_points: member_code_points,
+        });
         workspace_summary.add(&member_summary);
     }
 
-    // Print workspace summary
-    println!("=== Workspace Summary (jonesy v{}) ===", VERSION);
-    println!("  Root: {}", workspace_root.display());
-    println!("  Members analyzed: {}", members.len());
-    for (name, summary) in &crate_summaries {
+    // Build workspace result
+    let workspace_result = WorkspaceResult {
+        root: workspace_root.to_string_lossy().to_string(),
+        members: member_results,
+        total_summary: workspace_summary.clone(),
+    };
+
+    let tree = args.output.show_tree();
+    let summary_only = args.output.is_summary_only();
+
+    // Output based on format
+    if args.output.is_json() {
+        match generate_workspace_json_output(&workspace_result, tree, summary_only) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("Error serializing JSON: {}", e);
+                std::process::exit(255);
+            }
+        }
+    } else if args.output.is_html() {
+        let html = generate_workspace_html_output(&workspace_result, tree, summary_only);
+        println!("{}", html);
+    } else {
+        // Text output: print workspace summary
+        println!("=== Workspace Summary (jonesy v{}) ===", VERSION);
+        println!("  Root: {}", workspace_root.display());
+        println!("  Members analyzed: {}", workspace_result.members.len());
+        for member in &workspace_result.members {
+            println!(
+                "    {}: {} panic point(s) in {} file(s)",
+                member.name,
+                member.summary.panic_points(),
+                member.summary.files_affected()
+            );
+        }
         println!(
-            "    {}: {} panic point(s) in {} file(s)",
-            name,
-            summary.panic_points(),
-            summary.files_affected()
+            "  Total panic points: {} across {} crate(s)",
+            workspace_summary.panic_points(),
+            members.len()
         );
     }
-    println!(
-        "  Total panic points: {} across {} crate(s)",
-        workspace_summary.panic_points(),
-        members.len()
-    );
 
     // Exit with the number of panic points found
     std::process::exit(workspace_summary.panic_points() as i32);
