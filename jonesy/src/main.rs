@@ -33,6 +33,7 @@ mod cargo;
 mod config;
 mod html_output;
 mod json_output;
+mod lsp;
 mod panic_cause;
 #[cfg(target_os = "macos")]
 mod sym;
@@ -45,6 +46,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("Error: {}", e);
         std::process::exit(255);
     });
+
+    // Handle LSP mode
+    if parsed_args.lsp_mode {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(lsp::run_lsp_server());
+        return Ok(());
+    }
 
     // Configure rayon thread pool with user-specified max threads
     rayon::ThreadPoolBuilder::new()

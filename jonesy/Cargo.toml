@@ -30,6 +30,8 @@ toml = "0.8"
 is-terminal = "0.4"
 url = "2"
 indicatif = "0.17"
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 wait-timeout = "0.2"
