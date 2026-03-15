@@ -143,6 +143,8 @@ pub(crate) struct Args {
     pub config_path: Option<PathBuf>,
     /// Output format and display options
     pub output: OutputFormat,
+    /// Run in LSP server mode
+    pub lsp_mode: bool,
 }
 
 /// The version of jonesy, read from Cargo.toml at compile time.
@@ -170,6 +172,19 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("jonesy {}", VERSION);
         std::process::exit(0);
+    }
+
+    // Check for lsp subcommand
+    if args.get(1).is_some_and(|a| a == "lsp") {
+        return Ok(Args {
+            binaries: Vec::new(),
+            workspace_members: None,
+            show_timings: false,
+            max_threads: 1,
+            config_path: None,
+            output: OutputFormat::default(),
+            lsp_mode: true,
+        });
     }
 
     // Check for flags
@@ -250,6 +265,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
         max_threads,
         config_path,
         output,
+        lsp_mode: false,
     })
 }
 
@@ -334,9 +350,12 @@ fn usage() -> String {
          Usage:\n  \
          jonesy [OPTIONS]\n  \
          jonesy [OPTIONS] --bin <name_or_path>\n  \
-         jonesy [OPTIONS] --lib [path_to_lib_object]\n\n\
+         jonesy [OPTIONS] --lib [path_to_lib_object]\n  \
+         jonesy lsp\n\n\
          When run without --bin or --lib, jonesy looks for Cargo.toml in the current\n\
          directory and analyzes all binary targets found in target/debug/.\n\n\
+         Subcommands:\n  \
+         lsp                Start LSP server for IDE integration\n\n\
          Options:\n  \
          --bin <name>       Analyze only the specified binary (by name or path)\n  \
          --lib              Analyze only the library target\n  \
