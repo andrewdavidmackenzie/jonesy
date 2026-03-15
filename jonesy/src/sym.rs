@@ -1179,16 +1179,24 @@ fn process_instruction_data_with_crate_table(
     // Uses O(log n) binary search instead of O(n) linear search
     if let Some(func) = function_index.find_containing(data.address) {
         // Found in DWARF - use full debug info
-        let (func_file, func_line, func_column) = source_cache
-            .entry(func.start_address)
-            .or_insert_with(|| {
-                get_source_location(dwarf, func.start_address).unwrap_or((None, None, None))
-            })
-            .clone();
-
-        let file = func.file.clone().or(func_file);
-        let mut line = func.line.or(func_line);
-        let mut column = func_column;
+        // Optimization: skip expensive get_source_location if func already has file and line
+        let (file, mut line, mut column) = if func.file.is_some() && func.line.is_some() {
+            // Fast path: use DWARF function info directly
+            (func.file.clone(), func.line, None)
+        } else {
+            // Slow path: need to look up source location
+            let (func_file, func_line, func_column) = source_cache
+                .entry(func.start_address)
+                .or_insert_with(|| {
+                    get_source_location(dwarf, func.start_address).unwrap_or((None, None, None))
+                })
+                .clone();
+            (
+                func.file.clone().or(func_file),
+                func.line.or(func_line),
+                func_column,
+            )
+        };
 
         // For functions in the crate source, find actual call line using pre-built table
         let file_in_crate = file.as_ref().is_some_and(|f| {
