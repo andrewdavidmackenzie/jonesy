@@ -159,6 +159,54 @@ pub struct FunctionInfo {
     pub line: Option<u32>,
 }
 
+/// Index for O(log n) function lookup by address.
+/// Functions are sorted by start_address for binary search.
+#[derive(Debug)]
+pub struct FunctionIndex {
+    /// Functions sorted by start_address
+    functions: Vec<FunctionInfo>,
+}
+
+impl FunctionIndex {
+    /// Build a function index from a list of functions.
+    /// Sorts the functions by start_address for binary search.
+    pub fn new(mut functions: Vec<FunctionInfo>) -> Self {
+        functions.sort_by_key(|f| f.start_address);
+        Self { functions }
+    }
+
+    /// Find the function containing the given address using binary search.
+    /// Returns a reference to the function if found.
+    pub fn find_containing(&self, addr: u64) -> Option<&FunctionInfo> {
+        if self.functions.is_empty() {
+            return None;
+        }
+
+        // Binary search for the largest start_address <= addr
+        let idx = match self
+            .functions
+            .binary_search_by_key(&addr, |f| f.start_address)
+        {
+            Ok(i) => i,            // Exact match on start_address
+            Err(0) => return None, // addr is before first function
+            Err(i) => i - 1,       // Use previous function
+        };
+
+        let func = &self.functions[idx];
+        // Check if addr is within this function's range
+        if addr >= func.start_address && addr < func.end_address {
+            Some(func)
+        } else {
+            None
+        }
+    }
+
+    /// Get a reference to the underlying functions slice.
+    pub fn functions(&self) -> &[FunctionInfo] {
+        &self.functions
+    }
+}
+
 /// Information about a call site
 #[derive(Debug, Clone, Default)]
 pub struct CallerInfo {
@@ -680,11 +728,14 @@ impl CallGraph {
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
         let functions = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        let num_functions = functions.len();
+        // Build function index for O(log n) lookups instead of O(n) linear search
+        let function_index = FunctionIndex::new(functions);
         if show_timings {
             eprintln!(
                 "    [cg timing] get_functions_from_dwarf: {:?} ({} functions)",
                 step.elapsed(),
-                functions.len()
+                num_functions
             );
         }
 
@@ -749,7 +800,7 @@ impl CallGraph {
             if let Some(call_target) = data.call_target
                 && let Some((target, caller_info)) = process_instruction_data_with_crate_table(
                     data,
-                    &functions,
+                    &function_index,
                     &dwarf,
                     crate_src_path,
                     &source_cache,
@@ -1115,7 +1166,7 @@ fn process_instruction_basic(
 /// Falls back to symbol table lookup if DWARF doesn't contain the function.
 fn process_instruction_data_with_crate_table(
     data: &InsnData,
-    functions: &[FunctionInfo],
+    function_index: &FunctionIndex,
     dwarf: &Dwarf<DwarfReader>,
     crate_src_path: Option<&str>,
     source_cache: &DashMap<u64, (Option<String>, Option<u32>, Option<u32>)>,
@@ -1125,7 +1176,8 @@ fn process_instruction_data_with_crate_table(
     let call_target = data.call_target?;
 
     // Find the function containing this call - try DWARF first, fall back to symbol table
-    if let Some(func) = find_function_at_address(functions, data.address) {
+    // Uses O(log n) binary search instead of O(n) linear search
+    if let Some(func) = function_index.find_containing(data.address) {
         // Found in DWARF - use full debug info
         let (func_file, func_line, func_column) = source_cache
             .entry(func.start_address)
