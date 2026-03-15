@@ -1470,19 +1470,6 @@ fn parse_function_die<R: Reader>(
     }
 }
 
-/// Find which function contains a given address
-pub fn find_function_at_address(functions: &[FunctionInfo], addr: u64) -> Option<&FunctionInfo> {
-    functions
-        .iter()
-        .find(|f| addr >= f.start_address && addr < f.end_address)
-}
-
-/// Build address-to-function lookup for efficient queries
-pub fn build_function_lookup(functions: &[FunctionInfo]) -> HashMap<u64, &FunctionInfo> {
-    // For quick lookups, you might want an interval tree in production
-    // This simple version just maps low_pc to function
-    functions.iter().map(|f| (f.start_address, f)).collect()
-}
 /// Find all functions that call a target address, with source info
 ///
 /// # Arguments
