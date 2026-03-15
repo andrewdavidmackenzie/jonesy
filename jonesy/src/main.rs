@@ -471,6 +471,8 @@ struct PanicCaller {
     name: String,
     line: u32,
     column: Option<u32>,
+    /// The panic symbol being called (e.g., "core::option::unwrap_failed")
+    target: String,
 }
 
 /// Check if a function name belongs to the standard library.
@@ -629,6 +631,7 @@ fn analyze_archive(
                     name: caller_info.caller.name.clone(),
                     line,
                     column: caller_info.column,
+                    target: target_sym.to_string(),
                 });
             }
         }
@@ -656,9 +659,10 @@ fn analyze_archive(
         .into_iter()
         .map(|caller| {
             let mut causes = std::collections::HashSet::new();
-            // Detect panic cause from function name and file path
+            // Detect panic cause from the panic symbol being called (target),
+            // not from the user's function name (caller.name)
             if let Some(cause) =
-                crate::panic_cause::detect_panic_cause(&caller.name, Some(&caller.file))
+                crate::panic_cause::detect_panic_cause(&caller.target, Some(&caller.file))
             {
                 causes.insert(cause);
             }

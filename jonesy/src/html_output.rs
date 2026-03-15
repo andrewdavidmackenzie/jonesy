@@ -493,6 +493,21 @@ pub fn generate_workspace_html_output(
             margin-bottom: 1.5rem;
             border: 1px solid var(--border);
         }}
+        .member-section > summary {{
+            list-style: none;
+        }}
+        .member-section > summary::-webkit-details-marker {{
+            display: none;
+        }}
+        .member-section > summary::before {{
+            content: "▼ ";
+            font-size: 0.75rem;
+            margin-right: 0.5rem;
+            transition: transform 0.2s;
+        }}
+        .member-section:not([open]) > summary::before {{
+            content: "▶ ";
+        }}
         .member-header {{
             display: flex;
             justify-content: space-between;
@@ -662,8 +677,8 @@ pub fn generate_workspace_html_output(
         };
 
         html.push_str(&format!(
-            r#"        <div class="member-section">
-            <div class="member-header">
+            r#"        <details class="member-section" open>
+            <summary class="member-header">
                 <div>
                     <span class="member-name">{}</span>
                     <span class="member-path">{}</span>
@@ -672,7 +687,7 @@ pub fn generate_workspace_html_output(
                     <span><span class="count {}">{}</span> panic points</span>
                     <span><span class="count {}">{}</span> files</span>
                 </div>
-            </div>
+            </summary>
 "#,
             escape_html(&member.name),
             escape_html(&member.path),
@@ -710,7 +725,7 @@ pub fn generate_workspace_html_output(
             );
         }
 
-        html.push_str("        </div>\n");
+        html.push_str("        </details>\n");
     }
 
     // Footer
