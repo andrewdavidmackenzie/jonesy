@@ -508,9 +508,8 @@ fn analyze_archive(
 
     // Helper to check if a file path is within the crate/workspace scope
     let file_in_scope = |file: &str| {
-        crate_src_path.is_none_or(|paths| {
-            paths.split('|').any(|p| !p.is_empty() && file.contains(p))
-        })
+        crate_src_path
+            .is_none_or(|paths| paths.split('|').any(|p| !p.is_empty() && file.contains(p)))
     };
 
     let show_progress = output.show_progress();
