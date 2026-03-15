@@ -158,11 +158,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &parsed_args.output,
                 );
                 total_summary.add(&result.summary);
-                // Deduplicate code points across binaries using (file, line) as key
+                // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
                     let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
+                    if seen_code_points.insert(key.clone()) {
                         all_code_points.push(point);
+                    } else if let Some(existing) = all_code_points
+                        .iter_mut()
+                        .find(|p| p.file == key.0 && p.line == key.1)
+                    {
+                        existing.causes.extend(point.causes);
                     }
                 }
             }
@@ -185,11 +190,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &parsed_args.output,
                 );
                 total_summary.add(&result.summary);
-                // Deduplicate code points across binaries using (file, line) as key
+                // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
                     let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
+                    if seen_code_points.insert(key.clone()) {
                         all_code_points.push(point);
+                    } else if let Some(existing) = all_code_points
+                        .iter_mut()
+                        .find(|p| p.file == key.0 && p.line == key.1)
+                    {
+                        existing.causes.extend(point.causes);
                     }
                 }
             }
@@ -509,9 +519,18 @@ fn analyze_archive(
     use std::collections::HashSet;
 
     // Helper to check if a file path is within the crate/workspace scope
+    // Uses path prefix matching to avoid false positives from substring matching
     let file_in_scope = |file: &str| {
-        crate_src_path
-            .is_none_or(|paths| paths.split('|').any(|p| !p.is_empty() && file.contains(p)))
+        crate_src_path.is_none_or(|paths| {
+            let file = file.replace('\\', "/");
+            paths.split('|').any(|p| {
+                if p.is_empty() {
+                    return false;
+                }
+                // Match if file starts with pattern or contains /pattern
+                file.starts_with(p) || file.contains(&format!("/{}", p))
+            })
+        })
     };
 
     let show_progress = output.show_progress();
@@ -829,11 +848,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         &args.output,
                     );
                     member_summary.add(&result.summary);
-                    // Collect code points with deduplication
+                    // Collect code points with deduplication, merging causes
                     for point in result.code_points {
                         let key = (point.file.clone(), point.line);
-                        if seen_code_points.insert(key) {
+                        if seen_code_points.insert(key.clone()) {
                             member_code_points.push(point);
+                        } else if let Some(existing) = member_code_points
+                            .iter_mut()
+                            .find(|p| p.file == key.0 && p.line == key.1)
+                        {
+                            existing.causes.extend(point.causes);
                         }
                     }
                 }
@@ -855,11 +879,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         &args.output,
                     );
                     member_summary.add(&result.summary);
-                    // Collect code points with deduplication
+                    // Collect code points with deduplication, merging causes
                     for point in result.code_points {
                         let key = (point.file.clone(), point.line);
-                        if seen_code_points.insert(key) {
+                        if seen_code_points.insert(key.clone()) {
                             member_code_points.push(point);
+                        } else if let Some(existing) = member_code_points
+                            .iter_mut()
+                            .find(|p| p.file == key.0 && p.line == key.1)
+                        {
+                            existing.causes.extend(point.causes);
                         }
                     }
                 }
