@@ -3,11 +3,36 @@
 //! This module generates machine-readable JSON output directly from AnalysisResult.
 
 use crate::args::VERSION;
-use crate::call_tree::{AnalysisResult, CrateCodePoint};
+use crate::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use serde_json::{Value, json};
 
-/// Schema version for JSON output format
+/// Schema version for JSON output format (single crate)
 pub const JSON_SCHEMA_VERSION: &str = "1.0";
+
+/// Schema version for workspace JSON output format
+pub const JSON_WORKSPACE_SCHEMA_VERSION: &str = "1.1";
+
+/// A workspace member's analysis result for JSON/HTML output
+pub struct WorkspaceMemberResult {
+    /// Name of the member crate
+    pub name: String,
+    /// Relative path to the member crate
+    pub path: String,
+    /// Analysis summary for this member
+    pub summary: AnalysisSummary,
+    /// Panic code points found in this member
+    pub code_points: Vec<CrateCodePoint>,
+}
+
+/// Complete workspace analysis results
+pub struct WorkspaceResult {
+    /// Root path of the workspace
+    pub root: String,
+    /// Results for each member crate
+    pub members: Vec<WorkspaceMemberResult>,
+    /// Aggregate summary across all members
+    pub total_summary: AnalysisSummary,
+}
 
 /// Generate JSON output from analysis results.
 ///
@@ -105,4 +130,55 @@ fn make_absolute_path(file: &str, project_root: &str) -> String {
     } else {
         format!("{}/{}", project_root.trim_end_matches('/'), file)
     }
+}
+
+/// Generate JSON output from workspace analysis results.
+///
+/// When `summary_only` is true, the panic_points arrays will be empty.
+/// When `tree` is true, includes the full call tree with children.
+pub fn generate_workspace_json_output(
+    result: &WorkspaceResult,
+    tree: bool,
+    summary_only: bool,
+) -> Result<String, serde_json::Error> {
+    let members: Vec<Value> = result
+        .members
+        .iter()
+        .map(|m| {
+            let panic_points: Vec<Value> = if summary_only {
+                Vec::new()
+            } else {
+                m.code_points
+                    .iter()
+                    .map(|p| code_point_to_json(p, &result.root, tree))
+                    .collect()
+            };
+
+            json!({
+                "name": m.name,
+                "path": m.path,
+                "summary": {
+                    "panic_points": m.summary.panic_points(),
+                    "files_affected": m.summary.files_affected(),
+                },
+                "panic_points": panic_points,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "version": JSON_WORKSPACE_SCHEMA_VERSION,
+        "jonesy_version": VERSION,
+        "workspace": {
+            "root": result.root,
+            "members": members,
+        },
+        "summary": {
+            "total_panic_points": result.total_summary.panic_points(),
+            "total_files_affected": result.total_summary.files_affected(),
+            "members_analyzed": result.members.len(),
+        },
+    });
+
+    serde_json::to_string_pretty(&output)
 }

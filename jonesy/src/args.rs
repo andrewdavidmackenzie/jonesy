@@ -1,5 +1,5 @@
 use cargo_toml::Manifest;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Output format and display configuration for analysis results.
 /// Consolidates format selection with display options.
@@ -72,6 +72,11 @@ impl OutputFormat {
     /// Returns true if this is HTML output
     pub fn is_html(&self) -> bool {
         matches!(self, OutputFormat::Html { .. })
+    }
+
+    /// Returns true if this is text output
+    pub fn is_text(&self) -> bool {
+        matches!(self, OutputFormat::Text { .. })
     }
 
     /// Returns true if progress messages should be shown
@@ -519,7 +524,7 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
 fn collect_binaries_from_manifest(
     manifest: &Manifest,
     pkg_name: &str,
-    target_dir: &PathBuf,
+    target_dir: &Path,
 ) -> Vec<PathBuf> {
     let mut binaries = Vec::new();
 

@@ -28,6 +28,9 @@ use std::{fs, io};
 
 type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 
+/// Source location tuple: (file, line, column)
+type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
+
 /// Check if a file path matches a crate source pattern.
 /// Supports multi-pattern format with "|" separator for workspace mode.
 pub fn matches_crate_pattern(file_path: &str, crate_pattern: &str) -> bool {
@@ -797,7 +800,7 @@ impl CallGraph {
         // Cache source location lookups since many instructions are in the same function
         let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
-        let source_cache: DashMap<u64, (Option<String>, Option<u32>, Option<u32>)> = DashMap::new();
+        let source_cache: DashMap<u64, SourceLocation> = DashMap::new();
         // Precompute symbol index once for efficient fallback lookups
         let symbol_index = SymbolIndex::new(binary_macho);
 
@@ -1056,11 +1059,11 @@ impl LibraryCallGraph {
                         let (file, line, column) = line_lookup
                             .as_ref()
                             .and_then(|lt| lt.lookup(call_site_addr))
-                            .unwrap_or_else(|| (None, None, None));
+                            .unwrap_or((None, None, None));
 
                         // If call site points to library code, try the function start
                         // address as fallback (the caller function is in user code)
-                        let (file, line, column) = if file.as_ref().map_or(false, |f| {
+                        let (file, line, column) = if file.as_ref().is_some_and(|f| {
                             f.starts_with("/rustc/")
                                 || f.contains("/.cargo/")
                                 || f.contains("/deps/")
@@ -1069,7 +1072,7 @@ impl LibraryCallGraph {
                             line_lookup
                                 .as_ref()
                                 .and_then(|lt| lt.lookup(func_addr))
-                                .unwrap_or_else(|| (None, None, None))
+                                .unwrap_or((None, None, None))
                         } else {
                             (file, line, column)
                         };
@@ -1174,7 +1177,7 @@ fn process_instruction_data_with_crate_table(
     function_index: &FunctionIndex,
     dwarf: &Dwarf<DwarfReader>,
     crate_src_path: Option<&str>,
-    source_cache: &DashMap<u64, (Option<String>, Option<u32>, Option<u32>)>,
+    source_cache: &DashMap<u64, SourceLocation>,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&SymbolIndex>,
 ) -> Option<(u64, CallerInfo)> {
@@ -1586,7 +1589,7 @@ pub fn find_callers_with_debug_info(
 fn get_source_location<R: Reader>(
     dwarf: &Dwarf<R>,
     addr: u64,
-) -> Result<(Option<String>, Option<u32>, Option<u32>), gimli::Error> {
+) -> Result<SourceLocation, gimli::Error> {
     let mut units = dwarf.units();
 
     while let Some(header) = units.next()? {

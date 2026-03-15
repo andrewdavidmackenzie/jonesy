@@ -5,6 +5,7 @@
 
 use crate::args::VERSION;
 use crate::call_tree::{AnalysisResult, CrateCodePoint};
+use crate::json_output::WorkspaceResult;
 
 /// Generate HTML output from analysis results.
 ///
@@ -404,4 +405,325 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Generate HTML output from workspace analysis results.
+///
+/// When `summary_only` is true, the panic points sections will be empty.
+/// When `tree` is true, includes the full call tree with children.
+pub fn generate_workspace_html_output(
+    result: &WorkspaceResult,
+    tree: bool,
+    summary_only: bool,
+) -> String {
+    let mut html = String::new();
+
+    // HTML header with inline CSS (extended for workspace)
+    html.push_str(&format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jonesy Workspace Report</title>
+    <style>
+        :root {{
+            --bg-color: #1a1a2e;
+            --card-bg: #16213e;
+            --text-color: #eee;
+            --text-muted: #888;
+            --accent: #e94560;
+            --accent-light: #ff6b6b;
+            --link-color: #4dabf7;
+            --success: #51cf66;
+            --warning: #fcc419;
+            --border: #2a2a4a;
+            --member-bg: #1e2a45;
+        }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            padding: 2rem;
+        }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        header {{
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 1rem;
+            margin-bottom: 2rem;
+        }}
+        h1 {{
+            font-size: 2rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+        h1 .logo {{ color: var(--accent); }}
+        .subtitle {{ color: var(--text-muted); margin-top: 0.25rem; }}
+        .summary {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }}
+        .stat-card {{
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 1.25rem;
+            border: 1px solid var(--border);
+        }}
+        .stat-card .label {{ color: var(--text-muted); font-size: 0.875rem; }}
+        .stat-card .value {{ font-size: 1.75rem; font-weight: 700; margin-top: 0.25rem; }}
+        .stat-card .value.zero {{ color: var(--success); }}
+        .stat-card .value.nonzero {{ color: var(--accent); }}
+        .section-title {{
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 1.5rem 0 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }}
+        .member-section {{
+            background: var(--member-bg);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--border);
+        }}
+        .member-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            cursor: pointer;
+        }}
+        .member-name {{
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--link-color);
+        }}
+        .member-path {{
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+        }}
+        .member-stats {{
+            display: flex;
+            gap: 1rem;
+            font-size: 0.875rem;
+        }}
+        .member-stats .count {{ font-weight: 600; }}
+        .member-stats .count.zero {{ color: var(--success); }}
+        .member-stats .count.nonzero {{ color: var(--accent); }}
+        .member-content {{
+            margin-top: 1rem;
+        }}
+        .panic-list {{ list-style: none; }}
+        .panic-item {{
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 0.75rem;
+            overflow: hidden;
+        }}
+        .panic-header {{
+            padding: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem 1rem;
+            align-items: baseline;
+        }}
+        .file-link {{
+            color: var(--link-color);
+            text-decoration: none;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.9rem;
+        }}
+        .file-link:hover {{ text-decoration: underline; }}
+        .function-name {{
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }}
+        .cause-badge {{
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }}
+        .cause-details {{
+            background: rgba(0,0,0,0.2);
+            padding: 0.75rem 1rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.875rem;
+        }}
+        .suggestion {{
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }}
+        .suggestion::before {{ content: "Suggestion: "; font-weight: 500; }}
+        .warning {{
+            color: var(--warning);
+            margin-top: 0.25rem;
+        }}
+        .warning::before {{ content: "Warning: "; font-weight: 500; }}
+        .children {{
+            margin-left: 1.5rem;
+            padding: 0.5rem 0 0.5rem 1rem;
+            border-left: 2px solid var(--border);
+        }}
+        .child-item {{
+            padding: 0.5rem 0;
+        }}
+        .no-panics {{
+            text-align: center;
+            padding: 2rem;
+            color: var(--success);
+            font-size: 1rem;
+        }}
+        footer {{
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            text-align: center;
+        }}
+        @media (max-width: 600px) {{
+            body {{ padding: 1rem; }}
+            h1 {{ font-size: 1.5rem; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><span class="logo">Jonesy</span> Workspace Report</h1>
+            <p class="subtitle">{}</p>
+        </header>
+"#,
+        escape_html(&result.root)
+    ));
+
+    // Summary section
+    let total_panic_points = result.total_summary.panic_points();
+    let total_files = result.total_summary.files_affected();
+    let value_class = if total_panic_points == 0 {
+        "zero"
+    } else {
+        "nonzero"
+    };
+    html.push_str(&format!(
+        r#"        <div class="summary">
+            <div class="stat-card">
+                <div class="label">Total Panic Points</div>
+                <div class="value {}">{}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Total Files Affected</div>
+                <div class="value {}">{}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Members Analyzed</div>
+                <div class="value">{}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Jonesy Version</div>
+                <div class="value" style="font-size: 1rem;">{}</div>
+            </div>
+        </div>
+"#,
+        value_class,
+        total_panic_points,
+        value_class,
+        total_files,
+        result.members.len(),
+        VERSION
+    ));
+
+    // Members section
+    html.push_str(
+        r#"        <h2 class="section-title">Workspace Members</h2>
+"#,
+    );
+
+    for member in &result.members {
+        let member_panic_points = member.summary.panic_points();
+        let member_files = member.summary.files_affected();
+        let count_class = if member_panic_points == 0 {
+            "zero"
+        } else {
+            "nonzero"
+        };
+
+        html.push_str(&format!(
+            r#"        <div class="member-section">
+            <div class="member-header">
+                <div>
+                    <span class="member-name">{}</span>
+                    <span class="member-path">{}</span>
+                </div>
+                <div class="member-stats">
+                    <span><span class="count {}">{}</span> panic points</span>
+                    <span><span class="count {}">{}</span> files</span>
+                </div>
+            </div>
+"#,
+            escape_html(&member.name),
+            escape_html(&member.path),
+            count_class,
+            member_panic_points,
+            count_class,
+            member_files
+        ));
+
+        // Member content
+        let code_points = if summary_only {
+            &[][..]
+        } else {
+            &member.code_points[..]
+        };
+
+        if code_points.is_empty() && member_panic_points == 0 {
+            html.push_str(
+                r#"            <div class="no-panics">No panic points found in this crate</div>
+"#,
+            );
+        } else if !code_points.is_empty() {
+            html.push_str(
+                r#"            <div class="member-content">
+                <ul class="panic-list">
+"#,
+            );
+            for point in code_points {
+                render_panic_point(&mut html, point, &result.root, tree, 1);
+            }
+            html.push_str(
+                r#"                </ul>
+            </div>
+"#,
+            );
+        }
+
+        html.push_str("        </div>\n");
+    }
+
+    // Footer
+    html.push_str(&format!(
+        r#"        <footer>
+            Generated by <a href="https://github.com/andrewdavidmackenzie/jonesy" style="color: var(--link-color);">Jonesy</a> v{}
+        </footer>
+    </div>
+</body>
+</html>
+"#,
+        VERSION
+    ));
+
+    html
 }
