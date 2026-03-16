@@ -32,6 +32,7 @@ url = "2"
 indicatif = "0.17"
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
+glob = "0.3"
 
 [dev-dependencies]
 wait-timeout = "0.2"

@@ -471,20 +471,20 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
     Ok(binaries)
 }
 
-/// Expand a workspace glob pattern like "crates/*" to actual paths
+/// Expand a workspace glob pattern like "crates/*" or "crates/**" to actual paths
 fn expand_workspace_glob(workspace_root: &Path, pattern: &str) -> Vec<PathBuf> {
-    // Handle simple patterns like "crates/*" or "packages/*"
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        let dir = workspace_root.join(prefix);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            return entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.is_dir() && p.join("Cargo.toml").exists())
-                .collect();
-        }
+    // Build full glob pattern rooted at workspace
+    let full_pattern = workspace_root.join(pattern);
+    let pattern_str = full_pattern.to_string_lossy();
+
+    // Use glob to expand the pattern
+    match glob::glob(&pattern_str) {
+        Ok(paths) => paths
+            .filter_map(|p| p.ok())
+            .filter(|p| p.is_dir() && p.join("Cargo.toml").exists())
+            .collect(),
+        Err(_) => Vec::new(),
     }
-    Vec::new()
 }
 
 /// Run the LSP server
