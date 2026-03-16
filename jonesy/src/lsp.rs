@@ -101,8 +101,18 @@ impl JonesyLspServer {
 
         let state = self.state.read().await;
         let Some(workspace_root) = &state.workspace_root else {
+            self.client
+                .log_message(MessageType::WARNING, "No workspace root set")
+                .await;
             return false;
         };
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Analyzing workspace: {}", workspace_root.display()),
+            )
+            .await;
 
         // Run jonesy analysis on the workspace
         let analysis_result = tokio::task::spawn_blocking({
@@ -117,6 +127,13 @@ impl JonesyLspServer {
                 .await;
             return false;
         };
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Found {} panic points", code_points.len()),
+            )
+            .await;
 
         // Group code points by file
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
@@ -161,7 +178,13 @@ impl JonesyLspServer {
         }
 
         self.client
-            .log_message(MessageType::INFO, "Jonesy analysis complete")
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "Jonesy analysis complete: published diagnostics for {} files",
+                    new_files.len()
+                ),
+            )
             .await;
         true
     }
@@ -260,11 +283,10 @@ impl LanguageServer for JonesyLspServer {
 
 /// Run jonesy analysis on the given workspace root
 fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint>, String> {
-    use crate::args::OutputFormat;
     use crate::call_tree::{
         CallTreeNode, build_call_tree_parallel, collect_crate_code_points, prune_call_tree,
     };
-    use crate::cargo::{derive_crate_src_path, find_project_root};
+    use crate::cargo::derive_crate_src_path;
     use crate::config::Config;
     use crate::sym::{
         CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
@@ -285,7 +307,9 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
 
     let config =
         Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());
-    let _output = OutputFormat::text(false, false, true, false); // Quiet mode (for future use)
+
+    // Use workspace root as the filter path so we capture all workspace crates
+    let workspace_root_str = workspace_root.to_string_lossy().to_string();
 
     for binary_path in binaries {
         let Ok(binary_buffer) = std::fs::read(&binary_path) else {
@@ -300,8 +324,8 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
             continue;
         };
 
+        // derive_crate_src_path used for debug info loading
         let crate_src_path = derive_crate_src_path(&binary_path);
-        let _project_root = find_project_root(&binary_path);
 
         // Find panic symbol
         const PANIC_PATTERNS: &[&str] = &["rust_panic$", "panic_fmt$", "panic_display"];
@@ -363,16 +387,14 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
         visited.insert(target_addr);
         root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
 
-        // Prune and collect code points
-        if let Some(crate_path) = crate_src_path.as_deref() {
-            prune_call_tree(&mut root, crate_path);
-            let (code_points, _) = collect_crate_code_points(&root, crate_path, &config);
+        // Prune and collect code points using workspace root to capture all workspace crates
+        prune_call_tree(&mut root, &workspace_root_str);
+        let (code_points, _) = collect_crate_code_points(&root, &workspace_root_str, &config);
 
-            for point in code_points {
-                let key = (point.file.clone(), point.line, point.column.unwrap_or(0));
-                if seen.insert(key) {
-                    all_code_points.push(point);
-                }
+        for point in code_points {
+            let key = (point.file.clone(), point.line, point.column.unwrap_or(0));
+            if seen.insert(key) {
+                all_code_points.push(point);
             }
         }
     }
