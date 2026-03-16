@@ -121,7 +121,7 @@ impl JonesyLspServer {
         })
         .await;
 
-        let Ok(Ok(code_points)) = analysis_result else {
+        let Ok(Ok(result)) = analysis_result else {
             self.client
                 .log_message(MessageType::ERROR, "Failed to run jonesy analysis")
                 .await;
@@ -131,9 +131,22 @@ impl JonesyLspServer {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("Found {} panic points", code_points.len()),
+                format!(
+                    "Analyzed {} binaries: {}",
+                    result.binaries_analyzed.len(),
+                    result.binaries_analyzed.join(", ")
+                ),
             )
             .await;
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Found {} panic points", result.code_points.len()),
+            )
+            .await;
+
+        let code_points = result.code_points;
 
         // Group code points by file
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
@@ -315,8 +328,14 @@ impl LanguageServer for JonesyLspServer {
     }
 }
 
+/// Result of running analysis
+struct AnalysisResult {
+    code_points: Vec<CrateCodePoint>,
+    binaries_analyzed: Vec<String>,
+}
+
 /// Run jonesy analysis on the given workspace root
-fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint>, String> {
+fn run_analysis(workspace_root: &Path) -> std::result::Result<AnalysisResult, String> {
     use crate::call_tree::{
         CallTreeNode, build_call_tree_parallel, collect_crate_code_points, prune_call_tree,
     };
@@ -333,8 +352,15 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
     // Find binaries to analyze
     let binaries = find_workspace_binaries(workspace_root)?;
     if binaries.is_empty() {
-        return Ok(Vec::new());
+        return Err("No binaries found in target/debug".to_string());
     }
+
+    // Log which binaries we're analyzing (will be shown by caller)
+    let binary_names: Vec<_> = binaries
+        .iter()
+        .filter_map(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .collect();
 
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut seen: std::collections::HashSet<(String, u32, u32)> = std::collections::HashSet::new();
@@ -433,7 +459,10 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
         }
     }
 
-    Ok(all_code_points)
+    Ok(AnalysisResult {
+        code_points: all_code_points,
+        binaries_analyzed: binary_names,
+    })
 }
 
 /// Find binary files in the workspace
