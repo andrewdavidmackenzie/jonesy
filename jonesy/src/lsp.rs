@@ -161,12 +161,23 @@ impl JonesyLspServer {
 
         // Publish diagnostics for each file
         let new_files: std::collections::HashSet<_> = points_by_file.keys().cloned().collect();
-        for (uri, points) in points_by_file {
+        for (uri, points) in &points_by_file {
             let diagnostics: Vec<Diagnostic> =
                 points.iter().map(Self::code_point_to_diagnostic).collect();
 
             self.client
-                .publish_diagnostics(uri, diagnostics, None)
+                .log_message(
+                    MessageType::LOG,
+                    format!(
+                        "Publishing {} diagnostics to {}",
+                        diagnostics.len(),
+                        uri.path()
+                    ),
+                )
+                .await;
+
+            self.client
+                .publish_diagnostics(uri.clone(), diagnostics, None)
                 .await;
         }
 
@@ -222,6 +233,7 @@ impl LanguageServer for JonesyLspServer {
                     commands: vec!["jonesy.analyze".to_string()],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -266,6 +278,28 @@ impl LanguageServer for JonesyLspServer {
     async fn did_change_watched_files(&self, _params: DidChangeWatchedFilesParams) {
         // Re-analyze when watched files change (e.g., binaries in target/)
         self.analyze_and_publish().await;
+    }
+
+    async fn code_action(
+        &self,
+        _params: CodeActionParams,
+    ) -> Result<Option<CodeActionResponse>> {
+        // Provide a code action to manually trigger analysis
+        let action = CodeAction {
+            title: "Run Jonesy Panic Analysis".to_string(),
+            kind: Some(CodeActionKind::SOURCE),
+            diagnostics: None,
+            edit: None,
+            command: Some(Command {
+                title: "Run Jonesy Panic Analysis".to_string(),
+                command: "jonesy.analyze".to_string(),
+                arguments: None,
+            }),
+            is_preferred: Some(false),
+            disabled: None,
+            data: None,
+        };
+        Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]))
     }
 
     async fn execute_command(
