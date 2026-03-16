@@ -221,6 +221,18 @@ impl LanguageServer for JonesyLspServer {
         Ok(())
     }
 
+    async fn did_open(&self, _params: DidOpenTextDocumentParams) {
+        // No-op: we analyze binaries, not source text
+    }
+
+    async fn did_change(&self, _params: DidChangeTextDocumentParams) {
+        // No-op: we analyze binaries, not source text
+    }
+
+    async fn did_close(&self, _params: DidCloseTextDocumentParams) {
+        // No-op: we don't track open documents
+    }
+
     async fn did_save(&self, _params: DidSaveTextDocumentParams) {
         // Re-analyze on file save
         // Note: This triggers on any file save, which may be slow
