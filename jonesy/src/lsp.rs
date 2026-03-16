@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -35,6 +35,8 @@ impl ServerState {
 pub struct JonesyLspServer {
     client: Client,
     state: Arc<RwLock<ServerState>>,
+    /// Lock to serialize analysis runs and prevent out-of-order diagnostics
+    analysis_lock: Arc<Mutex<()>>,
 }
 
 impl JonesyLspServer {
@@ -42,6 +44,7 @@ impl JonesyLspServer {
         Self {
             client,
             state: Arc::new(RwLock::new(ServerState::new())),
+            analysis_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -92,6 +95,9 @@ impl JonesyLspServer {
 
     /// Analyze the workspace and publish diagnostics
     async fn analyze_and_publish(&self) {
+        // Serialize analysis runs to prevent out-of-order diagnostics
+        let _guard = self.analysis_lock.lock().await;
+
         let state = self.state.read().await;
         let Some(workspace_root) = &state.workspace_root else {
             return;
@@ -114,12 +120,13 @@ impl JonesyLspServer {
         // Group code points by file
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         for point in code_points {
-            let file_path = if point.file.starts_with('/') {
-                PathBuf::from(&point.file)
+            let raw_path = PathBuf::from(&point.file);
+            let file_path = if raw_path.is_absolute() {
+                raw_path
             } else if let Some(root) = &state.workspace_root {
-                root.join(&point.file)
+                root.join(raw_path)
             } else {
-                PathBuf::from(&point.file)
+                raw_path
             };
 
             if let Ok(uri) = Url::from_file_path(&file_path) {
@@ -171,8 +178,14 @@ impl LanguageServer for JonesyLspServer {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::INCREMENTAL),
+                        will_save: None,
+                        will_save_wait_until: None,
+                        save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                    },
                 )),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["jonesy.analyze".to_string()],
@@ -248,7 +261,7 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
     }
 
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(String, u32, u32)> = std::collections::HashSet::new();
 
     let config =
         Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());
@@ -336,7 +349,7 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<Vec<CrateCodePoint
             let (code_points, _) = collect_crate_code_points(&root, crate_path, &config);
 
             for point in code_points {
-                let key = (point.file.clone(), point.line);
+                let key = (point.file.clone(), point.line, point.column.unwrap_or(0));
                 if seen.insert(key) {
                     all_code_points.push(point);
                 }
@@ -405,9 +418,19 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
                         cargo_toml::Manifest::from_slice(content.as_bytes())
                     {
                         if let Some(pkg) = &member_manifest.package {
-                            let bin_path = target_debug.join(&pkg.name);
-                            if bin_path.exists() && !binaries.contains(&bin_path) {
-                                binaries.push(bin_path);
+                            // Default binary
+                            let default_bin = target_debug.join(&pkg.name);
+                            if default_bin.exists() && !binaries.contains(&default_bin) {
+                                binaries.push(default_bin);
+                            }
+
+                            // Explicit [[bin]] targets
+                            for bin in &member_manifest.bin {
+                                let bin_name = bin.name.as_deref().unwrap_or(&pkg.name);
+                                let bin_path = target_debug.join(bin_name);
+                                if bin_path.exists() && !binaries.contains(&bin_path) {
+                                    binaries.push(bin_path);
+                                }
                             }
                         }
                     }
