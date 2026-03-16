@@ -534,7 +534,7 @@ Alternatively, create a `.idea/lsp.json` file in your project:
 }
 ```
 
-After configuration, jonesy diagnostics will appear alongside rust-analyzer's analysis.
+After adding the file, restart RustRover or reopen the project for the configuration to take effect. Jonesy diagnostics will then appear alongside rust-analyzer's analysis.
 
 ### Other Editors
 
