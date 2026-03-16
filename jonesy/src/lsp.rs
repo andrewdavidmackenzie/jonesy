@@ -94,13 +94,14 @@ impl JonesyLspServer {
     }
 
     /// Analyze the workspace and publish diagnostics
-    async fn analyze_and_publish(&self) {
+    /// Returns true if analysis succeeded, false otherwise
+    async fn analyze_and_publish(&self) -> bool {
         // Serialize analysis runs to prevent out-of-order diagnostics
         let _guard = self.analysis_lock.lock().await;
 
         let state = self.state.read().await;
         let Some(workspace_root) = &state.workspace_root else {
-            return;
+            return false;
         };
 
         // Run jonesy analysis on the workspace
@@ -114,7 +115,7 @@ impl JonesyLspServer {
             self.client
                 .log_message(MessageType::ERROR, "Failed to run jonesy analysis")
                 .await;
-            return;
+            return false;
         };
 
         // Group code points by file
@@ -162,18 +163,27 @@ impl JonesyLspServer {
         self.client
             .log_message(MessageType::INFO, "Jonesy analysis complete")
             .await;
+        true
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for JonesyLspServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        // Store workspace root
-        if let Some(root_uri) = params.root_uri {
-            if let Ok(path) = root_uri.to_file_path() {
-                let mut state = self.state.write().await;
-                state.workspace_root = Some(path);
-            }
+        // Store workspace root - try root_uri first, then fallback to workspace_folders
+        let workspace_path = if let Some(root_uri) = params.root_uri {
+            root_uri.to_file_path().ok()
+        } else if let Some(folders) = params.workspace_folders {
+            folders
+                .first()
+                .and_then(|f| f.uri.to_file_path().ok())
+        } else {
+            None
+        };
+
+        if let Some(path) = workspace_path {
+            let mut state = self.state.write().await;
+            state.workspace_root = Some(path);
         }
 
         Ok(InitializeResult {
@@ -230,8 +240,8 @@ impl LanguageServer for JonesyLspServer {
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
         if params.command == "jonesy.analyze" {
-            self.analyze_and_publish().await;
-            Ok(Some(serde_json::json!({"success": true})))
+            let success = self.analyze_and_publish().await;
+            Ok(Some(serde_json::json!({"success": success})))
         } else {
             Ok(None)
         }
@@ -381,22 +391,39 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
 
     let mut binaries = Vec::new();
 
+    // Helper to find binary with optional .exe extension on Windows
+    let find_binary = |dir: &Path, name: &str| -> Option<PathBuf> {
+        let path = dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+        // On Windows, also check for .exe extension
+        #[cfg(windows)]
+        {
+            let exe_path = path.with_extension("exe");
+            if exe_path.exists() {
+                return Some(exe_path);
+            }
+        }
+        None
+    };
+
     // Check for package binaries
     if let Some(pkg) = &manifest.package {
         let pkg_name = &pkg.name;
 
         // Default binary
-        let default_bin = target_debug.join(pkg_name);
-        if default_bin.exists() {
+        if let Some(default_bin) = find_binary(&target_debug, pkg_name) {
             binaries.push(default_bin);
         }
 
         // Explicit [[bin]] targets
         for bin in &manifest.bin {
             let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
-            let bin_path = target_debug.join(bin_name);
-            if bin_path.exists() && !binaries.contains(&bin_path) {
-                binaries.push(bin_path);
+            if let Some(bin_path) = find_binary(&target_debug, bin_name) {
+                if !binaries.contains(&bin_path) {
+                    binaries.push(bin_path);
+                }
             }
         }
     }
@@ -419,17 +446,19 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
                     {
                         if let Some(pkg) = &member_manifest.package {
                             // Default binary
-                            let default_bin = target_debug.join(&pkg.name);
-                            if default_bin.exists() && !binaries.contains(&default_bin) {
-                                binaries.push(default_bin);
+                            if let Some(default_bin) = find_binary(&target_debug, &pkg.name) {
+                                if !binaries.contains(&default_bin) {
+                                    binaries.push(default_bin);
+                                }
                             }
 
                             // Explicit [[bin]] targets
                             for bin in &member_manifest.bin {
                                 let bin_name = bin.name.as_deref().unwrap_or(&pkg.name);
-                                let bin_path = target_debug.join(bin_name);
-                                if bin_path.exists() && !binaries.contains(&bin_path) {
-                                    binaries.push(bin_path);
+                                if let Some(bin_path) = find_binary(&target_debug, bin_name) {
+                                    if !binaries.contains(&bin_path) {
+                                        binaries.push(bin_path);
+                                    }
                                 }
                             }
                         }
