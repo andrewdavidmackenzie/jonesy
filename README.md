@@ -508,6 +508,34 @@ After installing an LSP client extension, configure it in `.vscode/settings.json
 
 The exact configuration varies by extension. The key is to run `jonesy lsp` and associate it with Rust files.
 
+### RustRover / IntelliJ Setup
+
+RustRover and IntelliJ IDEA with the Rust plugin support external LSP servers:
+
+1. Go to **Settings** → **Languages & Frameworks** → **LSP**
+2. Click **+** to add a new server
+3. Configure:
+   - **Name**: `jonesy`
+   - **Command**: `jonesy lsp`
+   - **File patterns**: `*.rs`
+4. Click **OK** to save
+
+Alternatively, create a `.idea/lsp.json` file in your project:
+
+```json
+{
+  "servers": [
+    {
+      "name": "jonesy",
+      "command": ["jonesy", "lsp"],
+      "languages": ["rust"]
+    }
+  ]
+}
+```
+
+After configuration, jonesy diagnostics will appear alongside rust-analyzer's analysis.
+
 ### Other Editors
 
 The LSP server works with any editor that supports the Language Server Protocol:
