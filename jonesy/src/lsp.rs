@@ -174,9 +174,7 @@ impl LanguageServer for JonesyLspServer {
         let workspace_path = if let Some(root_uri) = params.root_uri {
             root_uri.to_file_path().ok()
         } else if let Some(folders) = params.workspace_folders {
-            folders
-                .first()
-                .and_then(|f| f.uri.to_file_path().ok())
+            folders.first().and_then(|f| f.uri.to_file_path().ok())
         } else {
             None
         };
