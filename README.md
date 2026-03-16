@@ -522,13 +522,17 @@ RustRover and IntelliJ IDEA require the [LSP4IJ plugin](https://plugins.jetbrain
 
 1. Go to **Settings** → **Languages & Frameworks** → **Language Servers**
 2. Click **+** to add a new server
-3. Configure:
+3. In the **Server** tab:
    - **Name**: `jonesy`
    - **Command**: `jonesy lsp`
-   - **File mappings**: Add `*.rs`
-4. Click **OK** to save
+4. In the **Mappings** tab, add a file name pattern:
+   - Click **+** in the file name patterns section
+   - Add `*.rs`
+5. Click **OK** to save
 
-The IDE will automatically start `jonesy lsp` when you open Rust files. Jonesy diagnostics will appear alongside rust-analyzer's analysis.
+The configuration is stored at the application level, so jonesy will be available in all your Rust projects. The IDE will automatically start `jonesy lsp` when you open Rust files. Jonesy diagnostics will appear alongside rust-analyzer's analysis.
+
+**Note:** The configuration is stored in `~/Library/Application Support/JetBrains/<version>/options/UserDefinedLanguageServerSettings.xml` on macOS. Project-level `.idea/lsp.json` files are not supported by LSP4IJ.
 
 ### Other Editors
 
