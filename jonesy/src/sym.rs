@@ -1342,9 +1342,9 @@ fn process_instruction_data_with_crate_table(
         .map(|(addr, name)| (addr, name.to_string()))
     {
         // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
-        // Use pre-built full line table for O(log n) lookup
-        let (file, line, column) = full_line_table.get_source_location(func_addr);
-
+        // Don't use line table for source location - addresses outside DWARF functions
+        // would incorrectly get source info from adjacent functions.
+        // These are typically stdlib internals that we don't need source info for anyway.
         Some((
             call_target,
             CallerInfo {
@@ -1354,9 +1354,9 @@ fn process_instruction_data_with_crate_table(
                     ..Default::default()
                 },
                 call_site_addr: data.address,
-                file,
-                line,
-                column,
+                file: None,
+                line: None,
+                column: None,
             },
         ))
     } else {

@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-17
 **Jonesy Version:** 0.5.0
-**Workspace:** /Users/amackenz/workspace/flow
+**Workspace:** flow (https://github.com/andrewdavidmackenzie/flow)
 **Platform:** macOS ARM64 (Apple Silicon)
 
 ## Summary
