@@ -147,26 +147,35 @@ impl CrateLineTable {
     }
 }
 
-/// A line entry for full source location lookups (includes file path).
+/// A line entry for full source location lookups.
+/// Uses file_id for string interning to reduce memory pressure.
 #[derive(Debug, Clone)]
 pub struct FullLineEntry {
     pub address: u64,
-    pub file: String,
+    /// Index into FullLineTable's file_pool for the file path
+    file_id: u32,
     pub line: u32,
     pub column: Option<u32>,
 }
 
 /// Pre-built line table containing ALL line entries, sorted by address.
-/// Used for fast O(log n) source location lookups instead of O(n) DWARF traversal.
+/// Uses string interning for file paths to reduce memory pressure.
+/// Instead of storing 1M+ duplicate path strings, stores file IDs that
+/// index into a deduplicated file pool.
 #[derive(Debug)]
 pub struct FullLineTable {
     entries: Vec<FullLineEntry>,
+    /// Deduplicated file path pool
+    file_pool: Vec<String>,
 }
 
 impl FullLineTable {
     /// Build a complete line table from DWARF debug info.
+    /// Uses string interning to deduplicate file paths and reduce memory usage.
     pub fn build<R: Reader>(dwarf: &Dwarf<R>) -> Result<Self, gimli::Error> {
         let mut entries = Vec::new();
+        let mut file_pool = Vec::new();
+        let mut file_to_id: HashMap<String, u32> = HashMap::new();
 
         let mut units = dwarf.units();
         while let Some(header) = units.next()? {
@@ -196,6 +205,13 @@ impl FullLineTable {
                             file_name
                         };
 
+                        // Intern the file path to reduce memory usage
+                        let file_id = *file_to_id.entry(full_path.clone()).or_insert_with(|| {
+                            let id = file_pool.len() as u32;
+                            file_pool.push(full_path);
+                            id
+                        });
+
                         // Include all entries, even without line numbers (use 0 like original)
                         // to match the original get_source_location behavior
                         let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
@@ -205,7 +221,7 @@ impl FullLineTable {
                         };
                         entries.push(FullLineEntry {
                             address: row.address(),
-                            file: full_path,
+                            file_id,
                             line,
                             column,
                         });
@@ -217,7 +233,7 @@ impl FullLineTable {
         // Sort by address for binary search (stable sort preserves unit order)
         entries.sort_by_key(|e| e.address);
 
-        Ok(Self { entries })
+        Ok(Self { entries, file_pool })
     }
 
     /// Get source location for an address using binary search.
@@ -237,7 +253,9 @@ impl FullLineTable {
                 first_idx -= 1;
             }
             let entry = &self.entries[first_idx];
-            (Some(entry.file.clone()), Some(entry.line), entry.column)
+            // Look up file path from the interned pool
+            let file = self.file_pool.get(entry.file_id as usize).cloned();
+            (file, Some(entry.line), entry.column)
         } else {
             (None, None, None)
         }
