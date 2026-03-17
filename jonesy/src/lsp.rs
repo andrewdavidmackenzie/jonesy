@@ -250,12 +250,8 @@ impl JonesyLspServer {
         // Create progress indicator for IDE status bar
         let progress_token = self.create_progress().await;
         if let Some(ref token) = progress_token {
-            self.progress_begin(
-                token,
-                "Panic Analysis",
-                Some("Discovering workspace..."),
-            )
-            .await;
+            self.progress_begin(token, "Panic Analysis", Some("Discovering workspace..."))
+                .await;
         }
 
         // Get src_filter for filtering to workspace source files
