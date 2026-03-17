@@ -196,37 +196,47 @@ impl FullLineTable {
                             file_name
                         };
 
-                        if let Some(line) = row.line() {
-                            let column = match row.column() {
-                                ColumnType::LeftEdge => None,
-                                ColumnType::Column(c) => Some(c.get() as u32),
-                            };
-                            entries.push(FullLineEntry {
-                                address: row.address(),
-                                file: full_path,
-                                line: line.get() as u32,
-                                column,
-                            });
-                        }
+                        // Include all entries, even without line numbers (use 0 like original)
+                        // to match the original get_source_location behavior
+                        let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
+                        let column = match row.column() {
+                            ColumnType::LeftEdge => None,
+                            ColumnType::Column(c) => Some(c.get() as u32),
+                        };
+                        entries.push(FullLineEntry {
+                            address: row.address(),
+                            file: full_path,
+                            line,
+                            column,
+                        });
                     }
                 }
             }
         }
 
-        // Sort by address for binary search
+        // Sort by address for binary search (stable sort preserves unit order)
         entries.sort_by_key(|e| e.address);
 
         Ok(Self { entries })
     }
 
     /// Get source location for an address using binary search.
-    /// Returns the last entry whose address <= the query address.
+    /// Returns the entry whose address is <= the query address.
+    /// For entries with the same address, returns the first one (from earliest unit,
+    /// matching original get_source_location behavior).
     pub fn get_source_location(&self, addr: u64) -> SourceLocation {
         // Find the first entry with address > addr
         let idx = self.entries.partition_point(|e| e.address <= addr);
 
         if idx > 0 {
-            let entry = &self.entries[idx - 1];
+            // Found an entry with address <= addr. Now find the FIRST entry at this address.
+            // (stable sort preserves unit order, so first entry = earliest unit)
+            let target_addr = self.entries[idx - 1].address;
+            let mut first_idx = idx - 1;
+            while first_idx > 0 && self.entries[first_idx - 1].address == target_addr {
+                first_idx -= 1;
+            }
+            let entry = &self.entries[first_idx];
             (Some(entry.file.clone()), Some(entry.line), entry.column)
         } else {
             (None, None, None)
@@ -925,10 +935,7 @@ impl CallGraph {
             }
         });
         if show_timings {
-            eprintln!(
-                "    [cg timing] process instructions: {:?}",
-                step.elapsed(),
-            );
+            eprintln!("    [cg timing] process instructions: {:?}", step.elapsed(),);
         }
 
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
