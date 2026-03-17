@@ -250,7 +250,7 @@ impl JonesyLspServer {
         // Create progress indicator for IDE status bar
         let progress_token = self.create_progress().await;
         if let Some(ref token) = progress_token {
-            self.progress_begin(token, "Panic Analysis", Some("Discovering workspace..."))
+            self.progress_begin(token, "Panic Analysis", Some("Analyzing targets..."))
                 .await;
         }
 
@@ -287,7 +287,7 @@ impl JonesyLspServer {
 
             // Update progress indicator
             if let Some(ref token) = progress_token {
-                let percentage = ((target_idx * 100) / total_targets) as u32;
+                let percentage = (((target_idx + 1) * 100) / total_targets) as u32;
                 self.progress_report(
                     token,
                     &format!(
