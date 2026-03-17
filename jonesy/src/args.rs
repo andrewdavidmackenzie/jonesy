@@ -64,6 +64,16 @@ impl OutputFormat {
         OutputFormat::Html { tree, summary_only }
     }
 
+    /// Create a quiet text output format (for LSP/programmatic use)
+    pub fn quiet() -> Self {
+        OutputFormat::Text {
+            tree: false,
+            summary_only: false,
+            quiet: true,
+            hyperlinks: false,
+        }
+    }
+
     /// Returns true if this is JSON output
     pub fn is_json(&self) -> bool {
         matches!(self, OutputFormat::Json { .. })

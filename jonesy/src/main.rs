@@ -286,9 +286,9 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
 }
 
 /// Result of analyzing a single binary, includes summary and optionally code points.
-struct BinaryAnalysisResult {
-    summary: AnalysisSummary,
-    code_points: Vec<CrateCodePoint>,
+pub(crate) struct BinaryAnalysisResult {
+    pub summary: AnalysisSummary,
+    pub code_points: Vec<CrateCodePoint>,
 }
 
 impl BinaryAnalysisResult {
@@ -303,7 +303,7 @@ impl BinaryAnalysisResult {
 /// Analyze a single MachO binary/object for panic points.
 /// Returns a summary of panic code points found, plus code points.
 #[allow(clippy::too_many_arguments)]
-fn analyze_macho(
+pub(crate) fn analyze_macho(
     macho: &MachO,
     buffer: &[u8],
     binary_path: &Path,
@@ -513,7 +513,7 @@ fn is_stdlib_function(name: &str) -> bool {
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
 #[allow(clippy::too_many_arguments)]
-fn analyze_archive(
+pub(crate) fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
     _binary_path: &Path,

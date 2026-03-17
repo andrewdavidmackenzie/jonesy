@@ -532,24 +532,18 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     })
 }
 
-/// Analyze a single target (binary or library) and return panic points
+/// Analyze a single target (binary or library) and return panic points.
+/// This reuses the same analysis functions as the CLI for consistency.
 fn analyze_single_target(
     target_path: &Path,
     workspace_root: &Path,
     src_filter: &str,
 ) -> std::result::Result<Vec<CrateCodePoint>, String> {
-    use crate::call_tree::{
-        CallTreeNode, build_call_tree_parallel, collect_crate_code_points, prune_call_tree,
-    };
-    use crate::cargo::derive_crate_src_path;
+    use crate::args::OutputFormat;
     use crate::config::Config;
-    use crate::sym::{
-        CallGraph, DebugInfo, SymbolTable, find_symbol_address, find_symbol_containing,
-        load_debug_info, read_symbols,
-    };
-    use dashmap::DashSet;
+    use crate::sym::{SymbolTable, read_symbols};
+    use crate::{analyze_archive, analyze_macho};
     use goblin::mach::Mach::Binary;
-    use std::sync::Arc;
 
     let binary_buffer =
         std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
@@ -557,82 +551,44 @@ fn analyze_single_target(
     let symbols =
         read_symbols(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;
 
-    let SymbolTable::MachO(Binary(macho)) = symbols else {
-        return Err("Not a Mach-O binary (may be archive/rlib)".to_string());
-    };
-
     let config =
         Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());
 
-    // derive_crate_src_path used for debug info loading
-    let crate_src_path = derive_crate_src_path(target_path);
+    // Use quiet output format (no progress display in LSP)
+    let output = OutputFormat::quiet();
 
-    // Find panic symbol
-    const PANIC_PATTERNS: &[&str] = &["rust_panic$", "panic_fmt$", "panic_display"];
-    let mut target_addr = 0u64;
-    let mut demangled = String::new();
-
-    for pattern in PANIC_PATTERNS {
-        if let Ok(Some((sym, dem))) = find_symbol_containing(&macho, pattern) {
-            if let Some((_, addr)) = find_symbol_address(&macho, &sym) {
-                target_addr = addr;
-                demangled = dem;
-                break;
-            }
+    match symbols {
+        SymbolTable::MachO(Binary(macho)) => {
+            let result = analyze_macho(
+                &macho,
+                &binary_buffer,
+                target_path,
+                Some(src_filter),
+                false, // show_timings
+                &config,
+                Some(workspace_root),
+                &output,
+            );
+            Ok(result.code_points)
+        }
+        SymbolTable::MachO(_) => {
+            // Fat binary - not currently supported in LSP
+            Err("Fat binary not supported".to_string())
+        }
+        SymbolTable::Archive(archive) => {
+            let result = analyze_archive(
+                &archive,
+                &binary_buffer,
+                target_path,
+                Some(src_filter),
+                false, // show_timings
+                &config,
+                Some(workspace_root),
+                &output,
+            );
+            Ok(result.code_points)
         }
     }
-
-    if target_addr == 0 {
-        return Err("No panic symbol found".to_string());
-    }
-
-    // Load debug info and build call graph
-    let debug_info = load_debug_info(&macho, target_path, true);
-    let call_graph = match &debug_info {
-        DebugInfo::Embedded => CallGraph::build_with_debug_info(
-            &macho,
-            &binary_buffer,
-            &macho,
-            &binary_buffer,
-            crate_src_path.as_deref(),
-            false,
-        )
-        .unwrap_or_else(|_| {
-            CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
-        }),
-        DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
-            if let Binary(debug_mach) = debug_macho {
-                CallGraph::build_with_debug_info(
-                    &macho,
-                    &binary_buffer,
-                    debug_mach,
-                    dsym_info.borrow_debug_buffer(),
-                    crate_src_path.as_deref(),
-                    false,
-                )
-                .unwrap_or_else(|_| {
-                    CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
-                })
-            } else {
-                CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
-            }
-        }),
-        _ => CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty()),
-    };
-
-    // Build call tree
-    let mut root = CallTreeNode::new_root(demangled);
-    let visited = Arc::new(DashSet::new());
-    visited.insert(target_addr);
-    root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
-
-    // Prune and collect code points using src_filter to capture all workspace crates
-    // The src_filter contains relative paths like "flowc/src/|flowr/src/|..." which match
-    // the relative paths in debug info
-    prune_call_tree(&mut root, src_filter);
-    let (code_points, _) = collect_crate_code_points(&root, src_filter, &config);
-
-    Ok(code_points)
 }
 
 /// Find binary and library files in the workspace
