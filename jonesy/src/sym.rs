@@ -147,6 +147,132 @@ impl CrateLineTable {
     }
 }
 
+/// A line entry for full source location lookups.
+/// Uses file_id for string interning to reduce memory pressure.
+#[derive(Debug, Clone)]
+pub struct FullLineEntry {
+    pub address: u64,
+    /// Index into FullLineTable's file_pool for the file path
+    file_id: u32,
+    pub line: u32,
+    pub column: Option<u32>,
+}
+
+/// Pre-built line table containing ALL line entries, sorted by address.
+/// Uses string interning for file paths to reduce memory pressure.
+/// Instead of storing 1M+ duplicate path strings, stores file IDs that
+/// index into a deduplicated file pool.
+#[derive(Debug)]
+pub struct FullLineTable {
+    entries: Vec<FullLineEntry>,
+    /// Deduplicated file path pool
+    file_pool: Vec<String>,
+}
+
+impl FullLineTable {
+    /// Build a complete line table from DWARF debug info.
+    /// Uses string interning to deduplicate file paths and reduce memory usage.
+    pub fn build<R: Reader>(dwarf: &Dwarf<R>) -> Result<Self, gimli::Error> {
+        let mut entries = Vec::new();
+        let mut file_pool = Vec::new();
+        let mut file_to_id: HashMap<String, u32> = HashMap::new();
+
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+
+            if let Some(program) = &unit.line_program {
+                let mut rows = program.clone().rows();
+
+                while let Some((header, row)) = rows.next_row()? {
+                    if let Some(file_entry) = row.file(header) {
+                        let file_name = dwarf
+                            .attr_string(&unit, file_entry.path_name())?
+                            .to_string_lossy()?
+                            .into_owned();
+
+                        let full_path = if let Some(dir) = file_entry.directory(header) {
+                            let dir_str = dwarf
+                                .attr_string(&unit, dir)?
+                                .to_string_lossy()?
+                                .into_owned();
+                            if dir_str.is_empty() {
+                                file_name
+                            } else {
+                                format!("{}/{}", dir_str, file_name)
+                            }
+                        } else {
+                            file_name
+                        };
+
+                        // Intern the file path to reduce memory usage
+                        // Use two-step get/insert to avoid cloning on cache hits
+                        let file_id = if let Some(&id) = file_to_id.get(&full_path) {
+                            id
+                        } else {
+                            let id = file_pool.len() as u32;
+                            file_pool.push(full_path.clone());
+                            file_to_id.insert(full_path, id);
+                            id
+                        };
+
+                        // Include all entries, even without line numbers (use 0 like original)
+                        // to match the original get_source_location behavior
+                        let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
+                        let column = match row.column() {
+                            ColumnType::LeftEdge => None,
+                            ColumnType::Column(c) => Some(c.get() as u32),
+                        };
+                        entries.push(FullLineEntry {
+                            address: row.address(),
+                            file_id,
+                            line,
+                            column,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sort by address for binary search (stable sort preserves unit order)
+        entries.sort_by_key(|e| e.address);
+
+        Ok(Self { entries, file_pool })
+    }
+
+    /// Get source location for an address using binary search.
+    /// Returns the entry whose address is <= the query address.
+    /// For entries with the same address, returns the first one (from earliest unit,
+    /// matching original get_source_location behavior).
+    pub fn get_source_location(&self, addr: u64) -> SourceLocation {
+        // Find the first entry with address > addr
+        let idx = self.entries.partition_point(|e| e.address <= addr);
+
+        if idx > 0 {
+            // Found an entry with address <= addr. Now find the FIRST entry at this address.
+            // Use binary search to keep this O(log n) instead of linear scan.
+            let target_addr = self.entries[idx - 1].address;
+            let first_idx = self.entries[..idx].partition_point(|e| e.address < target_addr);
+            let entry = &self.entries[first_idx];
+            // Look up file path from the interned pool
+            let file = self.file_pool.get(entry.file_id as usize).cloned();
+            (file, Some(entry.line), entry.column)
+        } else {
+            (None, None, None)
+        }
+    }
+
+    /// Get the number of entries
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true if the table has no entries
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Function info extracted from DWARF of the calling function
 #[derive(Debug, Clone, Default)]
 pub struct FunctionInfo {
@@ -796,11 +922,20 @@ impl CallGraph {
             }
         }
 
+        // Pre-build full line table for O(log n) source location lookups
+        let step = Instant::now();
+        let full_line_table = FullLineTable::build(&dwarf)?;
+        if show_timings {
+            eprintln!(
+                "    [cg timing] build full line table: {:?} ({} entries)",
+                step.elapsed(),
+                full_line_table.len()
+            );
+        }
+
         // Process bl instructions in parallel
-        // Cache source location lookups since many instructions are in the same function
         let step = Instant::now();
         let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
-        let source_cache: DashMap<u64, SourceLocation> = DashMap::new();
         // Precompute symbol index once for efficient fallback lookups
         let symbol_index = SymbolIndex::new(binary_macho);
 
@@ -809,9 +944,8 @@ impl CallGraph {
                 && let Some((target, caller_info)) = process_instruction_data_with_crate_table(
                     data,
                     &function_index,
-                    &dwarf,
                     crate_src_path,
-                    &source_cache,
+                    &full_line_table,
                     crate_line_table.as_ref(),
                     symbol_index.as_ref(),
                 )
@@ -820,11 +954,7 @@ impl CallGraph {
             }
         });
         if show_timings {
-            eprintln!(
-                "    [cg timing] process instructions: {:?} (source_cache: {} entries)",
-                step.elapsed(),
-                source_cache.len(),
-            );
+            eprintln!("    [cg timing] process instructions: {:?}", step.elapsed(),);
         }
 
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
@@ -1170,14 +1300,13 @@ fn process_instruction_basic(
     ))
 }
 
-/// Process instruction data using pre-built crate line table for fast lookups.
+/// Process instruction data using pre-built line tables for fast O(log n) lookups.
 /// Falls back to symbol table lookup if DWARF doesn't contain the function.
 fn process_instruction_data_with_crate_table(
     data: &InsnData,
     function_index: &FunctionIndex,
-    dwarf: &Dwarf<DwarfReader>,
     crate_src_path: Option<&str>,
-    source_cache: &DashMap<u64, SourceLocation>,
+    full_line_table: &FullLineTable,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&SymbolIndex>,
 ) -> Option<(u64, CallerInfo)> {
@@ -1187,18 +1316,14 @@ fn process_instruction_data_with_crate_table(
     // Uses O(log n) binary search instead of O(n) linear search
     if let Some(func) = function_index.find_containing(data.address) {
         // Found in DWARF - use full debug info
-        // Optimization: skip expensive get_source_location if func already has file and line
+        // Get source location using O(log n) binary search on pre-built table
         let (file, mut line, mut column) = if func.file.is_some() && func.line.is_some() {
             // Fast path: use DWARF function info directly
             (func.file.clone(), func.line, None)
         } else {
-            // Slow path: need to look up source location
-            let (func_file, func_line, func_column) = source_cache
-                .entry(func.start_address)
-                .or_insert_with(|| {
-                    get_source_location(dwarf, func.start_address).unwrap_or((None, None, None))
-                })
-                .clone();
+            // Fast path: use pre-built full line table for O(log n) lookup
+            let (func_file, func_line, func_column) =
+                full_line_table.get_source_location(func.start_address);
             (
                 func.file.clone().or(func_file),
                 func.line.or(func_line),
@@ -1236,12 +1361,9 @@ fn process_instruction_data_with_crate_table(
         .map(|(addr, name)| (addr, name.to_string()))
     {
         // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
-        // Try to get source info from DWARF line tables
-        let (file, line, column) = source_cache
-            .entry(func_addr)
-            .or_insert_with(|| get_source_location(dwarf, func_addr).unwrap_or((None, None, None)))
-            .clone();
-
+        // Don't use line table for source location - addresses outside DWARF functions
+        // would incorrectly get source info from adjacent functions.
+        // These are typically stdlib internals that we don't need source info for anyway.
         Some((
             call_target,
             CallerInfo {
@@ -1251,9 +1373,9 @@ fn process_instruction_data_with_crate_table(
                     ..Default::default()
                 },
                 call_site_addr: data.address,
-                file,
-                line,
-                column,
+                file: None,
+                line: None,
+                column: None,
             },
         ))
     } else {
