@@ -99,12 +99,17 @@ impl JonesyLspServer {
         // Serialize analysis runs to prevent out-of-order diagnostics
         let _guard = self.analysis_lock.lock().await;
 
-        let state = self.state.read().await;
-        let Some(workspace_root) = &state.workspace_root else {
-            self.client
-                .log_message(MessageType::WARNING, "No workspace root set")
-                .await;
-            return false;
+        // Extract workspace root early and release state lock
+        let (workspace_root, target_dir) = {
+            let state = self.state.read().await;
+            let Some(root) = state.workspace_root.clone() else {
+                self.client
+                    .log_message(MessageType::WARNING, "No workspace root set")
+                    .await;
+                return false;
+            };
+            let target_dir = root.join("target").to_string_lossy().to_string();
+            (root, target_dir)
         };
 
         self.client
@@ -183,11 +188,13 @@ impl JonesyLspServer {
             .log_message(MessageType::LOG, format!("Source filter: {}", src_filter))
             .await;
 
-        // Analyze each target and log progress
-        let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
+        // Track all diagnostics by file URI (accumulates across targets)
+        let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         let mut seen: std::collections::HashSet<(String, u32, u32)> =
             std::collections::HashSet::new();
+        let mut total_points = 0usize;
 
+        // Analyze each target and publish diagnostics incrementally
         for target in &targets {
             let target_name = target
                 .file_name()
@@ -206,6 +213,7 @@ impl JonesyLspServer {
 
             match analysis_result {
                 Ok(Ok(points)) => {
+                    // Filter to new points only (dedup across targets)
                     let new_points: Vec<_> = points
                         .into_iter()
                         .filter(|p| {
@@ -213,17 +221,51 @@ impl JonesyLspServer {
                             seen.insert(key)
                         })
                         .collect();
+
+                    let point_count = new_points.len();
+                    total_points += point_count;
+
                     self.client
                         .log_message(
                             MessageType::INFO,
-                            format!(
-                                "  {} - found {} panic points",
-                                target_name,
-                                new_points.len()
-                            ),
+                            format!("  {} - {} new panic points", target_name, point_count),
                         )
                         .await;
-                    all_code_points.extend(new_points);
+
+                    // Group new points by file and publish incrementally
+                    let mut files_updated: std::collections::HashSet<Url> =
+                        std::collections::HashSet::new();
+
+                    for point in new_points {
+                        // Skip files in target/ directory
+                        if point.file.starts_with(&target_dir) {
+                            continue;
+                        }
+
+                        let raw_path = PathBuf::from(&point.file);
+                        let file_path = if raw_path.is_absolute() {
+                            raw_path
+                        } else {
+                            workspace_root.join(raw_path)
+                        };
+
+                        if let Ok(uri) = Url::from_file_path(&file_path) {
+                            files_updated.insert(uri.clone());
+                            points_by_file.entry(uri).or_default().push(point);
+                        }
+                    }
+
+                    // Publish updated diagnostics for files that changed
+                    for uri in files_updated {
+                        if let Some(points) = points_by_file.get(&uri) {
+                            let diagnostics: Vec<Diagnostic> =
+                                points.iter().map(Self::code_point_to_diagnostic).collect();
+
+                            self.client
+                                .publish_diagnostics(uri.clone(), diagnostics, None)
+                                .await;
+                        }
+                    }
                 }
                 Ok(Err(e)) => {
                     self.client
@@ -244,89 +286,12 @@ impl JonesyLspServer {
             }
         }
 
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("Total: {} panic points", all_code_points.len()),
-            )
-            .await;
-
-        let code_points = all_code_points;
-
-        // Group code points by file, excluding build artifacts in target/
-        let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
-        let target_dir = state
-            .workspace_root
-            .as_ref()
-            .map(|r| r.join("target").to_string_lossy().to_string());
-
-        for point in code_points {
-            // Skip files in target/ directory (build artifacts, generated code)
-            if let Some(ref target) = target_dir {
-                if point.file.starts_with(target) {
-                    continue;
-                }
-            }
-
-            let raw_path = PathBuf::from(&point.file);
-            let file_path = if raw_path.is_absolute() {
-                raw_path
-            } else if let Some(root) = &state.workspace_root {
-                root.join(raw_path)
-            } else {
-                raw_path
-            };
-
-            if let Ok(uri) = Url::from_file_path(&file_path) {
-                points_by_file.entry(uri).or_default().push(point);
-            }
-        }
-        drop(state);
-
-        // Update state and publish diagnostics
+        // Update state with final results
         let mut state = self.state.write().await;
         let old_files: std::collections::HashSet<_> = state.panic_points.keys().cloned().collect();
-        state.panic_points = points_by_file.clone();
-        drop(state);
-
-        // Publish diagnostics for each file
         let new_files: std::collections::HashSet<_> = points_by_file.keys().cloned().collect();
-        for (uri, points) in &points_by_file {
-            let diagnostics: Vec<Diagnostic> =
-                points.iter().map(Self::code_point_to_diagnostic).collect();
-
-            // Log diagnostic details for debugging
-            for (point, diag) in points.iter().zip(diagnostics.iter()) {
-                self.client
-                    .log_message(
-                        MessageType::LOG,
-                        format!(
-                            "  Diag: {}:{} col:{:?} -> LSP line:{} '{}'",
-                            uri.path().rsplit('/').next().unwrap_or("?"),
-                            point.line,
-                            point.column,
-                            diag.range.start.line,
-                            diag.message.lines().next().unwrap_or("")
-                        ),
-                    )
-                    .await;
-            }
-
-            self.client
-                .log_message(
-                    MessageType::LOG,
-                    format!(
-                        "Publishing {} diagnostics to {}",
-                        diagnostics.len(),
-                        uri.path()
-                    ),
-                )
-                .await;
-
-            self.client
-                .publish_diagnostics(uri.clone(), diagnostics, None)
-                .await;
-        }
+        state.panic_points = points_by_file;
+        drop(state);
 
         // Clear diagnostics for files that no longer have panic points
         for uri in old_files.difference(&new_files) {
@@ -339,7 +304,8 @@ impl JonesyLspServer {
             .log_message(
                 MessageType::INFO,
                 format!(
-                    "Jonesy analysis complete: published diagnostics for {} files",
+                    "Analysis complete: {} panic points in {} files",
+                    total_points,
                     new_files.len()
                 ),
             )
