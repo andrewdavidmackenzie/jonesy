@@ -777,10 +777,18 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
     if manifest.package.is_some() {
         // Complete the manifest to discover implicit targets (src/main.rs, src/lib.rs, etc.)
         let mut completed_manifest = manifest.clone();
-        let _ = completed_manifest.complete_from_path_and_workspace::<toml::Value>(
-            &cargo_toml,
-            None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
-        );
+        completed_manifest
+            .complete_from_path_and_workspace::<toml::Value>(
+                &cargo_toml,
+                None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to complete manifest {}: {}",
+                    cargo_toml.display(),
+                    e
+                )
+            })?;
         collect_binaries_from_manifest(&completed_manifest, &target_debug, &mut targets);
     }
 
@@ -796,21 +804,25 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
 
             for member_path in member_paths {
                 let member_cargo = member_path.join("Cargo.toml");
-                if let Ok(member_content) = std::fs::read_to_string(&member_cargo) {
-                    if let Ok(mut member_manifest) =
-                        cargo_toml::Manifest::from_slice(member_content.as_bytes())
-                    {
-                        // Complete the manifest to discover implicit targets
-                        let _ = member_manifest.complete_from_path_and_workspace(
-                            &member_cargo,
-                            Some((&manifest, cargo_toml.as_path())),
-                        );
-                        collect_binaries_from_manifest(
-                            &member_manifest,
-                            &target_debug,
-                            &mut targets,
-                        );
-                    }
+                let member_content = match std::fs::read_to_string(&member_cargo) {
+                    Ok(content) => content,
+                    Err(_) => continue, // Skip members we can't read
+                };
+                let mut member_manifest =
+                    match cargo_toml::Manifest::from_slice(member_content.as_bytes()) {
+                        Ok(m) => m,
+                        Err(_) => continue, // Skip members we can't parse
+                    };
+                // Complete the manifest to discover implicit targets
+                // Continue on error - don't let one bad member break the whole workspace
+                if member_manifest
+                    .complete_from_path_and_workspace(
+                        &member_cargo,
+                        Some((&manifest, cargo_toml.as_path())),
+                    )
+                    .is_ok()
+                {
+                    collect_binaries_from_manifest(&member_manifest, &target_debug, &mut targets);
                 }
             }
         }
