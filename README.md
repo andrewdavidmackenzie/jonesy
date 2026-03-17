@@ -567,6 +567,9 @@ The LSP server:
 2. Runs jonesy analysis on each binary
 3. Publishes diagnostics to the editor with file locations and panic causes
 4. Re-analyzes when files are saved
+5. Shows analysis progress in the IDE status bar (for IDEs that support LSP progress)
+
+The progress indicator shows which target is being analyzed (e.g., "Analyzing flowc (2/5)") and displays the final result ("Found 293 panic points in 42 files").
 
 Note: The LSP server runs alongside rust-analyzer—it doesn't replace it. You'll see both rust-analyzer's diagnostics and jonesy's panic point warnings.
 
