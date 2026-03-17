@@ -48,9 +48,10 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
 
     // For libraries, strip "lib" prefix (e.g., "liblibrary" -> "library")
     // Only strip for actual library artifacts to avoid renaming binaries like "libtool"
-    let is_library_artifact = binary_path
-        .extension()
-        .is_some_and(|ext| ext == "dylib" || ext == "rlib" || ext == "a");
+    // Matches all library extensions that find_library can return
+    let is_library_artifact = binary_path.extension().is_some_and(|ext| {
+        ext == "dylib" || ext == "so" || ext == "dll" || ext == "rlib" || ext == "a" || ext == "lib"
+    });
     let binary_name = if is_library_artifact {
         file_stem.strip_prefix("lib").unwrap_or(file_stem)
     } else {
@@ -328,6 +329,75 @@ pub fn detect_library_type(binary_path: &Path) -> Option<String> {
             }
         }
         current = dir.parent();
+    }
+    None
+}
+
+/// Find a binary artifact in the target directory.
+/// Handles platform-specific extensions (.exe on Windows).
+pub fn find_binary(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    if path.exists() {
+        return Some(path);
+    }
+    #[cfg(windows)]
+    {
+        let exe_path = path.with_extension("exe");
+        if exe_path.exists() {
+            return Some(exe_path);
+        }
+    }
+    None
+}
+
+/// Find a library artifact in the target directory.
+/// Handles platform-specific extensions (.dylib on macOS, .so on Linux, .dll on Windows).
+/// Falls back to .rlib if no dynamic library is found.
+pub fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
+    // Convert crate name to lib name (replace - with _)
+    let lib_name = name.replace('-', "_");
+
+    // Try platform-specific extensions
+    #[cfg(target_os = "macos")]
+    {
+        let dylib = dir.join(format!("lib{}.dylib", lib_name));
+        if dylib.exists() {
+            return Some(dylib);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let so = dir.join(format!("lib{}.so", lib_name));
+        if so.exists() {
+            return Some(so);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let dll = dir.join(format!("{}.dll", lib_name));
+        if dll.exists() {
+            return Some(dll);
+        }
+    }
+    // Also try .rlib (Rust static library)
+    let rlib = dir.join(format!("lib{}.rlib", lib_name));
+    if rlib.exists() {
+        return Some(rlib);
+    }
+    // Also try staticlib artifacts (.a on Unix, .lib on Windows)
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let staticlib = dir.join(format!("lib{}.a", lib_name));
+        if staticlib.exists() {
+            return Some(staticlib);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let staticlib = dir.join(format!("{}.lib", lib_name));
+        if staticlib.exists() {
+            return Some(staticlib);
+        }
     }
     None
 }

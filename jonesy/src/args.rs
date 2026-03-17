@@ -1,3 +1,4 @@
+use crate::cargo::{find_binary, find_library};
 use cargo_toml::Manifest;
 use std::path::{Path, PathBuf};
 
@@ -557,20 +558,12 @@ fn collect_binaries_from_manifest(
 ) -> Vec<PathBuf> {
     let mut binaries = Vec::new();
 
-    // Check for explicit [[bin]] targets
+    // Check for [[bin]] targets (populated by complete_from_path_and_workspace)
+    // No fallback probe needed - complete_from_path_and_workspace populates bin if there's a binary
     for bin in &manifest.bin {
         let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
-        let bin_path = target_dir.join(bin_name);
-        if bin_path.exists() {
+        if let Some(bin_path) = find_binary(target_dir, bin_name) {
             binaries.push(bin_path);
-        }
-    }
-
-    // Check for default binary (auto-detected by from_path)
-    if manifest.bin.is_empty() {
-        let default_bin = target_dir.join(pkg_name);
-        if default_bin.exists() {
-            binaries.push(default_bin);
         }
     }
 
@@ -582,13 +575,8 @@ fn collect_binaries_from_manifest(
             .and_then(|l| l.name.clone())
             .unwrap_or_else(|| pkg_name.replace('-', "_"));
 
-        let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
-        let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
-
-        if dylib_path.exists() {
-            binaries.push(dylib_path);
-        } else if rlib_path.exists() {
-            binaries.push(rlib_path);
+        if let Some(lib_path) = find_library(target_dir, &lib_name) {
+            binaries.push(lib_path);
         }
     }
 

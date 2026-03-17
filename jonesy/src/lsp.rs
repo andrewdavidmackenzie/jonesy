@@ -16,6 +16,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::call_tree::CrateCodePoint;
+use crate::cargo::{find_binary, find_library};
 
 /// Counter for generating unique progress tokens
 static PROGRESS_TOKEN_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -773,87 +774,23 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
 
     let mut targets = Vec::new();
 
-    // Helper to find binary with optional .exe extension on Windows
-    let find_binary = |dir: &Path, name: &str| -> Option<PathBuf> {
-        let path = dir.join(name);
-        if path.exists() {
-            return Some(path);
-        }
-        #[cfg(windows)]
-        {
-            let exe_path = path.with_extension("exe");
-            if exe_path.exists() {
-                return Some(exe_path);
-            }
-        }
-        None
-    };
-
-    // Helper to find library (.dylib on macOS, .so on Linux, .dll on Windows)
-    let find_library = |dir: &Path, name: &str| -> Option<PathBuf> {
-        // Convert crate name to lib name (replace - with _)
-        let lib_name = name.replace('-', "_");
-
-        // Try platform-specific extensions
-        #[cfg(target_os = "macos")]
-        {
-            let dylib = dir.join(format!("lib{}.dylib", lib_name));
-            if dylib.exists() {
-                return Some(dylib);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let so = dir.join(format!("lib{}.so", lib_name));
-            if so.exists() {
-                return Some(so);
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let dll = dir.join(format!("{}.dll", lib_name));
-            if dll.exists() {
-                return Some(dll);
-            }
-        }
-        // Also try .rlib (Rust static library)
-        let rlib = dir.join(format!("lib{}.rlib", lib_name));
-        if rlib.exists() {
-            return Some(rlib);
-        }
-        None
-    };
-
-    // Check for package binaries and libraries
-    if let Some(pkg) = &manifest.package {
-        let pkg_name = &pkg.name;
-
-        // Default binary
-        if let Some(default_bin) = find_binary(&target_debug, pkg_name) {
-            targets.push(default_bin);
-        }
-
-        // Explicit [[bin]] targets
-        for bin in &manifest.bin {
-            let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
-            if let Some(bin_path) = find_binary(&target_debug, bin_name) {
-                if !targets.contains(&bin_path) {
-                    targets.push(bin_path);
-                }
-            }
-        }
-
-        // Library target - use [lib] name if specified, otherwise package name
-        let lib_name = manifest
-            .lib
-            .as_ref()
-            .and_then(|lib| lib.name.as_deref())
-            .unwrap_or(pkg_name);
-        if let Some(lib_path) = find_library(&target_debug, lib_name) {
-            if !targets.contains(&lib_path) {
-                targets.push(lib_path);
-            }
-        }
+    // Check for package binaries and libraries (non-virtual workspace or single crate)
+    if manifest.package.is_some() {
+        // Complete the manifest to discover implicit targets (src/main.rs, src/lib.rs, etc.)
+        let mut completed_manifest = manifest.clone();
+        completed_manifest
+            .complete_from_path_and_workspace::<toml::Value>(
+                &cargo_toml,
+                None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to complete manifest {}: {}",
+                    cargo_toml.display(),
+                    e
+                )
+            })?;
+        collect_binaries_from_manifest(&completed_manifest, &target_debug, &mut targets);
     }
 
     // Check for workspace members
@@ -868,47 +805,77 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
 
             for member_path in member_paths {
                 let member_cargo = member_path.join("Cargo.toml");
-                if let Ok(content) = std::fs::read_to_string(&member_cargo) {
-                    if let Ok(member_manifest) =
-                        cargo_toml::Manifest::from_slice(content.as_bytes())
-                    {
-                        if let Some(pkg) = &member_manifest.package {
-                            // Default binary
-                            if let Some(default_bin) = find_binary(&target_debug, &pkg.name) {
-                                if !targets.contains(&default_bin) {
-                                    targets.push(default_bin);
-                                }
-                            }
-
-                            // Explicit [[bin]] targets
-                            for bin in &member_manifest.bin {
-                                let bin_name = bin.name.as_deref().unwrap_or(&pkg.name);
-                                if let Some(bin_path) = find_binary(&target_debug, bin_name) {
-                                    if !targets.contains(&bin_path) {
-                                        targets.push(bin_path);
-                                    }
-                                }
-                            }
-
-                            // Library target - use [lib] name if specified, otherwise package name
-                            let lib_name = member_manifest
-                                .lib
-                                .as_ref()
-                                .and_then(|lib| lib.name.as_deref())
-                                .unwrap_or(&pkg.name);
-                            if let Some(lib_path) = find_library(&target_debug, lib_name) {
-                                if !targets.contains(&lib_path) {
-                                    targets.push(lib_path);
-                                }
-                            }
-                        }
+                let member_content = match std::fs::read_to_string(&member_cargo) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        eprintln!("Warning: Failed to read {}: {}", member_cargo.display(), e);
+                        continue;
                     }
+                };
+                let mut member_manifest =
+                    match cargo_toml::Manifest::from_slice(member_content.as_bytes()) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("Warning: Failed to parse {}: {}", member_cargo.display(), e);
+                            continue;
+                        }
+                    };
+                // Complete the manifest to discover implicit targets
+                // Continue on error - don't let one bad member break the whole workspace
+                if let Err(e) = member_manifest.complete_from_path_and_workspace(
+                    &member_cargo,
+                    Some((&manifest, cargo_toml.as_path())),
+                ) {
+                    eprintln!(
+                        "Warning: Failed to complete {}: {}",
+                        member_cargo.display(),
+                        e
+                    );
+                    continue;
                 }
+                collect_binaries_from_manifest(&member_manifest, &target_debug, &mut targets);
             }
         }
     }
 
     Ok(targets)
+}
+
+/// Collect binaries from a completed manifest into the targets vector
+fn collect_binaries_from_manifest(
+    manifest: &cargo_toml::Manifest,
+    target_debug: &Path,
+    targets: &mut Vec<PathBuf>,
+) {
+    let Some(pkg) = &manifest.package else {
+        return;
+    };
+    let pkg_name = &pkg.name;
+
+    // Check for [[bin]] targets (populated by complete_from_path_and_workspace)
+    // No fallback probe needed - complete_from_path_and_workspace populates bin if there's a binary
+    for bin in &manifest.bin {
+        let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
+        if let Some(bin_path) = find_binary(target_debug, bin_name) {
+            if !targets.contains(&bin_path) {
+                targets.push(bin_path);
+            }
+        }
+    }
+
+    // Check for library target
+    if manifest.lib.is_some() {
+        let lib_name = manifest
+            .lib
+            .as_ref()
+            .and_then(|lib| lib.name.as_deref())
+            .unwrap_or(pkg_name);
+        if let Some(lib_path) = find_library(target_debug, lib_name) {
+            if !targets.contains(&lib_path) {
+                targets.push(lib_path);
+            }
+        }
+    }
 }
 
 /// Expand a workspace glob pattern like "crates/*" or "crates/**" to actual paths
