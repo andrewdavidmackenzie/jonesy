@@ -206,11 +206,15 @@ impl FullLineTable {
                         };
 
                         // Intern the file path to reduce memory usage
-                        let file_id = *file_to_id.entry(full_path.clone()).or_insert_with(|| {
-                            let id = file_pool.len() as u32;
-                            file_pool.push(full_path);
+                        // Use two-step get/insert to avoid cloning on cache hits
+                        let file_id = if let Some(&id) = file_to_id.get(&full_path) {
                             id
-                        });
+                        } else {
+                            let id = file_pool.len() as u32;
+                            file_pool.push(full_path.clone());
+                            file_to_id.insert(full_path, id);
+                            id
+                        };
 
                         // Include all entries, even without line numbers (use 0 like original)
                         // to match the original get_source_location behavior
@@ -246,12 +250,9 @@ impl FullLineTable {
 
         if idx > 0 {
             // Found an entry with address <= addr. Now find the FIRST entry at this address.
-            // (stable sort preserves unit order, so first entry = earliest unit)
+            // Use binary search to keep this O(log n) instead of linear scan.
             let target_addr = self.entries[idx - 1].address;
-            let mut first_idx = idx - 1;
-            while first_idx > 0 && self.entries[first_idx - 1].address == target_addr {
-                first_idx -= 1;
-            }
+            let first_idx = self.entries[..idx].partition_point(|e| e.address < target_addr);
             let entry = &self.entries[first_idx];
             // Look up file path from the interned pool
             let file = self.file_pool.get(entry.file_id as usize).cloned();
