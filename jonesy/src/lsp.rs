@@ -465,7 +465,7 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<AnalysisResult, St
     })
 }
 
-/// Find binary files in the workspace
+/// Find binary and library files in the workspace
 fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<PathBuf>, String> {
     let target_debug = workspace_root.join("target/debug");
     if !target_debug.exists() {
@@ -484,7 +484,7 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
     let manifest = cargo_toml::Manifest::from_slice(content.as_bytes())
         .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
 
-    let mut binaries = Vec::new();
+    let mut targets = Vec::new();
 
     // Helper to find binary with optional .exe extension on Windows
     let find_binary = |dir: &Path, name: &str| -> Option<PathBuf> {
@@ -492,7 +492,6 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
         if path.exists() {
             return Some(path);
         }
-        // On Windows, also check for .exe extension
         #[cfg(windows)]
         {
             let exe_path = path.with_extension("exe");
@@ -503,22 +502,64 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
         None
     };
 
-    // Check for package binaries
+    // Helper to find library (.dylib on macOS, .so on Linux, .dll on Windows)
+    let find_library = |dir: &Path, name: &str| -> Option<PathBuf> {
+        // Convert crate name to lib name (replace - with _)
+        let lib_name = name.replace('-', "_");
+
+        // Try platform-specific extensions
+        #[cfg(target_os = "macos")]
+        {
+            let dylib = dir.join(format!("lib{}.dylib", lib_name));
+            if dylib.exists() {
+                return Some(dylib);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let so = dir.join(format!("lib{}.so", lib_name));
+            if so.exists() {
+                return Some(so);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let dll = dir.join(format!("{}.dll", lib_name));
+            if dll.exists() {
+                return Some(dll);
+            }
+        }
+        // Also try .rlib (Rust static library)
+        let rlib = dir.join(format!("lib{}.rlib", lib_name));
+        if rlib.exists() {
+            return Some(rlib);
+        }
+        None
+    };
+
+    // Check for package binaries and libraries
     if let Some(pkg) = &manifest.package {
         let pkg_name = &pkg.name;
 
         // Default binary
         if let Some(default_bin) = find_binary(&target_debug, pkg_name) {
-            binaries.push(default_bin);
+            targets.push(default_bin);
         }
 
         // Explicit [[bin]] targets
         for bin in &manifest.bin {
             let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
             if let Some(bin_path) = find_binary(&target_debug, bin_name) {
-                if !binaries.contains(&bin_path) {
-                    binaries.push(bin_path);
+                if !targets.contains(&bin_path) {
+                    targets.push(bin_path);
                 }
+            }
+        }
+
+        // Library target
+        if let Some(lib_path) = find_library(&target_debug, pkg_name) {
+            if !targets.contains(&lib_path) {
+                targets.push(lib_path);
             }
         }
     }
@@ -542,8 +583,8 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
                         if let Some(pkg) = &member_manifest.package {
                             // Default binary
                             if let Some(default_bin) = find_binary(&target_debug, &pkg.name) {
-                                if !binaries.contains(&default_bin) {
-                                    binaries.push(default_bin);
+                                if !targets.contains(&default_bin) {
+                                    targets.push(default_bin);
                                 }
                             }
 
@@ -551,9 +592,16 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
                             for bin in &member_manifest.bin {
                                 let bin_name = bin.name.as_deref().unwrap_or(&pkg.name);
                                 if let Some(bin_path) = find_binary(&target_debug, bin_name) {
-                                    if !binaries.contains(&bin_path) {
-                                        binaries.push(bin_path);
+                                    if !targets.contains(&bin_path) {
+                                        targets.push(bin_path);
                                     }
+                                }
+                            }
+
+                            // Library target
+                            if let Some(lib_path) = find_library(&target_debug, &pkg.name) {
+                                if !targets.contains(&lib_path) {
+                                    targets.push(lib_path);
                                 }
                             }
                         }
@@ -563,7 +611,7 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
         }
     }
 
-    Ok(binaries)
+    Ok(targets)
 }
 
 /// Expand a workspace glob pattern like "crates/*" or "crates/**" to actual paths
