@@ -312,13 +312,16 @@ impl FullLineTable {
                             file_name
                         };
 
-                        // Intern the file path
+                        // Check crate match before interning (needs &full_path)
+                        let is_crate_match = matches_crate_pattern(&full_path, crate_src_path);
+
+                        // Intern the file path (avoid double clone on cache miss)
                         let file_id = if let Some(&id) = file_to_id.get(&full_path) {
                             id
                         } else {
                             let id = file_pool.len() as u32;
                             file_pool.push(full_path.clone());
-                            file_to_id.insert(full_path.clone(), id);
+                            file_to_id.insert(full_path, id);
                             id
                         };
 
@@ -336,7 +339,7 @@ impl FullLineTable {
                         });
 
                         // Add to crate line table if matches pattern and has line
-                        if matches_crate_pattern(&full_path, crate_src_path) && line > 0 {
+                        if is_crate_match && line > 0 {
                             crate_entries.push(CrateLineEntry {
                                 address: row.address(),
                                 line,
