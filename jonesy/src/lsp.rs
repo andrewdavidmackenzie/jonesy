@@ -114,6 +114,38 @@ impl JonesyLspServer {
             )
             .await;
 
+        // First, discover workspace structure
+        let workspace_info = {
+            let workspace_root = workspace_root.clone();
+            tokio::task::spawn_blocking(move || discover_workspace(&workspace_root))
+                .await
+                .ok()
+                .flatten()
+        };
+
+        if let Some(info) = &workspace_info {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Workspace members: {}", info.members.join(", ")),
+                )
+                .await;
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!(
+                        "Found {} targets: {}",
+                        info.targets.len(),
+                        info.targets.join(", ")
+                    ),
+                )
+                .await;
+        }
+
+        self.client
+            .log_message(MessageType::INFO, "Starting panic analysis...")
+            .await;
+
         // Run jonesy analysis on the workspace
         let analysis_result = tokio::task::spawn_blocking({
             let workspace_root = workspace_root.clone();
@@ -326,6 +358,51 @@ impl LanguageServer for JonesyLspServer {
             Ok(None)
         }
     }
+}
+
+/// Info about workspace structure (for logging before analysis)
+struct WorkspaceInfo {
+    members: Vec<String>,
+    targets: Vec<String>,
+}
+
+/// Quickly discover workspace structure without running full analysis
+fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
+    let cargo_toml = workspace_root.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml).ok()?;
+    let manifest = cargo_toml::Manifest::from_slice(content.as_bytes()).ok()?;
+
+    let mut members = Vec::new();
+    let mut targets = Vec::new();
+
+    // Get workspace members
+    if let Some(workspace) = &manifest.workspace {
+        for member in &workspace.members {
+            if member.contains('*') {
+                // Expand glob
+                for path in expand_workspace_glob(workspace_root, member) {
+                    if let Some(name) = path.file_name() {
+                        members.push(name.to_string_lossy().to_string());
+                    }
+                }
+            } else {
+                members.push(member.clone());
+            }
+        }
+    } else if let Some(pkg) = &manifest.package {
+        members.push(pkg.name.clone());
+    }
+
+    // Get targets
+    if let Ok(found_targets) = find_workspace_binaries(workspace_root) {
+        for target in found_targets {
+            if let Some(name) = target.file_name() {
+                targets.push(name.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    Some(WorkspaceInfo { members, targets })
 }
 
 /// Result of running analysis
