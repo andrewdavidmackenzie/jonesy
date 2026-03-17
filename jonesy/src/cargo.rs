@@ -332,6 +332,60 @@ pub fn detect_library_type(binary_path: &Path) -> Option<String> {
     None
 }
 
+/// Find a binary artifact in the target directory.
+/// Handles platform-specific extensions (.exe on Windows).
+pub fn find_binary(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    if path.exists() {
+        return Some(path);
+    }
+    #[cfg(windows)]
+    {
+        let exe_path = path.with_extension("exe");
+        if exe_path.exists() {
+            return Some(exe_path);
+        }
+    }
+    None
+}
+
+/// Find a library artifact in the target directory.
+/// Handles platform-specific extensions (.dylib on macOS, .so on Linux, .dll on Windows).
+/// Falls back to .rlib if no dynamic library is found.
+pub fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
+    // Convert crate name to lib name (replace - with _)
+    let lib_name = name.replace('-', "_");
+
+    // Try platform-specific extensions
+    #[cfg(target_os = "macos")]
+    {
+        let dylib = dir.join(format!("lib{}.dylib", lib_name));
+        if dylib.exists() {
+            return Some(dylib);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let so = dir.join(format!("lib{}.so", lib_name));
+        if so.exists() {
+            return Some(so);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let dll = dir.join(format!("{}.dll", lib_name));
+        if dll.exists() {
+            return Some(dll);
+        }
+    }
+    // Also try .rlib (Rust static library)
+    let rlib = dir.join(format!("lib{}.rlib", lib_name));
+    if rlib.exists() {
+        return Some(rlib);
+    }
+    None
+}
+
 /// Check a workspace member for matching library type
 fn check_member_lib_type(member_path: &Path, lib_name: &str) -> Option<String> {
     let cargo_toml = member_path.join("Cargo.toml");

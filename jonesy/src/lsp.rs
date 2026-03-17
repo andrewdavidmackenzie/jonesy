@@ -16,6 +16,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::call_tree::CrateCodePoint;
+use crate::cargo::{find_binary, find_library};
 
 /// Counter for generating unique progress tokens
 static PROGRESS_TOKEN_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -851,21 +852,13 @@ fn collect_binaries_from_manifest(
     };
     let pkg_name = &pkg.name;
 
-    // Check for explicit [[bin]] targets (populated by complete_from_path_and_workspace)
+    // Check for [[bin]] targets (populated by complete_from_path_and_workspace)
+    // No fallback probe needed - complete_from_path_and_workspace populates bin if there's a binary
     for bin in &manifest.bin {
         let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
         if let Some(bin_path) = find_binary(target_debug, bin_name) {
             if !targets.contains(&bin_path) {
                 targets.push(bin_path);
-            }
-        }
-    }
-
-    // Check for default binary if no explicit bins (fallback for edge cases)
-    if manifest.bin.is_empty() {
-        if let Some(default_bin) = find_binary(target_debug, pkg_name) {
-            if !targets.contains(&default_bin) {
-                targets.push(default_bin);
             }
         }
     }
@@ -883,57 +876,6 @@ fn collect_binaries_from_manifest(
             }
         }
     }
-}
-
-/// Find binary with optional .exe extension on Windows
-fn find_binary(dir: &Path, name: &str) -> Option<PathBuf> {
-    let path = dir.join(name);
-    if path.exists() {
-        return Some(path);
-    }
-    #[cfg(windows)]
-    {
-        let exe_path = path.with_extension("exe");
-        if exe_path.exists() {
-            return Some(exe_path);
-        }
-    }
-    None
-}
-
-/// Find library (.dylib on macOS, .so on Linux, .dll on Windows, or .rlib)
-fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
-    // Convert crate name to lib name (replace - with _)
-    let lib_name = name.replace('-', "_");
-
-    // Try platform-specific extensions
-    #[cfg(target_os = "macos")]
-    {
-        let dylib = dir.join(format!("lib{}.dylib", lib_name));
-        if dylib.exists() {
-            return Some(dylib);
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let so = dir.join(format!("lib{}.so", lib_name));
-        if so.exists() {
-            return Some(so);
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let dll = dir.join(format!("{}.dll", lib_name));
-        if dll.exists() {
-            return Some(dll);
-        }
-    }
-    // Also try .rlib (Rust static library)
-    let rlib = dir.join(format!("lib{}.rlib", lib_name));
-    if rlib.exists() {
-        return Some(rlib);
-    }
-    None
 }
 
 /// Expand a workspace glob pattern like "crates/*" or "crates/**" to actual paths
