@@ -740,3 +740,185 @@ pub async fn run_lsp_server() {
     let (service, socket) = LspService::new(JonesyLspServer::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Find the workspace root by looking for Cargo.toml with [workspace]
+    fn find_workspace_root() -> PathBuf {
+        let mut current = std::env::current_dir().unwrap();
+        loop {
+            let cargo_toml = current.join("Cargo.toml");
+            if cargo_toml.exists() {
+                let content = std::fs::read_to_string(&cargo_toml).unwrap_or_default();
+                if content.contains("[workspace]") {
+                    return current;
+                }
+            }
+            if !current.pop() {
+                panic!("Could not find workspace root");
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_workspace_binaries_with_custom_lib_name() {
+        // Use workspace_test example which has a crate with custom [lib] name
+        let workspace_root = find_workspace_root();
+        let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
+
+        // Build if needed
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .current_dir(&workspace_test_dir)
+            .status()
+            .expect("Failed to build workspace_test");
+        assert!(status.success(), "Failed to build workspace_test");
+
+        // Find targets
+        let targets =
+            find_workspace_binaries(&workspace_test_dir).expect("Should find workspace binaries");
+
+        // Extract just the file names for easier comparison
+        let target_names: Vec<String> = targets
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .collect();
+
+        // Expected targets:
+        // - crate_a (binary from crate_a)
+        // - crate_b_bin (binary from crate_b, explicit [[bin]] name)
+        // - libcrate_b_lib.rlib (library from crate_b, [lib] name = "crate_b_lib")
+        // - libcrate_c.rlib (library-only crate)
+
+        assert!(
+            target_names.iter().any(|n| n == "crate_a"),
+            "Should find crate_a binary. Found: {:?}",
+            target_names
+        );
+        assert!(
+            target_names.iter().any(|n| n == "crate_b_bin"),
+            "Should find crate_b_bin binary. Found: {:?}",
+            target_names
+        );
+        assert!(
+            target_names.iter().any(|n| n == "libcrate_b_lib.rlib"),
+            "Should find libcrate_b_lib.rlib (custom [lib] name). Found: {:?}",
+            target_names
+        );
+        assert!(
+            target_names.iter().any(|n| n == "libcrate_c.rlib"),
+            "Should find libcrate_c.rlib (library-only crate). Found: {:?}",
+            target_names
+        );
+    }
+
+    #[test]
+    fn test_lsp_analysis_matches_cli() {
+        use std::collections::HashSet;
+
+        // Use workspace_test example
+        let workspace_root = find_workspace_root();
+        let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
+
+        // Build if needed
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .current_dir(&workspace_test_dir)
+            .status()
+            .expect("Failed to build workspace_test");
+        assert!(status.success(), "Failed to build workspace_test");
+
+        // Run CLI and capture panic points
+        let cli_output = std::process::Command::new(workspace_root.join("target/debug/jonesy"))
+            .arg("--quiet")
+            .current_dir(&workspace_test_dir)
+            .output()
+            .expect("Failed to run jonesy CLI");
+
+        let cli_stdout = String::from_utf8_lossy(&cli_output.stdout);
+
+        // Parse CLI output for panic points (top-level lines starting with " --> ")
+        // Skip nested points (lines in the call tree that are indented)
+        let cli_points: HashSet<(String, u32)> = cli_stdout
+            .lines()
+            .filter(|line| line.starts_with(" --> ")) // Only top-level points
+            .filter_map(|line| {
+                // Parse " --> path/to/file.rs:123:45"
+                let arrow_pos = line.find(" --> ")?;
+                let location = &line[arrow_pos + 5..];
+                let parts: Vec<&str> = location.split(':').collect();
+                if parts.len() >= 2 {
+                    let file = parts[0].trim();
+                    let line_num: u32 = parts[1].parse().ok()?;
+                    // Normalize path - extract just the relative part
+                    let file = file
+                        .rsplit("workspace_test/")
+                        .next()
+                        .unwrap_or(file)
+                        .to_string();
+                    Some((file, line_num))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Run LSP-style analysis using the same functions
+        let targets =
+            find_workspace_binaries(&workspace_test_dir).expect("Should find workspace binaries");
+
+        let workspace_info =
+            discover_workspace(&workspace_test_dir).expect("Should discover workspace");
+
+        let mut lsp_points: HashSet<(String, u32)> = HashSet::new();
+
+        for target in &targets {
+            let result =
+                analyze_single_target(target, &workspace_test_dir, &workspace_info.src_filter);
+            if let Ok(points) = result {
+                for point in points {
+                    // Normalize path
+                    let file = point
+                        .file
+                        .rsplit("workspace_test/")
+                        .next()
+                        .unwrap_or(&point.file)
+                        .to_string();
+                    lsp_points.insert((file, point.line));
+                }
+            }
+        }
+
+        // Compare: LSP should find at least as many points as CLI
+        let missing_in_lsp: Vec<_> = cli_points.difference(&lsp_points).collect();
+        let extra_in_lsp: Vec<_> = lsp_points.difference(&cli_points).collect();
+
+        if !missing_in_lsp.is_empty() {
+            eprintln!("CLI found but LSP missed:");
+            for (file, line) in &missing_in_lsp {
+                eprintln!("  {}:{}", file, line);
+            }
+        }
+
+        if !extra_in_lsp.is_empty() {
+            eprintln!("LSP found but CLI missed:");
+            for (file, line) in &extra_in_lsp {
+                eprintln!("  {}:{}", file, line);
+            }
+        }
+
+        // The LSP should find all points the CLI finds
+        assert!(
+            missing_in_lsp.is_empty(),
+            "LSP analysis should find all panic points that CLI finds. \
+             Missing {} points, extra {} points. CLI found {}, LSP found {}",
+            missing_in_lsp.len(),
+            extra_in_lsp.len(),
+            cli_points.len(),
+            lsp_points.len()
+        );
+    }
+}
