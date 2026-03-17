@@ -6,13 +6,19 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::notification::Progress;
+use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::call_tree::CrateCodePoint;
+
+/// Counter for generating unique progress tokens
+static PROGRESS_TOKEN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// State shared across the LSP server
 struct ServerState {
@@ -93,6 +99,79 @@ impl JonesyLspServer {
         diagnostic
     }
 
+    /// Create a progress token and request the client to show progress UI.
+    /// Returns the token if successful, None if the client doesn't support it.
+    async fn create_progress(&self) -> Option<ProgressToken> {
+        let token_id = PROGRESS_TOKEN_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let token = ProgressToken::Number(token_id as i32);
+
+        // Request the client to create a progress indicator
+        match self
+            .client
+            .send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+                token: token.clone(),
+            })
+            .await
+        {
+            Ok(()) => Some(token),
+            Err(e) => {
+                // Client may not support progress - log and continue without it
+                self.client
+                    .log_message(
+                        MessageType::LOG,
+                        format!("Progress not supported: {}", e),
+                    )
+                    .await;
+                None
+            }
+        }
+    }
+
+    /// Send a progress begin notification
+    async fn progress_begin(&self, token: &ProgressToken, title: &str, message: Option<&str>) {
+        self.client
+            .send_notification::<Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
+                    WorkDoneProgressBegin {
+                        title: title.to_string(),
+                        cancellable: Some(false),
+                        message: message.map(String::from),
+                        percentage: Some(0),
+                    },
+                )),
+            })
+            .await;
+    }
+
+    /// Send a progress report notification
+    async fn progress_report(&self, token: &ProgressToken, message: &str, percentage: u32) {
+        self.client
+            .send_notification::<Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(
+                    WorkDoneProgressReport {
+                        cancellable: Some(false),
+                        message: Some(message.to_string()),
+                        percentage: Some(percentage),
+                    },
+                )),
+            })
+            .await;
+    }
+
+    /// Send a progress end notification
+    async fn progress_end(&self, token: &ProgressToken, message: &str) {
+        self.client
+            .send_notification::<Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some(message.to_string()),
+                })),
+            })
+            .await;
+    }
+
     /// Analyze the workspace and publish diagnostics
     /// Returns true if analysis succeeded, false otherwise
     async fn analyze_and_publish(&self) -> bool {
@@ -171,6 +250,13 @@ impl JonesyLspServer {
             )
             .await;
 
+        // Create progress indicator for IDE status bar
+        let progress_token = self.create_progress().await;
+        if let Some(ref token) = progress_token {
+            self.progress_begin(token, "Jonesy Analysis", Some("Discovering workspace..."))
+                .await;
+        }
+
         // Get src_filter for filtering to workspace source files
         let src_filter = workspace_info
             .as_ref()
@@ -195,11 +281,23 @@ impl JonesyLspServer {
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
-        for target in &targets {
+        let total_targets = targets.len();
+        for (target_idx, target) in targets.iter().enumerate() {
             let target_name = target
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
+
+            // Update progress indicator
+            if let Some(ref token) = progress_token {
+                let percentage = ((target_idx * 100) / total_targets) as u32;
+                self.progress_report(
+                    token,
+                    &format!("Analyzing {} ({}/{})", target_name, target_idx + 1, total_targets),
+                    percentage,
+                )
+                .await;
+            }
 
             let analysis_result = {
                 let target = target.clone();
@@ -298,6 +396,15 @@ impl JonesyLspServer {
             self.client
                 .publish_diagnostics(uri.clone(), vec![], None)
                 .await;
+        }
+
+        // Complete progress indicator
+        if let Some(ref token) = progress_token {
+            self.progress_end(
+                token,
+                &format!("Found {} panic points in {} files", total_points, new_files.len()),
+            )
+            .await;
         }
 
         self.client
