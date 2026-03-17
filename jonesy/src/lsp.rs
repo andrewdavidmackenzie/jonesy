@@ -180,9 +180,21 @@ impl JonesyLspServer {
 
         let code_points = result.code_points;
 
-        // Group code points by file
+        // Group code points by file, excluding build artifacts in target/
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
+        let target_dir = state
+            .workspace_root
+            .as_ref()
+            .map(|r| r.join("target").to_string_lossy().to_string());
+
         for point in code_points {
+            // Skip files in target/ directory (build artifacts, generated code)
+            if let Some(ref target) = target_dir {
+                if point.file.starts_with(target) {
+                    continue;
+                }
+            }
+
             let raw_path = PathBuf::from(&point.file);
             let file_path = if raw_path.is_absolute() {
                 raw_path
