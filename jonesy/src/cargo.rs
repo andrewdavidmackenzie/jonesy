@@ -48,9 +48,10 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
 
     // For libraries, strip "lib" prefix (e.g., "liblibrary" -> "library")
     // Only strip for actual library artifacts to avoid renaming binaries like "libtool"
-    let is_library_artifact = binary_path
-        .extension()
-        .is_some_and(|ext| ext == "dylib" || ext == "rlib" || ext == "a");
+    // Matches all library extensions that find_library can return
+    let is_library_artifact = binary_path.extension().is_some_and(|ext| {
+        ext == "dylib" || ext == "so" || ext == "dll" || ext == "rlib" || ext == "a" || ext == "lib"
+    });
     let binary_name = if is_library_artifact {
         file_stem.strip_prefix("lib").unwrap_or(file_stem)
     } else {
