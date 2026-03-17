@@ -325,10 +325,7 @@ impl LanguageServer for JonesyLspServer {
         self.analyze_and_publish().await;
     }
 
-    async fn code_action(
-        &self,
-        _params: CodeActionParams,
-    ) -> Result<Option<CodeActionResponse>> {
+    async fn code_action(&self, _params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         // Provide a code action to manually trigger analysis
         let action = CodeAction {
             title: "Run Jonesy Panic Analysis".to_string(),
