@@ -383,6 +383,21 @@ pub fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
     if rlib.exists() {
         return Some(rlib);
     }
+    // Also try staticlib artifacts (.a on Unix, .lib on Windows)
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let staticlib = dir.join(format!("lib{}.a", lib_name));
+        if staticlib.exists() {
+            return Some(staticlib);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let staticlib = dir.join(format!("{}.lib", lib_name));
+        if staticlib.exists() {
+            return Some(staticlib);
+        }
+    }
     None
 }
 
