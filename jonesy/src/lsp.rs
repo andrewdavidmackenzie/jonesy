@@ -252,7 +252,7 @@ impl JonesyLspServer {
         if let Some(ref token) = progress_token {
             self.progress_begin(
                 token,
-                "jonesy: Panic Analysis",
+                "Panic Analysis",
                 Some("Discovering workspace..."),
             )
             .await;
