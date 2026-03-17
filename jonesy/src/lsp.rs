@@ -648,8 +648,13 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
             }
         }
 
-        // Library target
-        if let Some(lib_path) = find_library(&target_debug, pkg_name) {
+        // Library target - use [lib] name if specified, otherwise package name
+        let lib_name = manifest
+            .lib
+            .as_ref()
+            .and_then(|lib| lib.name.as_deref())
+            .unwrap_or(pkg_name);
+        if let Some(lib_path) = find_library(&target_debug, lib_name) {
             if !targets.contains(&lib_path) {
                 targets.push(lib_path);
             }
@@ -690,8 +695,13 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
                                 }
                             }
 
-                            // Library target
-                            if let Some(lib_path) = find_library(&target_debug, &pkg.name) {
+                            // Library target - use [lib] name if specified, otherwise package name
+                            let lib_name = member_manifest
+                                .lib
+                                .as_ref()
+                                .and_then(|lib| lib.name.as_deref())
+                                .unwrap_or(&pkg.name);
+                            if let Some(lib_path) = find_library(&target_debug, lib_name) {
                                 if !targets.contains(&lib_path) {
                                     targets.push(lib_path);
                                 }
