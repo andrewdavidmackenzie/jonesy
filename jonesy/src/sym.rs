@@ -271,6 +271,97 @@ impl FullLineTable {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Build both CrateLineTable and FullLineTable in a single pass over DWARF.
+    /// This is more efficient than building each separately since we only iterate
+    /// the line program once.
+    pub fn build_both<R: Reader>(
+        dwarf: &Dwarf<R>,
+        crate_src_path: &str,
+    ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
+        let mut crate_entries = Vec::new();
+        let mut full_entries = Vec::new();
+        let mut file_pool = Vec::new();
+        let mut file_to_id: HashMap<String, u32> = HashMap::new();
+
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+
+            if let Some(program) = &unit.line_program {
+                let mut rows = program.clone().rows();
+
+                while let Some((header, row)) = rows.next_row()? {
+                    if let Some(file_entry) = row.file(header) {
+                        let file_name = dwarf
+                            .attr_string(&unit, file_entry.path_name())?
+                            .to_string_lossy()?
+                            .into_owned();
+
+                        let full_path = if let Some(dir) = file_entry.directory(header) {
+                            let dir_str = dwarf
+                                .attr_string(&unit, dir)?
+                                .to_string_lossy()?
+                                .into_owned();
+                            if dir_str.is_empty() {
+                                file_name
+                            } else {
+                                format!("{}/{}", dir_str, file_name)
+                            }
+                        } else {
+                            file_name
+                        };
+
+                        // Intern the file path
+                        let file_id = if let Some(&id) = file_to_id.get(&full_path) {
+                            id
+                        } else {
+                            let id = file_pool.len() as u32;
+                            file_pool.push(full_path.clone());
+                            file_to_id.insert(full_path.clone(), id);
+                            id
+                        };
+
+                        // Add to full line table (all entries)
+                        let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
+                        let column = match row.column() {
+                            ColumnType::LeftEdge => None,
+                            ColumnType::Column(c) => Some(c.get() as u32),
+                        };
+                        full_entries.push(FullLineEntry {
+                            address: row.address(),
+                            file_id,
+                            line,
+                            column,
+                        });
+
+                        // Add to crate line table if matches pattern and has line
+                        if matches_crate_pattern(&full_path, crate_src_path) && line > 0 {
+                            crate_entries.push(CrateLineEntry {
+                                address: row.address(),
+                                line,
+                                column,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort both by address
+        crate_entries.sort_by_key(|e| e.address);
+        full_entries.sort_by_key(|e| e.address);
+
+        Ok((
+            CrateLineTable {
+                entries: crate_entries,
+            },
+            FullLineTable {
+                entries: full_entries,
+                file_pool,
+            },
+        ))
+    }
 }
 
 /// Function info extracted from DWARF of the calling function
@@ -907,28 +998,19 @@ impl CallGraph {
             );
         }
 
-        // Pre-build crate line table for fast lookups (if crate_src_path is provided)
+        // Build both line tables in a single pass (saves iterating DWARF twice)
         let step = Instant::now();
-        let crate_line_table = crate_src_path
-            .map(|path| CrateLineTable::build(&dwarf, path))
-            .transpose()?;
-        if show_timings {
-            if let Some(ref table) = crate_line_table {
-                eprintln!(
-                    "    [cg timing] build crate line table: {:?} ({} entries)",
-                    step.elapsed(),
-                    table.len()
-                );
-            }
-        }
-
-        // Pre-build full line table for O(log n) source location lookups
-        let step = Instant::now();
-        let full_line_table = FullLineTable::build(&dwarf)?;
+        let (crate_line_table, full_line_table) = if let Some(path) = crate_src_path {
+            let (crate_table, full_table) = FullLineTable::build_both(&dwarf, path)?;
+            (Some(crate_table), full_table)
+        } else {
+            (None, FullLineTable::build(&dwarf)?)
+        };
         if show_timings {
             eprintln!(
-                "    [cg timing] build full line table: {:?} ({} entries)",
+                "    [cg timing] build line tables: {:?} (crate: {} entries, full: {} entries)",
                 step.elapsed(),
+                crate_line_table.as_ref().map(|t| t.len()).unwrap_or(0),
                 full_line_table.len()
             );
         }
