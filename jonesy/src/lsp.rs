@@ -142,43 +142,96 @@ impl JonesyLspServer {
                 .await;
         }
 
-        self.client
-            .log_message(MessageType::INFO, "Starting panic analysis...")
-            .await;
-
-        // Run jonesy analysis on the workspace
-        let analysis_result = tokio::task::spawn_blocking({
+        // Get list of targets to analyze
+        let targets = {
             let workspace_root = workspace_root.clone();
-            move || run_analysis(&workspace_root)
-        })
-        .await;
-
-        let Ok(Ok(result)) = analysis_result else {
-            self.client
-                .log_message(MessageType::ERROR, "Failed to run jonesy analysis")
-                .await;
-            return false;
+            tokio::task::spawn_blocking(move || find_workspace_binaries(&workspace_root))
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_default()
         };
 
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!(
-                    "Analyzed {} binaries: {}",
-                    result.binaries_analyzed.len(),
-                    result.binaries_analyzed.join(", ")
-                ),
-            )
-            .await;
+        if targets.is_empty() {
+            self.client
+                .log_message(MessageType::WARNING, "No targets found to analyze")
+                .await;
+            return false;
+        }
 
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("Found {} panic points", result.code_points.len()),
+                format!("Starting analysis of {} targets...", targets.len()),
             )
             .await;
 
-        let code_points = result.code_points;
+        // Analyze each target and log progress
+        let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
+        let mut seen: std::collections::HashSet<(String, u32, u32)> =
+            std::collections::HashSet::new();
+
+        for target in &targets {
+            let target_name = target
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let analysis_result = {
+                let target = target.clone();
+                let workspace_root = workspace_root.clone();
+                tokio::task::spawn_blocking(move || analyze_single_target(&target, &workspace_root))
+                    .await
+            };
+
+            match analysis_result {
+                Ok(Ok(points)) => {
+                    let new_points: Vec<_> = points
+                        .into_iter()
+                        .filter(|p| {
+                            let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+                            seen.insert(key)
+                        })
+                        .collect();
+                    self.client
+                        .log_message(
+                            MessageType::INFO,
+                            format!(
+                                "  {} - found {} panic points",
+                                target_name,
+                                new_points.len()
+                            ),
+                        )
+                        .await;
+                    all_code_points.extend(new_points);
+                }
+                Ok(Err(e)) => {
+                    self.client
+                        .log_message(
+                            MessageType::LOG,
+                            format!("  {} - skipped: {}", target_name, e),
+                        )
+                        .await;
+                }
+                Err(_) => {
+                    self.client
+                        .log_message(
+                            MessageType::WARNING,
+                            format!("  {} - analysis failed", target_name),
+                        )
+                        .await;
+                }
+            }
+        }
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Total: {} panic points", all_code_points.len()),
+            )
+            .await;
+
+        let code_points = all_code_points;
 
         // Group code points by file, excluding build artifacts in target/
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
@@ -414,14 +467,11 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     Some(WorkspaceInfo { members, targets })
 }
 
-/// Result of running analysis
-struct AnalysisResult {
-    code_points: Vec<CrateCodePoint>,
-    binaries_analyzed: Vec<String>,
-}
-
-/// Run jonesy analysis on the given workspace root
-fn run_analysis(workspace_root: &Path) -> std::result::Result<AnalysisResult, String> {
+/// Analyze a single target (binary or library) and return panic points
+fn analyze_single_target(
+    target_path: &Path,
+    workspace_root: &Path,
+) -> std::result::Result<Vec<CrateCodePoint>, String> {
     use crate::call_tree::{
         CallTreeNode, build_call_tree_parallel, collect_crate_code_points, prune_call_tree,
     };
@@ -435,21 +485,15 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<AnalysisResult, St
     use goblin::mach::Mach::Binary;
     use std::sync::Arc;
 
-    // Find binaries to analyze
-    let binaries = find_workspace_binaries(workspace_root)?;
-    if binaries.is_empty() {
-        return Err("No binaries found in target/debug".to_string());
-    }
+    let binary_buffer =
+        std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
 
-    // Log which binaries we're analyzing (will be shown by caller)
-    let binary_names: Vec<_> = binaries
-        .iter()
-        .filter_map(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .collect();
+    let symbols =
+        read_symbols(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;
 
-    let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, u32, u32)> = std::collections::HashSet::new();
+    let SymbolTable::MachO(Binary(macho)) = symbols else {
+        return Err("Not a Mach-O binary (may be archive/rlib)".to_string());
+    };
 
     let config =
         Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());
@@ -457,98 +501,73 @@ fn run_analysis(workspace_root: &Path) -> std::result::Result<AnalysisResult, St
     // Use workspace root as the filter path so we capture all workspace crates
     let workspace_root_str = workspace_root.to_string_lossy().to_string();
 
-    for binary_path in binaries {
-        let Ok(binary_buffer) = std::fs::read(&binary_path) else {
-            continue;
-        };
+    // derive_crate_src_path used for debug info loading
+    let crate_src_path = derive_crate_src_path(target_path);
 
-        let Ok(symbols) = read_symbols(&binary_buffer) else {
-            continue;
-        };
+    // Find panic symbol
+    const PANIC_PATTERNS: &[&str] = &["rust_panic$", "panic_fmt$", "panic_display"];
+    let mut target_addr = 0u64;
+    let mut demangled = String::new();
 
-        let SymbolTable::MachO(Binary(macho)) = symbols else {
-            continue;
-        };
-
-        // derive_crate_src_path used for debug info loading
-        let crate_src_path = derive_crate_src_path(&binary_path);
-
-        // Find panic symbol
-        const PANIC_PATTERNS: &[&str] = &["rust_panic$", "panic_fmt$", "panic_display"];
-        let mut target_addr = 0u64;
-        let mut demangled = String::new();
-
-        for pattern in PANIC_PATTERNS {
-            if let Ok(Some((sym, dem))) = find_symbol_containing(&macho, pattern) {
-                if let Some((_, addr)) = find_symbol_address(&macho, &sym) {
-                    target_addr = addr;
-                    demangled = dem;
-                    break;
-                }
-            }
-        }
-
-        if target_addr == 0 {
-            continue;
-        }
-
-        // Load debug info and build call graph
-        let debug_info = load_debug_info(&macho, &binary_path, true);
-        let call_graph = match &debug_info {
-            DebugInfo::Embedded => CallGraph::build_with_debug_info(
-                &macho,
-                &binary_buffer,
-                &macho,
-                &binary_buffer,
-                crate_src_path.as_deref(),
-                false,
-            )
-            .unwrap_or_else(|_| {
-                CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
-            }),
-            DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
-                if let Binary(debug_mach) = debug_macho {
-                    CallGraph::build_with_debug_info(
-                        &macho,
-                        &binary_buffer,
-                        debug_mach,
-                        dsym_info.borrow_debug_buffer(),
-                        crate_src_path.as_deref(),
-                        false,
-                    )
-                    .unwrap_or_else(|_| {
-                        CallGraph::build(&macho, &binary_buffer)
-                            .unwrap_or_else(|_| CallGraph::empty())
-                    })
-                } else {
-                    CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
-                }
-            }),
-            _ => CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty()),
-        };
-
-        // Build call tree
-        let mut root = CallTreeNode::new_root(demangled);
-        let visited = Arc::new(DashSet::new());
-        visited.insert(target_addr);
-        root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
-
-        // Prune and collect code points using workspace root to capture all workspace crates
-        prune_call_tree(&mut root, &workspace_root_str);
-        let (code_points, _) = collect_crate_code_points(&root, &workspace_root_str, &config);
-
-        for point in code_points {
-            let key = (point.file.clone(), point.line, point.column.unwrap_or(0));
-            if seen.insert(key) {
-                all_code_points.push(point);
+    for pattern in PANIC_PATTERNS {
+        if let Ok(Some((sym, dem))) = find_symbol_containing(&macho, pattern) {
+            if let Some((_, addr)) = find_symbol_address(&macho, &sym) {
+                target_addr = addr;
+                demangled = dem;
+                break;
             }
         }
     }
 
-    Ok(AnalysisResult {
-        code_points: all_code_points,
-        binaries_analyzed: binary_names,
-    })
+    if target_addr == 0 {
+        return Err("No panic symbol found".to_string());
+    }
+
+    // Load debug info and build call graph
+    let debug_info = load_debug_info(&macho, target_path, true);
+    let call_graph = match &debug_info {
+        DebugInfo::Embedded => CallGraph::build_with_debug_info(
+            &macho,
+            &binary_buffer,
+            &macho,
+            &binary_buffer,
+            crate_src_path.as_deref(),
+            false,
+        )
+        .unwrap_or_else(|_| {
+            CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
+        }),
+        DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
+            if let Binary(debug_mach) = debug_macho {
+                CallGraph::build_with_debug_info(
+                    &macho,
+                    &binary_buffer,
+                    debug_mach,
+                    dsym_info.borrow_debug_buffer(),
+                    crate_src_path.as_deref(),
+                    false,
+                )
+                .unwrap_or_else(|_| {
+                    CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
+                })
+            } else {
+                CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty())
+            }
+        }),
+        _ => CallGraph::build(&macho, &binary_buffer).unwrap_or_else(|_| CallGraph::empty()),
+    };
+
+    // Build call tree
+    let mut root = CallTreeNode::new_root(demangled);
+    let visited = Arc::new(DashSet::new());
+    visited.insert(target_addr);
+    root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
+
+    // Prune and collect code points using workspace root to capture all workspace crates
+    prune_call_tree(&mut root, &workspace_root_str);
+    let (code_points, _) = collect_crate_code_points(&root, &workspace_root_str, &config);
+
+    Ok(code_points)
 }
 
 /// Find binary and library files in the workspace
