@@ -172,8 +172,12 @@ impl JonesyLspServer {
     /// Register file watchers for target/debug/ directory.
     /// This allows us to re-analyze only when binaries change, not on every file save.
     async fn register_binary_watchers(&self) {
-        let state = self.state.read().await;
-        let Some(workspace_root) = &state.workspace_root else {
+        // Clone workspace_root and release lock before async operations
+        let workspace_root = {
+            let state = self.state.read().await;
+            state.workspace_root.clone()
+        };
+        let Some(workspace_root) = workspace_root else {
             return;
         };
 
