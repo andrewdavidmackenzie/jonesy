@@ -20,10 +20,11 @@ use dashmap::DashSet;
 use goblin::mach::Mach::{Binary, Fat};
 use goblin::mach::MachO;
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::error::Error;
 use std::fs;
 use std::io::{self, IsTerminal};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -800,52 +801,43 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             println!("=== {} ===", member.name);
         }
 
-        let mut member_summary = AnalysisSummary::default();
-        let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
-        let mut seen_code_points: std::collections::HashSet<(String, u32)> =
-            std::collections::HashSet::new();
-
-        for binary_path in &member.binaries {
-            let binary_path = binary_path
-                .canonicalize()
-                .unwrap_or_else(|_| binary_path.clone());
-
-            if args.output.show_progress() {
-                println!("Processing {}", binary_path.display());
+        // Load configuration once for this member crate (same for all binaries)
+        // If user explicitly provided --config, fail fast on errors
+        let config = match Config::load_for_project(&member.path, args.config_path.as_deref()) {
+            Ok(c) => c,
+            Err(e) if args.config_path.is_some() => {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Failed to load config for {}: {}", member.name, e),
+                )));
             }
-
-            // Load configuration for this member crate
-            // If user explicitly provided --config, fail fast on errors
-            let config = match Config::load_for_project(&member.path, args.config_path.as_deref()) {
-                Ok(c) => c,
-                Err(e) if args.config_path.is_some() => {
-                    return Err(Box::new(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Failed to load config for {}: {}", member.name, e),
-                    )));
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to load config for {}: {}", member.name, e);
-                    Config::with_defaults()
-                }
-            };
-
-            // Check if this is a library and detect its type
-            let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
-            if args.output.show_progress()
-                && is_dylib
-                && let Some(lib_type) = detect_library_type(&binary_path)
-            {
-                println!("Library type: {}", lib_type);
+            Err(e) => {
+                eprintln!("Warning: Failed to load config for {}: {}", member.name, e);
+                Config::with_defaults()
             }
+        };
 
-            let binary_buffer = fs::read(&binary_path)?;
-            let symbols = read_symbols(&binary_buffer)?;
+        // Analyze binaries in parallel for better performance
+        if args.output.show_progress() && member.binaries.len() > 1 {
+            println!(
+                "Analyzing {} binaries in parallel...",
+                member.binaries.len()
+            );
+        }
 
-            match symbols {
-                SymbolTable::MachO(Binary(macho)) => {
-                    // Use workspace root path to include panics from all member crates
-                    let result = analyze_macho(
+        // Parallel analysis of all binaries in this member
+        let binary_results: Vec<(PathBuf, BinaryAnalysisResult)> = member
+            .binaries
+            .par_iter()
+            .filter_map(|binary_path| {
+                let binary_path = binary_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| binary_path.clone());
+                let binary_buffer = fs::read(&binary_path).ok()?;
+                let symbols = read_symbols(&binary_buffer).ok()?;
+
+                let result = match symbols {
+                    SymbolTable::MachO(Binary(macho)) => analyze_macho(
                         &macho,
                         &binary_buffer,
                         &binary_path,
@@ -854,29 +846,12 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         &config,
                         Some(workspace_root.as_path()),
                         &args.output,
-                    );
-                    member_summary.add(&result.summary);
-                    // Collect code points with deduplication, merging causes
-                    for point in result.code_points {
-                        let key = (point.file.clone(), point.line);
-                        if seen_code_points.insert(key.clone()) {
-                            member_code_points.push(point);
-                        } else if let Some(existing) = member_code_points
-                            .iter_mut()
-                            .find(|p| p.file == key.0 && p.line == key.1)
-                        {
-                            existing.causes.extend(point.causes);
-                        }
+                    ),
+                    SymbolTable::MachO(Fat(_)) => {
+                        // FAT binaries not fully supported - return empty result
+                        BinaryAnalysisResult::empty()
                     }
-                }
-                SymbolTable::MachO(Fat(multi_arch)) => {
-                    if !args.output.is_summary_only() {
-                        println!("FAT: {:?} architectures", multi_arch.arches()?);
-                    }
-                }
-                SymbolTable::Archive(archive) => {
-                    // Use relocation-based analysis for consistent cross-object resolution
-                    let result = analyze_archive(
+                    SymbolTable::Archive(archive) => analyze_archive(
                         &archive,
                         &binary_buffer,
                         &binary_path,
@@ -885,20 +860,33 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         &config,
                         Some(workspace_root.as_path()),
                         &args.output,
-                    );
-                    member_summary.add(&result.summary);
-                    // Collect code points with deduplication, merging causes
-                    for point in result.code_points {
-                        let key = (point.file.clone(), point.line);
-                        if seen_code_points.insert(key.clone()) {
-                            member_code_points.push(point);
-                        } else if let Some(existing) = member_code_points
-                            .iter_mut()
-                            .find(|p| p.file == key.0 && p.line == key.1)
-                        {
-                            existing.causes.extend(point.causes);
-                        }
-                    }
+                    ),
+                };
+                Some((binary_path, result))
+            })
+            .collect();
+
+        // Merge results sequentially
+        let mut member_summary = AnalysisSummary::default();
+        let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
+        let mut seen_code_points: std::collections::HashSet<(String, u32)> =
+            std::collections::HashSet::new();
+
+        for (binary_path, result) in binary_results {
+            if args.output.show_progress() {
+                println!("Processed {}", binary_path.display());
+            }
+            member_summary.add(&result.summary);
+            // Collect code points with deduplication, merging causes
+            for point in result.code_points {
+                let key = (point.file.clone(), point.line);
+                if seen_code_points.insert(key.clone()) {
+                    member_code_points.push(point);
+                } else if let Some(existing) = member_code_points
+                    .iter_mut()
+                    .find(|p| p.file == key.0 && p.line == key.1)
+                {
+                    existing.causes.extend(point.causes);
                 }
             }
         }

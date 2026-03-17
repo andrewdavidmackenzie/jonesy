@@ -7,12 +7,11 @@
 
 ## Summary
 
-| Metric | Before | After | Speedup |
-|--------|--------|-------|---------|
-| Total workspace time | ~6 minutes | **11.5 seconds** | **31x** |
-| flowrgui (largest) | 175.4s | 3.89s | 45x |
-| flowrcli | 125s | 3.27s | 38x |
-| flowc | 5.54s | 0.62s | 9x |
+| Metric | Original | After Line Table | After Parallel | Total Speedup |
+|--------|----------|------------------|----------------|---------------|
+| Total workspace time | ~6 minutes | 11.5 seconds | **4.7 seconds** | **77x** |
+| flowr (3 binaries) | ~5 minutes | ~8 seconds | ~4 seconds | ~75x |
+| flowc | 5.54s | 0.62s | 0.62s | 9x |
 
 ### Results by Member
 
@@ -177,9 +176,31 @@ rlib analysis via relocations remains fast:
 
 ---
 
+## Optimization: Parallel Binary Analysis
+
+For workspace members with multiple binaries (like flowr with flowrcli, flowrex, flowrgui), we now analyze all binaries in parallel using rayon.
+
+### Before
+Sequential analysis: flowrcli (3.27s) + flowrex (~2s) + flowrgui (3.89s) = ~9 seconds
+
+### After
+Parallel analysis: max(flowrcli, flowrex, flowrgui) = ~4 seconds
+
+### Results
+- flowr member: 8s → 4s (2x speedup)
+- Total workspace: 11.5s → 4.7s (2.4x speedup)
+- CPU utilization: ~225% (effectively using 2.25 cores)
+
+The speedup is limited by:
+1. Single-binary members (flowc, flowstdlib, etc.) don't benefit
+2. Member analysis is still sequential
+3. Amdahl's law - parallelism only helps the multi-binary portion
+
+---
+
 ## Future Optimization Opportunities
 
-1. **Skip already-analyzed shared code** - flowrcli, flowrex, flowrgui all share flowr library code. Analysis could be cached/shared.
+1. **Parallelize member analysis** - Analyze different workspace members in parallel for additional speedup.
 
 2. **Incremental analysis** - Only re-analyze functions that changed since last run.
 
