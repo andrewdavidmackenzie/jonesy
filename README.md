@@ -566,8 +566,10 @@ The LSP server:
 1. Finds workspace binaries in `target/debug/`
 2. Runs jonesy analysis on each binary
 3. Publishes diagnostics to the editor with file locations and panic causes
-4. Re-analyzes when files are saved
+4. Watches `target/debug/` for binary changes and re-analyzes automatically
 5. Shows analysis progress in the IDE status bar (for IDEs that support LSP progress)
+
+The server watches for binary changes rather than re-analyzing on every file save. This means analysis only runs when you build your project, avoiding redundant work.
 
 The progress indicator shows which target is being analyzed (e.g., "Analyzing flowc (2/5)") and displays the final result ("Found 293 panic points in 42 files").
 

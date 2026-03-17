@@ -169,6 +169,63 @@ impl JonesyLspServer {
             .await;
     }
 
+    /// Register file watchers for target/debug/ directory.
+    /// This allows us to re-analyze only when binaries change, not on every file save.
+    async fn register_binary_watchers(&self) {
+        // Clone workspace_root and release lock before async operations
+        let workspace_root = {
+            let state = self.state.read().await;
+            state.workspace_root.clone()
+        };
+        let Some(workspace_root) = workspace_root else {
+            return;
+        };
+
+        // Build glob patterns for target/debug/ binaries
+        let target_debug = workspace_root.join("target/debug");
+        let target_debug_str = target_debug.to_string_lossy();
+
+        // Watch for all files in target/debug/ (binaries, rlibs, dylibs)
+        let watchers = vec![
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String(format!("{}/*", target_debug_str)),
+                kind: Some(WatchKind::Create | WatchKind::Change),
+            },
+            // Also watch for dSYM bundles on macOS
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String(format!("{}/*.dSYM/**", target_debug_str)),
+                kind: Some(WatchKind::Create | WatchKind::Change),
+            },
+        ];
+
+        let registration_options = DidChangeWatchedFilesRegistrationOptions { watchers };
+
+        let registration = Registration {
+            id: "jonesy-binary-watcher".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options: Some(serde_json::to_value(registration_options).unwrap()),
+        };
+
+        match self.client.register_capability(vec![registration]).await {
+            Ok(()) => {
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("Watching {} for binary changes", target_debug_str),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to register file watchers: {}", e),
+                    )
+                    .await;
+            }
+        }
+    }
+
     /// Analyze the workspace and publish diagnostics
     /// Returns true if analysis succeeded, false otherwise
     async fn analyze_and_publish(&self) -> bool {
@@ -474,6 +531,10 @@ impl LanguageServer for JonesyLspServer {
             .log_message(MessageType::INFO, "Jonesy LSP server initialized")
             .await;
 
+        // Register file watchers for target/debug/ directory
+        // This allows us to re-analyze only when binaries change
+        self.register_binary_watchers().await;
+
         // Run initial analysis
         self.analyze_and_publish().await;
     }
@@ -495,14 +556,35 @@ impl LanguageServer for JonesyLspServer {
     }
 
     async fn did_save(&self, _params: DidSaveTextDocumentParams) {
-        // Re-analyze on file save
-        // Note: This triggers on any file save, which may be slow
-        // A better approach would be to watch target/debug/ for binary changes
-        self.analyze_and_publish().await;
+        // No-op: we watch target/debug/ for binary changes instead of
+        // re-analyzing on every file save. This avoids redundant analysis
+        // when the user saves files without building.
+        //
+        // Analysis is triggered by:
+        // 1. did_change_watched_files (when binaries in target/debug/ change)
+        // 2. Manual "jonesy.analyze" command
     }
 
-    async fn did_change_watched_files(&self, _params: DidChangeWatchedFilesParams) {
-        // Re-analyze when watched files change (e.g., binaries in target/)
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        // Re-analyze when watched files change (binaries in target/debug/)
+        let changed_files: Vec<_> = params
+            .changes
+            .iter()
+            .filter_map(|c| c.uri.to_file_path().ok())
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+
+        if changed_files.is_empty() {
+            return;
+        }
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Binary changes detected: {}", changed_files.join(", ")),
+            )
+            .await;
+
         self.analyze_and_publish().await;
     }
 
