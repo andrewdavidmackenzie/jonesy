@@ -570,14 +570,16 @@ impl LanguageServer for JonesyLspServer {
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
             .collect();
 
-        if !changed_files.is_empty() {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Binary changes detected: {}", changed_files.join(", ")),
-                )
-                .await;
+        if changed_files.is_empty() {
+            return;
         }
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("Binary changes detected: {}", changed_files.join(", ")),
+            )
+            .await;
 
         self.analyze_and_publish().await;
     }
