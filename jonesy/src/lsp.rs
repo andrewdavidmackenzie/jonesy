@@ -806,24 +806,33 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
                 let member_cargo = member_path.join("Cargo.toml");
                 let member_content = match std::fs::read_to_string(&member_cargo) {
                     Ok(content) => content,
-                    Err(_) => continue, // Skip members we can't read
+                    Err(e) => {
+                        eprintln!("Warning: Failed to read {}: {}", member_cargo.display(), e);
+                        continue;
+                    }
                 };
                 let mut member_manifest =
                     match cargo_toml::Manifest::from_slice(member_content.as_bytes()) {
                         Ok(m) => m,
-                        Err(_) => continue, // Skip members we can't parse
+                        Err(e) => {
+                            eprintln!("Warning: Failed to parse {}: {}", member_cargo.display(), e);
+                            continue;
+                        }
                     };
                 // Complete the manifest to discover implicit targets
                 // Continue on error - don't let one bad member break the whole workspace
-                if member_manifest
-                    .complete_from_path_and_workspace(
-                        &member_cargo,
-                        Some((&manifest, cargo_toml.as_path())),
-                    )
-                    .is_ok()
-                {
-                    collect_binaries_from_manifest(&member_manifest, &target_debug, &mut targets);
+                if let Err(e) = member_manifest.complete_from_path_and_workspace(
+                    &member_cargo,
+                    Some((&manifest, cargo_toml.as_path())),
+                ) {
+                    eprintln!(
+                        "Warning: Failed to complete {}: {}",
+                        member_cargo.display(),
+                        e
+                    );
+                    continue;
                 }
+                collect_binaries_from_manifest(&member_manifest, &target_debug, &mut targets);
             }
         }
     }
