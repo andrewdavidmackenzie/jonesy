@@ -106,6 +106,10 @@ Usage:
   jonesy [OPTIONS]
   jonesy [OPTIONS] --bin <path_to_binary>
   jonesy [OPTIONS] --lib <path_to_lib_object>
+  jonesy lsp
+
+Subcommands:
+  lsp                Start the LSP server for IDE integration
 
 Options:
   --tree             Show full call tree instead of just crate code points
@@ -470,6 +474,101 @@ split-debuginfo = "packed"
 **Trade-off:** This slightly slows incremental builds because `dsymutil` runs on every build.
 
 See [description.md](description.md) for detailed technical documentation.
+
+## IDE Integration (LSP Server)
+
+Jonesy includes a Language Server Protocol (LSP) server that integrates with IDEs and code editors to show panic point diagnostics inline.
+
+### Starting the LSP Server
+
+```bash
+jonesy lsp
+```
+
+The LSP server communicates via stdin/stdout using the standard LSP protocol.
+
+### Features
+
+- **Diagnostics**: Panic points appear as warnings in your editor
+- **Auto-refresh**: Analysis runs on initialization and when files are saved
+- **Manual refresh**: Trigger re-analysis with the `jonesy.analyze` command
+
+### VS Code Setup
+
+VS Code requires a language server client extension to connect to `jonesy lsp`. You can use the [Generic LSP Client](https://marketplace.visualstudio.com/items?itemName=llllvvuu.llllvvuu-glspc) extension or similar.
+
+After installing an LSP client extension, configure it in `.vscode/settings.json`:
+
+```json
+{
+  "glspc.serverCommand": "jonesy lsp",
+  "glspc.languageId": "rust"
+}
+```
+
+The exact configuration varies by extension. The key is to run `jonesy lsp` and associate it with Rust files.
+
+### RustRover / IntelliJ Setup
+
+RustRover and IntelliJ IDEA require the [LSP4IJ plugin](https://plugins.jetbrains.com/plugin/23257-lsp4ij) to add custom language servers.
+
+**Install the plugin:**
+
+1. Go to **Settings** → **Plugins** → **Marketplace**
+2. Search for "LSP4IJ"
+3. Click **Install** and restart the IDE
+
+**Configure jonesy:**
+
+1. Go to **Settings** → **Languages & Frameworks** → **Language Servers**
+2. Click **+** to add a new server
+3. In the **Server** tab:
+   - **Name**: `jonesy`
+   - **Command**: `jonesy lsp`
+4. In the **Mappings** tab, add a file name pattern:
+   - Click **+** in the file name patterns section
+   - Add `*.rs`
+5. Click **OK** to save
+
+The configuration is stored at the application level, so jonesy will be available in all your Rust projects. The IDE will automatically start `jonesy lsp` when you open Rust files. Jonesy diagnostics will appear alongside rust-analyzer's analysis.
+
+**Note:** The configuration is stored in `~/Library/Application Support/JetBrains/<version>/options/UserDefinedLanguageServerSettings.xml` on macOS. Project-level `.idea/lsp.json` files are not supported by LSP4IJ.
+
+### Other Editors
+
+The LSP server works with any editor that supports the Language Server Protocol:
+
+- **Neovim**: Configure with `nvim-lspconfig`
+- **Emacs**: Use `lsp-mode` or `eglot`
+- **Sublime Text**: Use the LSP package
+- **Helix**: Add to `languages.toml`
+
+Example Neovim configuration:
+
+```lua
+local lspconfig = require('lspconfig')
+local configs = require('lspconfig.configs')
+
+configs.jonesy = {
+  default_config = {
+    cmd = { 'jonesy', 'lsp' },
+    filetypes = { 'rust' },
+    root_dir = lspconfig.util.root_pattern('Cargo.toml'),
+  },
+}
+
+lspconfig.jonesy.setup({})
+```
+
+### How It Works
+
+The LSP server:
+1. Finds workspace binaries in `target/debug/`
+2. Runs jonesy analysis on each binary
+3. Publishes diagnostics to the editor with file locations and panic causes
+4. Re-analyzes when files are saved
+
+Note: The LSP server runs alongside rust-analyzer—it doesn't replace it. You'll see both rust-analyzer's diagnostics and jonesy's panic point warnings.
 
 ## Limitations
 
