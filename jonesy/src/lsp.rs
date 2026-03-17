@@ -295,6 +295,23 @@ impl JonesyLspServer {
             let diagnostics: Vec<Diagnostic> =
                 points.iter().map(Self::code_point_to_diagnostic).collect();
 
+            // Log diagnostic details for debugging
+            for (point, diag) in points.iter().zip(diagnostics.iter()) {
+                self.client
+                    .log_message(
+                        MessageType::LOG,
+                        format!(
+                            "  Diag: {}:{} col:{:?} -> LSP line:{} '{}'",
+                            uri.path().rsplit('/').next().unwrap_or("?"),
+                            point.line,
+                            point.column,
+                            diag.range.start.line,
+                            diag.message.lines().next().unwrap_or("")
+                        ),
+                    )
+                    .await;
+            }
+
             self.client
                 .log_message(
                     MessageType::LOG,
