@@ -166,6 +166,23 @@ impl JonesyLspServer {
             )
             .await;
 
+        // Get src_filter for filtering to workspace source files
+        let src_filter = workspace_info
+            .as_ref()
+            .map(|info| info.src_filter.clone())
+            .unwrap_or_else(|| {
+                // Fallback: use workspace root name + /src/
+                workspace_root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|name| format!("{}/src/", name))
+                    .unwrap_or_else(|| "src/".to_string())
+            });
+
+        self.client
+            .log_message(MessageType::LOG, format!("Source filter: {}", src_filter))
+            .await;
+
         // Analyze each target and log progress
         let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
         let mut seen: std::collections::HashSet<(String, u32, u32)> =
@@ -180,8 +197,11 @@ impl JonesyLspServer {
             let analysis_result = {
                 let target = target.clone();
                 let workspace_root = workspace_root.clone();
-                tokio::task::spawn_blocking(move || analyze_single_target(&target, &workspace_root))
-                    .await
+                let src_filter = src_filter.clone();
+                tokio::task::spawn_blocking(move || {
+                    analyze_single_target(&target, &workspace_root, &src_filter)
+                })
+                .await
             };
 
             match analysis_result {
@@ -426,6 +446,8 @@ impl LanguageServer for JonesyLspServer {
 struct WorkspaceInfo {
     members: Vec<String>,
     targets: Vec<String>,
+    /// Filter path for source files like "flowc/src/|flowr/src/|..."
+    src_filter: String,
 }
 
 /// Quickly discover workspace structure without running full analysis
@@ -435,7 +457,13 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     let manifest = cargo_toml::Manifest::from_slice(content.as_bytes()).ok()?;
 
     let mut members = Vec::new();
+    let mut member_src_paths = Vec::new();
     let mut targets = Vec::new();
+
+    let workspace_root_name = workspace_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
 
     // Get workspace members
     if let Some(workspace) = &manifest.workspace {
@@ -444,14 +472,27 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
                 // Expand glob
                 for path in expand_workspace_glob(workspace_root, member) {
                     if let Some(name) = path.file_name() {
-                        members.push(name.to_string_lossy().to_string());
+                        let name_str = name.to_string_lossy().to_string();
+                        member_src_paths.push(format!("{}/src/", name_str));
+                        members.push(name_str);
                     }
                 }
             } else {
+                // Use directory basename for src path
+                let path = std::path::Path::new(member);
+                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                    member_src_paths.push(format!("{}/src/", dir_name));
+                }
                 members.push(member.clone());
             }
         }
     } else if let Some(pkg) = &manifest.package {
+        // Single crate, not a workspace
+        if workspace_root_name.is_empty() {
+            member_src_paths.push("src/".to_string());
+        } else {
+            member_src_paths.push(format!("{}/src/", workspace_root_name));
+        }
         members.push(pkg.name.clone());
     }
 
@@ -464,13 +505,21 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
         }
     }
 
-    Some(WorkspaceInfo { members, targets })
+    // Build filter path like "flowc/src/|flowr/src/|..."
+    let src_filter = member_src_paths.join("|");
+
+    Some(WorkspaceInfo {
+        members,
+        targets,
+        src_filter,
+    })
 }
 
 /// Analyze a single target (binary or library) and return panic points
 fn analyze_single_target(
     target_path: &Path,
     workspace_root: &Path,
+    src_filter: &str,
 ) -> std::result::Result<Vec<CrateCodePoint>, String> {
     use crate::call_tree::{
         CallTreeNode, build_call_tree_parallel, collect_crate_code_points, prune_call_tree,
@@ -497,9 +546,6 @@ fn analyze_single_target(
 
     let config =
         Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());
-
-    // Use workspace root as the filter path so we capture all workspace crates
-    let workspace_root_str = workspace_root.to_string_lossy().to_string();
 
     // derive_crate_src_path used for debug info loading
     let crate_src_path = derive_crate_src_path(target_path);
@@ -563,9 +609,11 @@ fn analyze_single_target(
     visited.insert(target_addr);
     root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
 
-    // Prune and collect code points using workspace root to capture all workspace crates
-    prune_call_tree(&mut root, &workspace_root_str);
-    let (code_points, _) = collect_crate_code_points(&root, &workspace_root_str, &config);
+    // Prune and collect code points using src_filter to capture all workspace crates
+    // The src_filter contains relative paths like "flowc/src/|flowr/src/|..." which match
+    // the relative paths in debug info
+    prune_call_tree(&mut root, src_filter);
+    let (code_points, _) = collect_crate_code_points(&root, src_filter, &config);
 
     Ok(code_points)
 }
