@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress;
@@ -117,10 +117,7 @@ impl JonesyLspServer {
             Err(e) => {
                 // Client may not support progress - log and continue without it
                 self.client
-                    .log_message(
-                        MessageType::LOG,
-                        format!("Progress not supported: {}", e),
-                    )
+                    .log_message(MessageType::LOG, format!("Progress not supported: {}", e))
                     .await;
                 None
             }
@@ -293,7 +290,12 @@ impl JonesyLspServer {
                 let percentage = ((target_idx * 100) / total_targets) as u32;
                 self.progress_report(
                     token,
-                    &format!("Analyzing {} ({}/{})", target_name, target_idx + 1, total_targets),
+                    &format!(
+                        "Analyzing {} ({}/{})",
+                        target_name,
+                        target_idx + 1,
+                        total_targets
+                    ),
                     percentage,
                 )
                 .await;
@@ -402,7 +404,11 @@ impl JonesyLspServer {
         if let Some(ref token) = progress_token {
             self.progress_end(
                 token,
-                &format!("Found {} panic points in {} files", total_points, new_files.len()),
+                &format!(
+                    "Found {} panic points in {} files",
+                    total_points,
+                    new_files.len()
+                ),
             )
             .await;
         }
