@@ -773,87 +773,15 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
 
     let mut targets = Vec::new();
 
-    // Helper to find binary with optional .exe extension on Windows
-    let find_binary = |dir: &Path, name: &str| -> Option<PathBuf> {
-        let path = dir.join(name);
-        if path.exists() {
-            return Some(path);
-        }
-        #[cfg(windows)]
-        {
-            let exe_path = path.with_extension("exe");
-            if exe_path.exists() {
-                return Some(exe_path);
-            }
-        }
-        None
-    };
-
-    // Helper to find library (.dylib on macOS, .so on Linux, .dll on Windows)
-    let find_library = |dir: &Path, name: &str| -> Option<PathBuf> {
-        // Convert crate name to lib name (replace - with _)
-        let lib_name = name.replace('-', "_");
-
-        // Try platform-specific extensions
-        #[cfg(target_os = "macos")]
-        {
-            let dylib = dir.join(format!("lib{}.dylib", lib_name));
-            if dylib.exists() {
-                return Some(dylib);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let so = dir.join(format!("lib{}.so", lib_name));
-            if so.exists() {
-                return Some(so);
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let dll = dir.join(format!("{}.dll", lib_name));
-            if dll.exists() {
-                return Some(dll);
-            }
-        }
-        // Also try .rlib (Rust static library)
-        let rlib = dir.join(format!("lib{}.rlib", lib_name));
-        if rlib.exists() {
-            return Some(rlib);
-        }
-        None
-    };
-
-    // Check for package binaries and libraries
-    if let Some(pkg) = &manifest.package {
-        let pkg_name = &pkg.name;
-
-        // Default binary
-        if let Some(default_bin) = find_binary(&target_debug, pkg_name) {
-            targets.push(default_bin);
-        }
-
-        // Explicit [[bin]] targets
-        for bin in &manifest.bin {
-            let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
-            if let Some(bin_path) = find_binary(&target_debug, bin_name) {
-                if !targets.contains(&bin_path) {
-                    targets.push(bin_path);
-                }
-            }
-        }
-
-        // Library target - use [lib] name if specified, otherwise package name
-        let lib_name = manifest
-            .lib
-            .as_ref()
-            .and_then(|lib| lib.name.as_deref())
-            .unwrap_or(pkg_name);
-        if let Some(lib_path) = find_library(&target_debug, lib_name) {
-            if !targets.contains(&lib_path) {
-                targets.push(lib_path);
-            }
-        }
+    // Check for package binaries and libraries (non-virtual workspace or single crate)
+    if manifest.package.is_some() {
+        // Complete the manifest to discover implicit targets (src/main.rs, src/lib.rs, etc.)
+        let mut completed_manifest = manifest.clone();
+        let _ = completed_manifest.complete_from_path_and_workspace::<toml::Value>(
+            &cargo_toml,
+            None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
+        );
+        collect_binaries_from_manifest(&completed_manifest, &target_debug, &mut targets);
     }
 
     // Check for workspace members
@@ -868,40 +796,20 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
 
             for member_path in member_paths {
                 let member_cargo = member_path.join("Cargo.toml");
-                if let Ok(content) = std::fs::read_to_string(&member_cargo) {
-                    if let Ok(member_manifest) =
-                        cargo_toml::Manifest::from_slice(content.as_bytes())
+                if let Ok(member_content) = std::fs::read_to_string(&member_cargo) {
+                    if let Ok(mut member_manifest) =
+                        cargo_toml::Manifest::from_slice(member_content.as_bytes())
                     {
-                        if let Some(pkg) = &member_manifest.package {
-                            // Default binary
-                            if let Some(default_bin) = find_binary(&target_debug, &pkg.name) {
-                                if !targets.contains(&default_bin) {
-                                    targets.push(default_bin);
-                                }
-                            }
-
-                            // Explicit [[bin]] targets
-                            for bin in &member_manifest.bin {
-                                let bin_name = bin.name.as_deref().unwrap_or(&pkg.name);
-                                if let Some(bin_path) = find_binary(&target_debug, bin_name) {
-                                    if !targets.contains(&bin_path) {
-                                        targets.push(bin_path);
-                                    }
-                                }
-                            }
-
-                            // Library target - use [lib] name if specified, otherwise package name
-                            let lib_name = member_manifest
-                                .lib
-                                .as_ref()
-                                .and_then(|lib| lib.name.as_deref())
-                                .unwrap_or(&pkg.name);
-                            if let Some(lib_path) = find_library(&target_debug, lib_name) {
-                                if !targets.contains(&lib_path) {
-                                    targets.push(lib_path);
-                                }
-                            }
-                        }
+                        // Complete the manifest to discover implicit targets
+                        let _ = member_manifest.complete_from_path_and_workspace(
+                            &member_cargo,
+                            Some((&manifest, cargo_toml.as_path())),
+                        );
+                        collect_binaries_from_manifest(
+                            &member_manifest,
+                            &target_debug,
+                            &mut targets,
+                        );
                     }
                 }
             }
@@ -909,6 +817,102 @@ fn find_workspace_binaries(workspace_root: &Path) -> std::result::Result<Vec<Pat
     }
 
     Ok(targets)
+}
+
+/// Collect binaries from a completed manifest into the targets vector
+fn collect_binaries_from_manifest(
+    manifest: &cargo_toml::Manifest,
+    target_debug: &Path,
+    targets: &mut Vec<PathBuf>,
+) {
+    let Some(pkg) = &manifest.package else {
+        return;
+    };
+    let pkg_name = &pkg.name;
+
+    // Check for explicit [[bin]] targets (populated by complete_from_path_and_workspace)
+    for bin in &manifest.bin {
+        let bin_name = bin.name.as_deref().unwrap_or(pkg_name);
+        if let Some(bin_path) = find_binary(target_debug, bin_name) {
+            if !targets.contains(&bin_path) {
+                targets.push(bin_path);
+            }
+        }
+    }
+
+    // Check for default binary if no explicit bins (fallback for edge cases)
+    if manifest.bin.is_empty() {
+        if let Some(default_bin) = find_binary(target_debug, pkg_name) {
+            if !targets.contains(&default_bin) {
+                targets.push(default_bin);
+            }
+        }
+    }
+
+    // Check for library target
+    if manifest.lib.is_some() {
+        let lib_name = manifest
+            .lib
+            .as_ref()
+            .and_then(|lib| lib.name.as_deref())
+            .unwrap_or(pkg_name);
+        if let Some(lib_path) = find_library(target_debug, lib_name) {
+            if !targets.contains(&lib_path) {
+                targets.push(lib_path);
+            }
+        }
+    }
+}
+
+/// Find binary with optional .exe extension on Windows
+fn find_binary(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    if path.exists() {
+        return Some(path);
+    }
+    #[cfg(windows)]
+    {
+        let exe_path = path.with_extension("exe");
+        if exe_path.exists() {
+            return Some(exe_path);
+        }
+    }
+    None
+}
+
+/// Find library (.dylib on macOS, .so on Linux, .dll on Windows, or .rlib)
+fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
+    // Convert crate name to lib name (replace - with _)
+    let lib_name = name.replace('-', "_");
+
+    // Try platform-specific extensions
+    #[cfg(target_os = "macos")]
+    {
+        let dylib = dir.join(format!("lib{}.dylib", lib_name));
+        if dylib.exists() {
+            return Some(dylib);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let so = dir.join(format!("lib{}.so", lib_name));
+        if so.exists() {
+            return Some(so);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let dll = dir.join(format!("{}.dll", lib_name));
+        if dll.exists() {
+            return Some(dll);
+        }
+    }
+    // Also try .rlib (Rust static library)
+    let rlib = dir.join(format!("lib{}.rlib", lib_name));
+    if rlib.exists() {
+        return Some(rlib);
+    }
+    None
 }
 
 /// Expand a workspace glob pattern like "crates/*" or "crates/**" to actual paths
