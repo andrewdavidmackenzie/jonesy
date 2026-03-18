@@ -243,6 +243,8 @@ impl Config {
         }
 
         // Fall back to global rules
+        // Check explicit entries first, then wildcards (same priority as scoped rules)
+
         // Explicit deny takes precedence
         if self.denied.contains(id) {
             return true;
@@ -250,6 +252,14 @@ impl Config {
 
         // An explicit "allow" means not denied
         if self.allowed.contains(id) {
+            return false;
+        }
+
+        // Then check global wildcards
+        if self.denied.contains("*") {
+            return true;
+        }
+        if self.allowed.contains("*") {
             return false;
         }
 
