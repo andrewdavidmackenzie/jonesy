@@ -195,6 +195,9 @@ impl Config {
     /// Check if a panic cause should be reported (is denied).
     /// This is the simple version that only checks global rules.
     /// Returns true if the panic should be shown in output.
+    ///
+    /// For scoped rules support, use `is_denied_at()` with location info.
+    #[allow(dead_code)] // Part of public API, used in tests
     pub fn is_denied(&self, cause: &PanicCause) -> bool {
         self.is_denied_at(cause, None, None)
     }
