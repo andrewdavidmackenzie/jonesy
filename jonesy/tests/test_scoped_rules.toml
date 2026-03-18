@@ -1,0 +1,7 @@
+# Test config demonstrating scoped rules
+# Allow explicit panic! calls in main.rs (line 9 has `panic!()`)
+# This should reduce reported panics by filtering panic cause in main.rs
+
+[[rules]]
+path = "**/main.rs"
+allow = ["panic"]

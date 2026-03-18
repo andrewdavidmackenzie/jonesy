@@ -5,31 +5,147 @@
 //! 2. Cargo.toml `[package.metadata.jonesy]` section
 //! 3. `jonesy.toml` file in the project root
 //! 4. `--config <path>` command line option
+//!
+//! Rules can be global or scoped to specific paths/functions:
+//! - Global rules apply to all panic points
+//! - Scoped rules match by file path pattern or function name pattern
+//! - More specific rules take precedence over less specific ones
 
 use crate::panic_cause::PanicCause;
+use glob::Pattern;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+/// A scoped rule that applies to specific paths or functions.
+#[derive(Debug, Clone)]
+pub struct ScopedRule {
+    /// File path pattern (glob syntax, e.g., "**/tests/**")
+    pub path: Option<Pattern>,
+    /// Function name pattern (glob syntax, e.g., "my_crate::*::new")
+    pub function: Option<Pattern>,
+    /// Panic causes to allow (not report) when this rule matches
+    pub allowed: HashSet<String>,
+    /// Panic causes to deny (report) when this rule matches
+    pub denied: HashSet<String>,
+}
+
+impl ScopedRule {
+    /// Check if this rule matches the given file path and function name.
+    /// Returns the specificity score if matched (higher = more specific), None if not matched.
+    pub fn matches(&self, file_path: Option<&str>, function_name: Option<&str>) -> Option<u32> {
+        let mut specificity = 0u32;
+
+        // Check path pattern
+        if let Some(ref pattern) = self.path {
+            if let Some(path) = file_path {
+                // Normalize path separators for matching
+                let normalized = path.replace('\\', "/");
+                if !pattern.matches(&normalized) {
+                    return None;
+                }
+                // More specific path patterns get higher scores
+                // Count non-wildcard characters as specificity
+                specificity += pattern.as_str().chars().filter(|c| *c != '*').count() as u32;
+            } else {
+                return None;
+            }
+        }
+
+        // Check function pattern
+        if let Some(ref pattern) = self.function {
+            if let Some(func) = function_name {
+                if !pattern.matches(func) {
+                    return None;
+                }
+                // Function patterns are more specific than path patterns
+                specificity += 1000;
+                specificity += pattern.as_str().chars().filter(|c| *c != '*').count() as u32;
+            } else {
+                return None;
+            }
+        }
+
+        // If no patterns specified, rule doesn't match anything
+        if self.path.is_none() && self.function.is_none() {
+            return None;
+        }
+
+        Some(specificity)
+    }
+
+    /// Check if a cause is allowed by this rule.
+    /// Returns Some(true) if allowed, Some(false) if denied, None if not specified.
+    ///
+    /// Priority order:
+    /// 1. Explicit deny of specific cause
+    /// 2. Explicit allow of specific cause
+    /// 3. Wildcard deny
+    /// 4. Wildcard allow
+    pub fn check_cause(&self, cause_id: &str) -> Option<bool> {
+        // Check explicit entries first (before wildcards)
+        // Explicit deny takes precedence over explicit allow
+        if self.denied.contains(cause_id) {
+            return Some(false);
+        }
+        if self.allowed.contains(cause_id) {
+            return Some(true);
+        }
+
+        // Then check wildcards
+        if self.denied.contains("*") {
+            return Some(false);
+        }
+        if self.allowed.contains("*") {
+            return Some(true);
+        }
+
+        // Rule doesn't specify this cause
+        None
+    }
+}
+
+/// TOML structure for a scoped rule
+#[derive(Debug, Deserialize, Default)]
+struct TomlScopedRule {
+    /// File path pattern (glob syntax)
+    #[serde(default)]
+    path: Option<String>,
+    /// Function name pattern (glob syntax)
+    #[serde(default)]
+    function: Option<String>,
+    /// Panic causes to allow
+    #[serde(default)]
+    allow: Vec<String>,
+    /// Panic causes to deny
+    #[serde(default)]
+    deny: Vec<String>,
+}
+
 /// Configuration for which panic causes to allow or deny.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Panic cause IDs that are allowed (not reported)
+    /// Panic cause IDs that are allowed globally (not reported)
     allowed: HashSet<String>,
-    /// Panic cause IDs that are denied (reported)
+    /// Panic cause IDs that are denied globally (reported)
     denied: HashSet<String>,
+    /// Scoped rules for path/function-specific allow/deny
+    rules: Vec<ScopedRule>,
 }
 
 /// TOML configuration structure for jonesy
 #[derive(Debug, Deserialize, Default)]
 struct TomlConfig {
-    /// Panic causes to allow (not report)
+    /// Panic causes to allow (not report) globally
     #[serde(default)]
     allow: Vec<String>,
-    /// Panic causes to deny (report)
+    /// Panic causes to deny (report) globally
     #[serde(default)]
     deny: Vec<String>,
+    /// Scoped rules
+    #[serde(default)]
+    rules: Vec<TomlScopedRule>,
 }
 
 /// Cargo.toml package metadata structure
@@ -72,13 +188,62 @@ impl Config {
         Config {
             allowed,
             denied: HashSet::new(),
+            rules: Vec::new(),
         }
     }
 
     /// Check if a panic cause should be reported (is denied).
+    /// This is the simple version that only checks global rules.
     /// Returns true if the panic should be shown in output.
+    ///
+    /// For scoped rules support, use `is_denied_at()` with location info.
+    #[allow(dead_code)] // Part of public API, used in tests
     pub fn is_denied(&self, cause: &PanicCause) -> bool {
+        self.is_denied_at(cause, None, None)
+    }
+
+    /// Check if a panic cause should be reported (is denied) at a specific location.
+    /// Checks scoped rules first (most specific wins), then falls back to global rules.
+    ///
+    /// # Arguments
+    /// * `cause` - The panic cause to check
+    /// * `file_path` - Optional file path where the panic occurs
+    /// * `function_name` - Optional function name where the panic occurs
+    ///
+    /// # Returns
+    /// `true` if the panic should be reported, `false` if it should be allowed
+    pub fn is_denied_at(
+        &self,
+        cause: &PanicCause,
+        file_path: Option<&str>,
+        function_name: Option<&str>,
+    ) -> bool {
         let id = cause.id();
+
+        // Find all matching scoped rules and sort by specificity
+        // Track rule index for tiebreaking (later rules win when specificity is equal)
+        let mut matching_rules: Vec<(u32, usize, &ScopedRule)> = self
+            .rules
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, rule)| {
+                rule.matches(file_path, function_name)
+                    .map(|specificity| (specificity, idx, rule))
+            })
+            .collect();
+
+        // Sort by specificity first, then by declaration order (later wins)
+        matching_rules.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+        // Check scoped rules in order of specificity
+        for (_, _, rule) in matching_rules {
+            if let Some(allowed) = rule.check_cause(id) {
+                return !allowed;
+            }
+        }
+
+        // Fall back to global rules
+        // Check explicit entries first, then wildcards (same priority as scoped rules)
 
         // Explicit deny takes precedence
         if self.denied.contains(id) {
@@ -90,15 +255,28 @@ impl Config {
             return false;
         }
 
+        // Then check global wildcards
+        if self.denied.contains("*") {
+            return true;
+        }
+        if self.allowed.contains("*") {
+            return false;
+        }
+
         // Default: deny (report) unless explicitly allowed
         true
     }
 
+    /// Validate a cause ID and return whether it's valid.
+    fn is_valid_cause_id(id: &str) -> bool {
+        id == "*" || PanicCause::all_ids().contains(&id)
+    }
+
     /// Apply a TOML configuration, overriding current settings.
     fn apply_toml_config(&mut self, config: &TomlConfig) {
-        // Validate and apply the allow list
+        // Validate and apply the global allow list
         for id in &config.allow {
-            if PanicCause::all_ids().contains(&id.as_str()) {
+            if Self::is_valid_cause_id(id) {
                 self.allowed.insert(id.clone());
                 self.denied.remove(id);
             } else {
@@ -106,14 +284,71 @@ impl Config {
             }
         }
 
-        // Validate and apply the deny list
+        // Validate and apply the global deny list
         for id in &config.deny {
-            if PanicCause::all_ids().contains(&id.as_str()) {
+            if Self::is_valid_cause_id(id) {
                 self.denied.insert(id.clone());
                 self.allowed.remove(id);
             } else {
                 eprintln!("Warning: Unknown panic cause '{}' in deny list", id);
             }
+        }
+
+        // Parse and apply scoped rules
+        for toml_rule in &config.rules {
+            // Parse path pattern
+            let path = toml_rule.path.as_ref().and_then(|p| match Pattern::new(p) {
+                Ok(pattern) => Some(pattern),
+                Err(e) => {
+                    eprintln!("Warning: Invalid path pattern '{}': {}", p, e);
+                    None
+                }
+            });
+
+            // Parse function pattern
+            let function = toml_rule
+                .function
+                .as_ref()
+                .and_then(|f| match Pattern::new(f) {
+                    Ok(pattern) => Some(pattern),
+                    Err(e) => {
+                        eprintln!("Warning: Invalid function pattern '{}': {}", f, e);
+                        None
+                    }
+                });
+
+            // Skip rules with no valid patterns
+            if path.is_none() && function.is_none() {
+                eprintln!("Warning: Scoped rule has no valid path or function pattern, skipping");
+                continue;
+            }
+
+            // Validate and collect allowed causes
+            let mut allowed = HashSet::new();
+            for id in &toml_rule.allow {
+                if Self::is_valid_cause_id(id) {
+                    allowed.insert(id.clone());
+                } else {
+                    eprintln!("Warning: Unknown panic cause '{}' in scoped allow list", id);
+                }
+            }
+
+            // Validate and collect denied causes
+            let mut denied = HashSet::new();
+            for id in &toml_rule.deny {
+                if Self::is_valid_cause_id(id) {
+                    denied.insert(id.clone());
+                } else {
+                    eprintln!("Warning: Unknown panic cause '{}' in scoped deny list", id);
+                }
+            }
+
+            self.rules.push(ScopedRule {
+                path,
+                function,
+                allowed,
+                denied,
+            });
         }
     }
 
@@ -243,6 +478,7 @@ mod tests {
         let toml_config = TomlConfig {
             allow: vec![],
             deny: vec!["drop".to_string()],
+            rules: vec![],
         };
         config.apply_toml_config(&toml_config);
 
@@ -256,6 +492,7 @@ mod tests {
         let toml_config = TomlConfig {
             allow: vec!["panic".to_string()],
             deny: vec![],
+            rules: vec![],
         };
         config.apply_toml_config(&toml_config);
 
@@ -269,5 +506,171 @@ mod tests {
         assert_eq!(PanicCause::ExplicitPanic.id(), "panic");
         assert_eq!(PanicCause::BoundsCheck.id(), "bounds");
         assert_eq!(PanicCause::PanicInDrop.id(), "drop");
+    }
+
+    #[test]
+    fn test_scoped_rule_path_matching() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                path: Some("**/tests/**".to_string()),
+                function: None,
+                allow: vec!["unwrap".to_string(), "panic".to_string()],
+                deny: vec![],
+            }],
+        };
+        config.apply_toml_config(&toml_config);
+
+        // In tests directory, unwrap should be allowed
+        assert!(!config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/tests/test_main.rs"),
+            None
+        ));
+        assert!(!config.is_denied_at(
+            &PanicCause::ExplicitPanic,
+            Some("src/tests/test_main.rs"),
+            None
+        ));
+
+        // Outside tests, unwrap should be denied (global default)
+        assert!(config.is_denied_at(&PanicCause::UnwrapNone, Some("src/main.rs"), None));
+    }
+
+    #[test]
+    fn test_scoped_rule_function_matching() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                path: None,
+                function: Some("my_crate::config::*".to_string()),
+                allow: vec!["unwrap".to_string()],
+                deny: vec![],
+            }],
+        };
+        config.apply_toml_config(&toml_config);
+
+        // In matching function, unwrap should be allowed
+        assert!(!config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/config.rs"),
+            Some("my_crate::config::load")
+        ));
+
+        // In non-matching function, unwrap should be denied
+        assert!(config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/main.rs"),
+            Some("my_crate::main")
+        ));
+    }
+
+    #[test]
+    fn test_scoped_rule_wildcard_allow() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                path: Some("tests/**".to_string()),
+                function: None,
+                allow: vec!["*".to_string()],
+                deny: vec![],
+            }],
+        };
+        config.apply_toml_config(&toml_config);
+
+        // In tests, all panics should be allowed
+        assert!(!config.is_denied_at(&PanicCause::UnwrapNone, Some("tests/integration.rs"), None));
+        assert!(!config.is_denied_at(&PanicCause::BoundsCheck, Some("tests/integration.rs"), None));
+        assert!(!config.is_denied_at(
+            &PanicCause::ExplicitPanic,
+            Some("tests/integration.rs"),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_scoped_rule_specificity() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![
+                // Less specific: allow unwrap in all tests
+                TomlScopedRule {
+                    path: Some("**/tests/**".to_string()),
+                    function: None,
+                    allow: vec!["unwrap".to_string()],
+                    deny: vec![],
+                },
+                // More specific: deny unwrap in specific test file
+                TomlScopedRule {
+                    path: Some("src/tests/strict_test.rs".to_string()),
+                    function: None,
+                    allow: vec![],
+                    deny: vec!["unwrap".to_string()],
+                },
+            ],
+        };
+        config.apply_toml_config(&toml_config);
+
+        // In general tests, unwrap allowed
+        assert!(!config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/tests/normal_test.rs"),
+            None
+        ));
+
+        // In strict_test.rs, unwrap denied (more specific rule)
+        assert!(config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/tests/strict_test.rs"),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_function_rule_more_specific_than_path() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![
+                // Path rule: deny unwrap in src
+                TomlScopedRule {
+                    path: Some("src/**".to_string()),
+                    function: None,
+                    allow: vec![],
+                    deny: vec!["unwrap".to_string()],
+                },
+                // Function rule: allow unwrap in specific function
+                TomlScopedRule {
+                    path: None,
+                    function: Some("my_crate::config::load".to_string()),
+                    allow: vec!["unwrap".to_string()],
+                    deny: vec![],
+                },
+            ],
+        };
+        config.apply_toml_config(&toml_config);
+
+        // In src without function match, unwrap denied
+        assert!(config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/main.rs"),
+            Some("my_crate::main")
+        ));
+
+        // In src with function match, unwrap allowed (function rule more specific)
+        assert!(!config.is_denied_at(
+            &PanicCause::UnwrapNone,
+            Some("src/config.rs"),
+            Some("my_crate::config::load")
+        ));
     }
 }

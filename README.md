@@ -378,6 +378,87 @@ To allow common development panics:
 allow = ["todo", "unimplemented", "debug_assert"]
 ```
 
+### Scoped Rules
+
+Scoped rules let you allow or deny panic causes in specific files or functions using glob patterns:
+
+```toml
+# jonesy.toml
+
+# Allow all panics in test files
+[[rules]]
+path = "**/tests/**"
+allow = ["*"]
+
+# Allow explicit panics only in main.rs
+[[rules]]
+path = "**/main.rs"
+allow = ["panic"]
+
+# Allow unwrap in a specific function
+[[rules]]
+function = "*::parse_config"
+allow = ["unwrap", "expect"]
+```
+
+#### Pattern Matching
+
+- **Path patterns** match against the full source file path (e.g., `/path/to/src/main.rs`)
+- **Function patterns** match against function names (e.g., `main`, `my_mod::helper`)
+- Use `*` for single component matching, `**` for directory wildcard
+- Use `"*"` in allow/deny to match all panic causes
+
+#### Rule Precedence
+
+When multiple rules match, more specific rules take precedence:
+
+1. **Function patterns** are more specific than path patterns
+2. **Longer patterns** (more literal characters) are more specific
+3. Rules with both path and function patterns are most specific
+
+Within equal specificity, later rules in the config file override earlier ones.
+
+### Inline Allow Comments
+
+For fine-grained control, you can add `// jonesy:allow(cause)` comments directly in your source code:
+
+```rust
+fn setup_config() {
+    // Allow unwrap on a value we know is valid
+    let config = load_config().unwrap(); // jonesy:allow(unwrap)
+
+    // Allow multiple causes
+    let value = data.unwrap(); // jonesy:allow(unwrap, bounds)
+
+    // Allow all panic causes at this line
+    risky_operation(); // jonesy:allow(*)
+}
+```
+
+The comment applies to the line it's on. Due to DWARF debug info sometimes being slightly off, jonesy checks a small range around the reported line number (±2 lines).
+
+**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `capacity`, `drop`, `unwind`, `unknown`
+
+Use `*` to allow all causes at that location.
+
+#### Example: Test-Friendly Configuration
+
+```toml
+# jonesy.toml
+
+# Default: deny all (no global allow)
+
+# Allow everything in tests
+[[rules]]
+path = "**/tests/**"
+allow = ["*"]
+
+# Allow debug_assert everywhere
+[[rules]]
+path = "**/*"
+allow = ["debug_assert"]
+```
+
 ## Exit Status
 
 Jonesy exits with the number of panic code points found:

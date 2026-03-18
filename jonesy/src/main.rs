@@ -33,6 +33,7 @@ mod call_tree;
 mod cargo;
 mod config;
 mod html_output;
+mod inline_allows;
 mod json_output;
 mod lsp;
 mod panic_cause;
@@ -706,14 +707,23 @@ pub(crate) fn analyze_archive(
         .collect();
 
     // Filter out code points whose causes are ALL allowed (not denied) by config
+    // Use is_denied_at to support scoped rules based on file/function patterns
     code_points.retain(|point| {
         // Keep if no causes (conservative) or any denied cause
-        point.causes.is_empty() || point.causes.iter().any(|c| config.is_denied(c))
+        point.causes.is_empty()
+            || point
+                .causes
+                .iter()
+                .any(|c| config.is_denied_at(c, Some(&point.file), Some(&point.name)))
     });
 
     // Remove allowed causes, keeping only denied ones
     for point in &mut code_points {
-        point.causes.retain(|c| config.is_denied(c));
+        let file = point.file.clone();
+        let name = point.name.clone();
+        point
+            .causes
+            .retain(|c| config.is_denied_at(c, Some(&file), Some(&name)));
     }
 
     // Deduplicate by (file, line)
