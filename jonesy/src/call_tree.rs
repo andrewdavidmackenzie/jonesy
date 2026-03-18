@@ -367,7 +367,10 @@ fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
         let originally_empty = point.causes.is_empty();
 
         // Remove allowed causes from the set - only keep denied ones
-        point.causes.retain(|cause| config.is_denied(cause));
+        // Use is_denied_at for scoped rule support (checks path/function patterns)
+        point
+            .causes
+            .retain(|cause| config.is_denied_at(cause, Some(&point.file), Some(&point.name)));
 
         // Keep if originally empty (conservative) or if any denied causes remain
         let should_keep = originally_empty || !point.causes.is_empty();

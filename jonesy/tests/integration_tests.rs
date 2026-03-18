@@ -546,3 +546,57 @@ fn test_multi_bin_lib_only() {
         );
     }
 }
+
+/// Test scoped rules: allow explicit panic! in main.rs
+/// The config allows "panic" cause in **/main.rs, so the direct panic!() call
+/// at main.rs:9 should be filtered, reducing the total count.
+#[test]
+fn test_scoped_rules() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+    let config_path = workspace_root
+        .join("jonesy")
+        .join("tests")
+        .join("test_scoped_rules.toml");
+
+    // Run without config to get baseline
+    let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
+
+    // Run with scoped config that allows "panic" cause in **/main.rs
+    let (scoped_exit_code, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
+
+    // The scoped config should result in fewer detected panics
+    // (the explicit panic!() at main.rs:9 should be filtered)
+    assert!(
+        scoped_exit_code < baseline_exit_code,
+        "Scoped rules should filter some panics: baseline={}, with_scoped_rules={}",
+        baseline_exit_code,
+        scoped_exit_code
+    );
+
+    // Scoped-filtered panics should be a subset of baseline panics
+    assert!(
+        scoped_detected.is_subset(&baseline_detected),
+        "Scoped-filtered panics should be a subset of baseline panics"
+    );
+
+    // Verify that main.rs:9 (the explicit panic!) is NOT in the filtered results
+    let explicit_panic_filtered = !scoped_detected
+        .iter()
+        .any(|p| p.file.contains("main.rs") && p.line == 9);
+    assert!(
+        explicit_panic_filtered,
+        "Scoped rule should filter explicit panic!() at main.rs:9"
+    );
+
+    // Other panic types in main.rs should still be reported
+    let other_main_panics: Vec<_> = scoped_detected
+        .iter()
+        .filter(|p| p.file.contains("main.rs") && p.line != 9)
+        .collect();
+    assert!(
+        !other_main_panics.is_empty(),
+        "Other panic types in main.rs should still be detected"
+    );
+}
