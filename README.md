@@ -418,6 +418,29 @@ When multiple rules match, more specific rules take precedence:
 
 Within equal specificity, later rules in the config file override earlier ones.
 
+### Inline Allow Comments
+
+For fine-grained control, you can add `// jonesy:allow(cause)` comments directly in your source code:
+
+```rust
+fn setup_config() {
+    // Allow unwrap on a value we know is valid
+    let config = load_config().unwrap(); // jonesy:allow(unwrap)
+
+    // Allow multiple causes
+    let value = data.unwrap(); // jonesy:allow(unwrap, bounds)
+
+    // Allow all panic causes at this line
+    risky_operation(); // jonesy:allow(*)
+}
+```
+
+The comment applies to the line it's on. Due to DWARF debug info sometimes being slightly off, jonesy checks a small range around the reported line number (±2 lines).
+
+**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `capacity`, `drop`, `unwind`, `unknown`
+
+Use `*` to allow all causes at that location.
+
 #### Example: Test-Friendly Configuration
 
 ```toml

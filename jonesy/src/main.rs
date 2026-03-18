@@ -33,6 +33,7 @@ mod call_tree;
 mod cargo;
 mod config;
 mod html_output;
+mod inline_allows;
 mod json_output;
 mod lsp;
 mod panic_cause;

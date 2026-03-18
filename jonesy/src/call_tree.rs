@@ -357,20 +357,37 @@ pub fn collect_crate_code_points(
     (roots, summary)
 }
 
-/// Filter out code points whose causes are ALL allowed (not denied) by config.
+/// Filter out code points whose causes are ALL allowed (not denied) by config or inline comments.
 /// A point is kept if ANY of its causes is denied.
 /// Also removes allowed causes from the causes set so only denied causes are displayed.
 /// If a point has no causes, it's kept (conservative - assume denied).
 fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
+    use crate::inline_allows::check_inline_allow;
+
     points.retain_mut(|point| {
-        // Track if we originally had no causes (conservative - keep these)
+        // Track if we originally had no causes (conservative - keep these unless inline allowed)
         let originally_empty = point.causes.is_empty();
 
+        // For points with no causes, check if there's a wildcard inline allow
+        // (points with no cause are otherwise kept conservatively)
+        if originally_empty && check_inline_allow(&point.file, point.line, "*") {
+            // Wildcard inline allow - filter out this point
+            return false;
+        }
+
         // Remove allowed causes from the set - only keep denied ones
-        // Use is_denied_at for scoped rule support (checks path/function patterns)
-        point
-            .causes
-            .retain(|cause| config.is_denied_at(cause, Some(&point.file), Some(&point.name)));
+        // Check both config rules (is_denied_at) and inline comments (check_inline_allow)
+        point.causes.retain(|cause| {
+            let cause_id = cause.id();
+
+            // First check inline comments - if allowed there, filter it out
+            if check_inline_allow(&point.file, point.line, cause_id) {
+                return false; // Not denied (allowed by inline comment)
+            }
+
+            // Then check config rules
+            config.is_denied_at(cause, Some(&point.file), Some(&point.name))
+        });
 
         // Keep if originally empty (conservative) or if any denied causes remain
         let should_keep = originally_empty || !point.causes.is_empty();
