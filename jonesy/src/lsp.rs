@@ -78,6 +78,14 @@ impl JonesyLspServer {
             },
         };
 
+        // Store cause info in data field for use by code actions
+        let cause_ids: Vec<String> = point.causes.iter().map(|c| c.id().to_string()).collect();
+        let data = serde_json::json!({
+            "causes": cause_ids,
+            "function": &point.name,
+            "file": &point.file,
+        });
+
         let mut diagnostic = Diagnostic {
             range,
             severity: Some(DiagnosticSeverity::WARNING),
@@ -87,7 +95,7 @@ impl JonesyLspServer {
             message,
             related_information: None,
             tags: None,
-            data: None,
+            data: Some(data),
         };
 
         // Add suggestion as related information if available
@@ -483,6 +491,220 @@ impl JonesyLspServer {
             .await;
         true
     }
+
+    /// Create a code action that inserts an inline allow comment at end of line.
+    fn create_inline_allow_action(
+        uri: &Url,
+        range: Range,
+        cause: &str,
+        diagnostic: &Diagnostic,
+    ) -> Option<CodeAction> {
+        let title = if cause == "*" {
+            "Allow all panics on this line".to_string()
+        } else {
+            format!("Allow '{}' on this line", cause)
+        };
+
+        // Insert comment at end of the line (using a large character value)
+        // LSP clients will clamp this to the actual line length
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: range.start.line,
+                    character: 10000, // Will be clamped to line end
+                },
+                end: Position {
+                    line: range.start.line,
+                    character: 10000,
+                },
+            },
+            new_text: format!(" // jonesy:allow({})", cause),
+        };
+
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), vec![edit]);
+
+        Some(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(cause != "*"), // Prefer specific cause over wildcard
+            disabled: None,
+            data: None,
+        })
+    }
+
+    /// Create a code action that adds a file-scoped rule to jonesy.toml.
+    fn create_file_allow_action(
+        uri: &Url,
+        cause: &str,
+        workspace_root: &Path,
+        diagnostic: &Diagnostic,
+    ) -> Option<CodeAction> {
+        // Extract filename from URI
+        let filename = uri.path().rsplit('/').next()?;
+
+        let title = format!("Allow '{}' in {}", cause, filename);
+        let rule_text = format!(
+            "\n[[rules]]\npath = \"**/{}\"\nallow = [\"{}\"]\n",
+            filename, cause
+        );
+
+        let jonesy_toml_path = workspace_root.join("jonesy.toml");
+        let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
+
+        // Check if jonesy.toml exists and get its length
+        let (file_exists, file_length) = if jonesy_toml_path.exists() {
+            let content = std::fs::read_to_string(&jonesy_toml_path).unwrap_or_default();
+            let lines = content.lines().count() as u32;
+            (true, lines)
+        } else {
+            (false, 0)
+        };
+
+        let mut document_changes = Vec::new();
+
+        // If file doesn't exist, create it first
+        if !file_exists {
+            document_changes.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                CreateFile {
+                    uri: jonesy_toml_uri.clone(),
+                    options: Some(CreateFileOptions {
+                        overwrite: Some(false),
+                        ignore_if_exists: Some(true),
+                    }),
+                    annotation_id: None,
+                },
+            )));
+        }
+
+        // Add the rule to the file
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: file_length,
+                    character: 0,
+                },
+                end: Position {
+                    line: file_length,
+                    character: 0,
+                },
+            },
+            new_text: rule_text,
+        };
+
+        document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: jonesy_toml_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(edit)],
+        }));
+
+        Some(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: None,
+                document_changes: Some(DocumentChanges::Operations(document_changes)),
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: None,
+        })
+    }
+
+    /// Create a code action that adds a function-scoped rule to jonesy.toml.
+    fn create_function_allow_action(
+        function: &str,
+        cause: &str,
+        workspace_root: &Path,
+        diagnostic: &Diagnostic,
+    ) -> Option<CodeAction> {
+        // Extract just the function name (last segment)
+        let func_name = function.rsplit("::").next()?;
+
+        let title = format!("Allow '{}' in function '{}'", cause, func_name);
+        let rule_text = format!(
+            "\n[[rules]]\nfunction = \"*::{}\"\nallow = [\"{}\"]\n",
+            func_name, cause
+        );
+
+        let jonesy_toml_path = workspace_root.join("jonesy.toml");
+        let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
+
+        // Check if jonesy.toml exists and get its length
+        let (file_exists, file_length) = if jonesy_toml_path.exists() {
+            let content = std::fs::read_to_string(&jonesy_toml_path).unwrap_or_default();
+            let lines = content.lines().count() as u32;
+            (true, lines)
+        } else {
+            (false, 0)
+        };
+
+        let mut document_changes = Vec::new();
+
+        // If file doesn't exist, create it first
+        if !file_exists {
+            document_changes.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                CreateFile {
+                    uri: jonesy_toml_uri.clone(),
+                    options: Some(CreateFileOptions {
+                        overwrite: Some(false),
+                        ignore_if_exists: Some(true),
+                    }),
+                    annotation_id: None,
+                },
+            )));
+        }
+
+        // Add the rule to the file
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: file_length,
+                    character: 0,
+                },
+                end: Position {
+                    line: file_length,
+                    character: 0,
+                },
+            },
+            new_text: rule_text,
+        };
+
+        document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: jonesy_toml_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(edit)],
+        }));
+
+        Some(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: None,
+                document_changes: Some(DocumentChanges::Operations(document_changes)),
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: None,
+        })
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -589,9 +811,92 @@ impl LanguageServer for JonesyLspServer {
         self.analyze_and_publish().await;
     }
 
-    async fn code_action(&self, _params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        // Provide a code action to manually trigger analysis
-        let action = CodeAction {
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+
+        // Get workspace root for jonesy.toml path
+        let workspace_root = {
+            let state = self.state.read().await;
+            state.workspace_root.clone()
+        };
+
+        // Filter to jonesy diagnostics only
+        let jonesy_diagnostics: Vec<_> = params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|d| d.source.as_deref() == Some("jonesy"))
+            .collect();
+
+        for diag in jonesy_diagnostics {
+            // Extract cause info from diagnostic data
+            if let Some(data) = &diag.data {
+                let causes: Vec<String> = data
+                    .get("causes")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let function: String = data
+                    .get("function")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Track which causes we've added actions for (avoid duplicates)
+                let mut seen_causes = std::collections::HashSet::new();
+
+                for cause in &causes {
+                    if !seen_causes.insert(cause.clone()) {
+                        continue;
+                    }
+
+                    // Action 1: Allow on this line (inline comment)
+                    if let Some(action) = Self::create_inline_allow_action(
+                        &params.text_document.uri,
+                        diag.range,
+                        cause,
+                        diag,
+                    ) {
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+
+                    // Action 2: Allow in this file (scoped rule in jonesy.toml)
+                    if let Some(ref root) = workspace_root {
+                        if let Some(action) = Self::create_file_allow_action(
+                            &params.text_document.uri,
+                            cause,
+                            root,
+                            diag,
+                        ) {
+                            actions.push(CodeActionOrCommand::CodeAction(action));
+                        }
+
+                        // Action 3: Allow in this function (scoped rule in jonesy.toml)
+                        if !function.is_empty() {
+                            if let Some(action) =
+                                Self::create_function_allow_action(&function, cause, root, diag)
+                            {
+                                actions.push(CodeActionOrCommand::CodeAction(action));
+                            }
+                        }
+                    }
+                }
+
+                // Action 4: Allow all panics on this line (wildcard)
+                if causes.len() > 1 {
+                    if let Some(action) = Self::create_inline_allow_action(
+                        &params.text_document.uri,
+                        diag.range,
+                        "*",
+                        diag,
+                    ) {
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+                }
+            }
+        }
+
+        // Always add the manual analyze action
+        let analyze_action = CodeAction {
             title: "Run Jonesy Panic Analysis".to_string(),
             kind: Some(CodeActionKind::SOURCE),
             diagnostics: None,
@@ -605,7 +910,9 @@ impl LanguageServer for JonesyLspServer {
             disabled: None,
             data: None,
         };
-        Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]))
+        actions.push(CodeActionOrCommand::CodeAction(analyze_action));
+
+        Ok(Some(actions))
     }
 
     async fn execute_command(
@@ -1082,5 +1389,105 @@ mod tests {
             cli_points.len(),
             lsp_points.len()
         );
+    }
+
+    #[test]
+    fn test_create_inline_allow_action() {
+        let uri = Url::parse("file:///tmp/test.rs").unwrap();
+        let range = Range {
+            start: Position {
+                line: 10,
+                character: 5,
+            },
+            end: Position {
+                line: 10,
+                character: 15,
+            },
+        };
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+
+        // Test specific cause
+        let action =
+            JonesyLspServer::create_inline_allow_action(&uri, range, "unwrap", &diagnostic)
+                .unwrap();
+        assert_eq!(action.title, "Allow 'unwrap' on this line");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert!(action.is_preferred.unwrap_or(false)); // Specific cause is preferred
+
+        // Verify the edit inserts the comment
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, " // jonesy:allow(unwrap)");
+
+        // Test wildcard
+        let action =
+            JonesyLspServer::create_inline_allow_action(&uri, range, "*", &diagnostic).unwrap();
+        assert_eq!(action.title, "Allow all panics on this line");
+        assert!(!action.is_preferred.unwrap_or(true)); // Wildcard is not preferred
+    }
+
+    #[test]
+    fn test_create_file_allow_action() {
+        let uri = Url::parse("file:///workspace/src/main.rs").unwrap();
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+
+        let action =
+            JonesyLspServer::create_file_allow_action(&uri, "unwrap", &workspace_root, &diagnostic)
+                .unwrap();
+
+        assert_eq!(action.title, "Allow 'unwrap' in main.rs");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+        // Verify the edit targets jonesy.toml
+        let edit = action.edit.unwrap();
+        let doc_changes = edit.document_changes.unwrap();
+        match doc_changes {
+            DocumentChanges::Operations(ops) => {
+                // Should have at least a text edit (possibly a create file too)
+                assert!(!ops.is_empty());
+            }
+            _ => panic!("Expected Operations"),
+        }
+    }
+
+    #[test]
+    fn test_create_function_allow_action() {
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+
+        let action = JonesyLspServer::create_function_allow_action(
+            "my_crate::module::parse_config",
+            "unwrap",
+            &workspace_root,
+            &diagnostic,
+        )
+        .unwrap();
+
+        // Should extract just the function name
+        assert_eq!(action.title, "Allow 'unwrap' in function 'parse_config'");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
     }
 }

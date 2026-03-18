@@ -571,8 +571,20 @@ The LSP server communicates via stdin/stdout using the standard LSP protocol.
 ### Features
 
 - **Diagnostics**: Panic points appear as warnings in your editor
+- **Quick fixes**: Click on a diagnostic to see code actions for silencing panic points
 - **Auto-refresh**: Analysis runs on initialization and when files are saved
 - **Manual refresh**: Trigger re-analysis with the `jonesy.analyze` command
+
+### Quick Fix Actions
+
+When you click on a jonesy diagnostic, you'll see quick fix options:
+
+- **"Allow '{cause}' on this line"** - Inserts `// jonesy:allow({cause})` comment
+- **"Allow '{cause}' in {file}"** - Adds a scoped rule to `jonesy.toml`
+- **"Allow '{cause}' in function '{name}'"** - Adds a function-scoped rule to `jonesy.toml`
+- **"Allow all panics on this line"** - Inserts `// jonesy:allow(*)` for multiple causes
+
+These actions integrate with the [scoped rules](#scoped-rules) and [inline allow comments](#inline-allow-comments) features.
 
 ### VS Code Setup
 
