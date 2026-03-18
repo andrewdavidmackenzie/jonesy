@@ -563,6 +563,14 @@ fn test_scoped_rules() {
     // Run without config to get baseline
     let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
+    // Verify baseline actually detects the explicit panic at main.rs:9
+    assert!(
+        baseline_detected
+            .iter()
+            .any(|p| p.file.contains("main.rs") && p.line == 9),
+        "Baseline should include explicit panic!() at main.rs:9"
+    );
+
     // Run with scoped config that allows "panic" cause in **/main.rs
     let (scoped_exit_code, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
 

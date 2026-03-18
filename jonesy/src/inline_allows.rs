@@ -109,7 +109,7 @@ pub fn is_allowed_by_inline(
 /// This reads the file on demand, suitable for checking individual code points.
 ///
 /// Due to DWARF debug info sometimes being off by a line or two, we check
-/// a small range around the reported line number (line-1 to line+2).
+/// a symmetric range around the reported line number (±2 lines).
 pub fn check_inline_allow(file_path: &str, line: u32, cause_id: &str) -> bool {
     // Try to read the file - handle both absolute and relative paths
     let content = read_source_file(file_path);
@@ -121,9 +121,9 @@ pub fn check_inline_allow(file_path: &str, line: u32, cause_id: &str) -> bool {
 
     let lines: Vec<&str> = content.lines().collect();
 
-    // Check a range of lines around the reported location (line-1 to line+2)
+    // Check a symmetric range around the reported location (line-2 to line+2)
     // This handles cases where DWARF debug info is slightly off
-    let start_line = line.saturating_sub(1);
+    let start_line = line.saturating_sub(2);
     let end_line = line.saturating_add(2);
 
     for check_line in start_line..=end_line {

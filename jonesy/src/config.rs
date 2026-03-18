@@ -77,22 +77,27 @@ impl ScopedRule {
 
     /// Check if a cause is allowed by this rule.
     /// Returns Some(true) if allowed, Some(false) if denied, None if not specified.
+    ///
+    /// Priority order:
+    /// 1. Explicit deny of specific cause
+    /// 2. Explicit allow of specific cause
+    /// 3. Wildcard deny
+    /// 4. Wildcard allow
     pub fn check_cause(&self, cause_id: &str) -> Option<bool> {
-        // Check for wildcard
-        if self.allowed.contains("*") {
-            return Some(true);
-        }
-        if self.denied.contains("*") {
-            return Some(false);
-        }
-
-        // Explicit deny takes precedence
+        // Check explicit entries first (before wildcards)
+        // Explicit deny takes precedence over explicit allow
         if self.denied.contains(cause_id) {
             return Some(false);
         }
-
-        // Then check allow
         if self.allowed.contains(cause_id) {
+            return Some(true);
+        }
+
+        // Then check wildcards
+        if self.denied.contains("*") {
+            return Some(false);
+        }
+        if self.allowed.contains("*") {
             return Some(true);
         }
 
@@ -213,17 +218,22 @@ impl Config {
         let id = cause.id();
 
         // Find all matching scoped rules and sort by specificity
-        let mut matching_rules: Vec<(u32, &ScopedRule)> = self
+        // Track rule index for tiebreaking (later rules win when specificity is equal)
+        let mut matching_rules: Vec<(u32, usize, &ScopedRule)> = self
             .rules
             .iter()
-            .filter_map(|rule| rule.matches(file_path, function_name).map(|s| (s, rule)))
+            .enumerate()
+            .filter_map(|(idx, rule)| {
+                rule.matches(file_path, function_name)
+                    .map(|specificity| (specificity, idx, rule))
+            })
             .collect();
 
-        // Sort by specificity (highest first)
-        matching_rules.sort_by(|a, b| b.0.cmp(&a.0));
+        // Sort by specificity first, then by declaration order (later wins)
+        matching_rules.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
 
         // Check scoped rules in order of specificity
-        for (_, rule) in matching_rules {
+        for (_, _, rule) in matching_rules {
             if let Some(allowed) = rule.check_cause(id) {
                 return !allowed;
             }
