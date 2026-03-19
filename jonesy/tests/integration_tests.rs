@@ -13,13 +13,17 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 /// Marker comment that indicates an expected panic on the next line
+/// Can optionally specify expected cause: "// jonesy: expect panic(unwrap)"
 const PANIC_MARKER: &str = "// jonesy: expect panic";
 
-/// Represents a panic point location
+/// Represents a panic point location with optional cause
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PanicPoint {
     file: String,
     line: u32,
+    /// The panic cause identifier (e.g., "unwrap", "overflow", "bounds")
+    /// None means any cause (or no cause) is acceptable
+    cause: Option<String>,
 }
 
 /// Find the workspace root by looking for Cargo.toml with [workspace]
@@ -39,16 +43,27 @@ fn find_workspace_root() -> PathBuf {
     }
 }
 
+/// Expected panic marker with file, line, and optional cause
+#[derive(Debug, Clone)]
+struct ExpectedMarker {
+    file: String,
+    line: u32,
+    /// Expected cause identifier (e.g., "unwrap", "overflow")
+    /// None means any cause is acceptable
+    cause: Option<String>,
+}
+
 /// Parse expected panic marker locations from source files in a directory
-/// Returns (file, comment_line) tuples where the comment marks an expected panic
-fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
+/// Supports both "// jonesy: expect panic" and "// jonesy: expect panic(cause)"
+fn find_expected_panic_markers(src_dir: &Path) -> Vec<ExpectedMarker> {
     let mut markers = Vec::new();
     let workspace_root = find_workspace_root();
     visit_rust_files(src_dir, &mut |file_path| {
         let content = fs::read_to_string(file_path).unwrap();
 
         for (i, line) in content.lines().enumerate() {
-            if line.trim().starts_with(PANIC_MARKER) {
+            let trimmed = line.trim();
+            if trimmed.starts_with(PANIC_MARKER) {
                 // Get the relative path from the workspace root for matching
                 let rel_path = file_path
                     .strip_prefix(&workspace_root)
@@ -56,8 +71,34 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<(String, u32)> {
                     .to_string_lossy()
                     .to_string();
 
+                // Parse optional cause: "// jonesy: expect panic(cause)"
+                let cause = if let Some(rest) = trimmed.strip_prefix(PANIC_MARKER) {
+                    let rest = rest.trim();
+                    if rest.starts_with('(') && rest.contains(')') {
+                        let cause_str = rest
+                            .trim_start_matches('(')
+                            .split(')')
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        if !cause_str.is_empty() {
+                            Some(cause_str.to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 // Store the line where the comment is (1-indexed)
-                markers.push((rel_path, (i + 1) as u32));
+                markers.push(ExpectedMarker {
+                    file: rel_path,
+                    line: (i + 1) as u32,
+                    cause,
+                });
             }
         }
     });
@@ -80,18 +121,41 @@ fn paths_match(detected_path: &str, marker_path: &str) -> bool {
 
 /// Check if a detected panic point has an expected marker nearby
 /// The marker comment can be on the same line, previous line, or up to 2 lines before
-fn has_nearby_marker(detected: &PanicPoint, markers: &[(String, u32)]) -> bool {
-    markers.iter().any(|(file, comment_line)| {
-        paths_match(&detected.file, file)
-            && (detected.line >= *comment_line && detected.line <= comment_line + 2)
+/// If the marker specifies a cause, it must match the detected cause
+fn has_nearby_marker(detected: &PanicPoint, markers: &[ExpectedMarker]) -> bool {
+    markers.iter().any(|marker| {
+        let location_matches = paths_match(&detected.file, &marker.file)
+            && (detected.line >= marker.line && detected.line <= marker.line + 2);
+
+        if !location_matches {
+            return false;
+        }
+
+        // If marker specifies a cause, it must match
+        match (&marker.cause, &detected.cause) {
+            (Some(expected), Some(actual)) => expected == actual,
+            (Some(_expected), None) => false, // Expected cause but none detected - FAIL
+            (None, _) => true,                // No expected cause - any cause OK
+        }
     })
 }
 
-/// Check if a marker has a nearby detected panic
-fn has_nearby_detection(marker: &(String, u32), detected: &HashSet<PanicPoint>) -> bool {
-    let (file, comment_line) = marker;
+/// Check if a marker has a nearby detected panic with matching cause
+fn has_nearby_detection(marker: &ExpectedMarker, detected: &HashSet<PanicPoint>) -> bool {
     detected.iter().any(|p| {
-        paths_match(&p.file, file) && (p.line >= *comment_line && p.line <= comment_line + 2)
+        let location_matches = paths_match(&p.file, &marker.file)
+            && (p.line >= marker.line && p.line <= marker.line + 2);
+
+        if !location_matches {
+            return false;
+        }
+
+        // If marker specifies a cause, it must match
+        match (&marker.cause, &p.cause) {
+            (Some(expected), Some(actual)) => expected == actual,
+            (Some(_expected), None) => false, // Expected cause but none detected
+            (None, _) => true,                // No expected cause - any cause OK
+        }
     })
 }
 
@@ -196,6 +260,22 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
         };
 
         if let Some(location) = location {
+            // Extract cause from square brackets if present: "[arithmetic overflow]"
+            let cause = if let Some(bracket_start) = location.find('[') {
+                if let Some(bracket_end) = location.find(']') {
+                    let cause_desc = &location[bracket_start + 1..bracket_end];
+                    // Map description to cause ID
+                    Some(description_to_cause_id(cause_desc))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Strip the cause description for parsing file:line:col
+            let location = location.split('[').next().unwrap_or(location).trim();
+
             // Parse file:line:column format
             let parts: Vec<&str> = location.rsplitn(3, ':').collect();
             if parts.len() >= 2
@@ -203,17 +283,71 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             {
                 // parts[0] is the column, parts[1] is the line, parts[2] is the file path
                 let file = if parts.len() > 2 { parts[2] } else { "" };
-                // Strip any trailing description like " [capacity overflow]"
-                let file = file.split('[').next().unwrap_or(file).trim();
                 points.insert(PanicPoint {
                     file: file.to_string(),
                     line: line_num,
+                    cause,
                 });
             }
         }
     }
 
     points
+}
+
+/// Map a cause description (from output) to the cause ID (used in markers)
+fn description_to_cause_id(description: &str) -> String {
+    // Handle exact matches from jonesy output
+    if description.contains("unwrap()") && description.contains("None") {
+        return "unwrap".to_string();
+    }
+    if description.contains("unwrap()") && description.contains("Err") {
+        return "unwrap".to_string();
+    }
+    if description.contains("expect()") && description.contains("None") {
+        return "expect".to_string();
+    }
+    if description.contains("expect()") && description.contains("Err") {
+        return "expect".to_string();
+    }
+    if description.contains("panic!()") {
+        return "panic".to_string();
+    }
+    if description.contains("arithmetic overflow") {
+        return "overflow".to_string();
+    }
+    if description.contains("shift overflow") {
+        return "overflow".to_string();
+    }
+    if description.contains("index out of bounds") {
+        return "bounds".to_string();
+    }
+    if description.contains("division by zero") || description.contains("remainder by zero") {
+        return "div_zero".to_string();
+    }
+    if description.contains("assertion failed") && !description.contains("debug") {
+        return "assert".to_string();
+    }
+    if description.contains("debug assertion") || description.contains("debug_assert") {
+        return "debug_assert".to_string();
+    }
+    if description.contains("unreachable") {
+        return "unreachable".to_string();
+    }
+    if description.contains("unimplemented") {
+        return "unimplemented".to_string();
+    }
+    if description.contains("todo") {
+        return "todo".to_string();
+    }
+    if description.contains("capacity overflow") {
+        return "capacity".to_string();
+    }
+    if description.contains("formatting error") {
+        return "format".to_string();
+    }
+    // Fallback: normalize to lowercase with underscores
+    description.to_lowercase().replace(' ', "_")
 }
 
 /// One-time setup initialization
@@ -269,15 +403,23 @@ fn test_example(example_name: &str) {
     // Report results
     if !missing.is_empty() {
         eprintln!("Missing panic points (markers without detections):");
-        for (file, line) in &missing {
-            eprintln!("  {}:{}", file, line);
+        for m in &missing {
+            if let Some(cause) = &m.cause {
+                eprintln!("  {}:{} [expected: {}]", m.file, m.line, cause);
+            } else {
+                eprintln!("  {}:{}", m.file, m.line);
+            }
         }
     }
 
     if !unexpected.is_empty() {
         eprintln!("Unexpected panic points (detected but no marker):");
         for p in &unexpected {
-            eprintln!("  {}:{}", p.file, p.line);
+            if let Some(cause) = &p.cause {
+                eprintln!("  {}:{} [{}]", p.file, p.line, cause);
+            } else {
+                eprintln!("  {}:{} [NO CAUSE DETECTED]", p.file, p.line);
+            }
         }
     }
 
@@ -408,15 +550,23 @@ fn test_workspace_test_example() {
 
     if !missing.is_empty() {
         eprintln!("Missing panic points (markers without detections):");
-        for (file, line) in &missing {
-            eprintln!("  {}:{}", file, line);
+        for m in &missing {
+            if let Some(cause) = &m.cause {
+                eprintln!("  {}:{} [expected: {}]", m.file, m.line, cause);
+            } else {
+                eprintln!("  {}:{}", m.file, m.line);
+            }
         }
     }
 
     if !unexpected.is_empty() {
         eprintln!("Unexpected panic points (detected but no marker):");
         for p in &unexpected {
-            eprintln!("  {}:{}", p.file, p.line);
+            if let Some(cause) = &p.cause {
+                eprintln!("  {}:{} [{}]", p.file, p.line, cause);
+            } else {
+                eprintln!("  {}:{} [NO CAUSE DETECTED]", p.file, p.line);
+            }
         }
     }
 
