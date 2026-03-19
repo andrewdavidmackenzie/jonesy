@@ -633,7 +633,7 @@ impl JonesyLspServer {
         // Extract just the function name (last segment)
         let func_name = function.rsplit("::").next()?;
 
-        let title = format!("Allow '{}' in function '{}'", cause, func_name);
+        let title = format!("Allow '{}' in all functions named '{}'", cause, func_name);
         let rule_text = format!(
             "\n[[rules]]\nfunction = \"*::{}\"\nallow = [\"{}\"]\n",
             func_name, cause
@@ -1486,8 +1486,11 @@ mod tests {
         )
         .unwrap();
 
-        // Should extract just the function name
-        assert_eq!(action.title, "Allow 'unwrap' in function 'parse_config'");
+        // Should extract just the function name, but clarify it matches all functions with that name
+        assert_eq!(
+            action.title,
+            "Allow 'unwrap' in all functions named 'parse_config'"
+        );
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
     }
 }
