@@ -352,6 +352,18 @@ fn description_to_cause_id(description: &str) -> String {
     if description.contains("misaligned pointer") {
         return "misaligned_ptr".to_string();
     }
+    if description.contains("panic during drop") || description.contains("panic in drop") {
+        return "drop".to_string();
+    }
+    if description.contains("no-unwind") || description.contains("cannot unwind") {
+        return "unwind".to_string();
+    }
+    if description.contains("out of memory") {
+        return "oom".to_string();
+    }
+    if description.contains("string") && description.contains("slice") {
+        return "str_slice".to_string();
+    }
     if description.contains("unknown cause") {
         return "unknown".to_string();
     }
