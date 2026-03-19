@@ -842,6 +842,10 @@ impl LanguageServer for JonesyLspServer {
                     format!("Config changes detected: {}", config_changes.join(", ")),
                 )
                 .await;
+
+            // Re-register watchers in case workspace membership changed
+            // (e.g., Cargo.toml added/removed workspace members)
+            self.register_file_watchers().await;
         }
         if !binary_changes.is_empty() {
             self.client
