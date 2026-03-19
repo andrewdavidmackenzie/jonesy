@@ -178,9 +178,9 @@ impl JonesyLspServer {
             .await;
     }
 
-    /// Register file watchers for target/debug/ directory.
-    /// This allows us to re-analyze only when binaries change, not on every file save.
-    async fn register_binary_watchers(&self) {
+    /// Register file watchers for binaries and config files.
+    /// Watches target/debug/ for binary changes and config files (jonesy.toml, Cargo.toml).
+    async fn register_file_watchers(&self) {
         // Clone workspace_root and release lock before async operations
         let workspace_root = {
             let state = self.state.read().await;
@@ -195,7 +195,7 @@ impl JonesyLspServer {
         let target_debug_str = target_debug.to_string_lossy();
 
         // Watch for all files in target/debug/ (binaries, rlibs, dylibs)
-        let watchers = vec![
+        let mut watchers = vec![
             FileSystemWatcher {
                 glob_pattern: GlobPattern::String(format!("{}/*", target_debug_str)),
                 kind: Some(WatchKind::Create | WatchKind::Change),
@@ -207,10 +207,19 @@ impl JonesyLspServer {
             },
         ];
 
+        // Watch config files (jonesy.toml and Cargo.toml files)
+        let config_files = find_config_files(&workspace_root);
+        for config_path in &config_files {
+            watchers.push(FileSystemWatcher {
+                glob_pattern: GlobPattern::String(config_path.to_string_lossy().to_string()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            });
+        }
+
         let registration_options = DidChangeWatchedFilesRegistrationOptions { watchers };
 
         let registration = Registration {
-            id: "jonesy-binary-watcher".to_string(),
+            id: "jonesy-file-watcher".to_string(),
             method: "workspace/didChangeWatchedFiles".to_string(),
             register_options: Some(serde_json::to_value(registration_options).unwrap()),
         };
@@ -220,7 +229,11 @@ impl JonesyLspServer {
                 self.client
                     .log_message(
                         MessageType::INFO,
-                        format!("Watching {} for binary changes", target_debug_str),
+                        format!(
+                            "Watching {} for binary changes and {} config file(s)",
+                            target_debug_str,
+                            config_files.len()
+                        ),
                     )
                     .await;
             }
@@ -754,9 +767,9 @@ impl LanguageServer for JonesyLspServer {
             .log_message(MessageType::INFO, "Jonesy LSP server initialized")
             .await;
 
-        // Register file watchers for target/debug/ directory
-        // This allows us to re-analyze only when binaries change
-        self.register_binary_watchers().await;
+        // Register file watchers for binaries and config files
+        // Re-analyze when binaries change or config is modified
+        self.register_file_watchers().await;
 
         // Run initial analysis
         self.analyze_and_publish().await;
@@ -784,29 +797,60 @@ impl LanguageServer for JonesyLspServer {
         // when the user saves files without building.
         //
         // Analysis is triggered by:
-        // 1. did_change_watched_files (when binaries in target/debug/ change)
+        // 1. did_change_watched_files (when binaries or config files change)
         // 2. Manual "jonesy.analyze" command
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
-        // Re-analyze when watched files change (binaries in target/debug/)
-        let changed_files: Vec<_> = params
+        // Re-analyze when watched files change (binaries or config files)
+        let changed_paths: Vec<_> = params
             .changes
             .iter()
             .filter_map(|c| c.uri.to_file_path().ok())
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
             .collect();
 
-        if changed_files.is_empty() {
+        if changed_paths.is_empty() {
             return;
         }
 
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("Binary changes detected: {}", changed_files.join(", ")),
-            )
-            .await;
+        // Categorize changes for logging
+        let config_changes: Vec<_> = changed_paths
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n == "jonesy.toml" || n == "Cargo.toml")
+                    .unwrap_or(false)
+            })
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+
+        let binary_changes: Vec<_> = changed_paths
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n != "jonesy.toml" && n != "Cargo.toml")
+                    .unwrap_or(true)
+            })
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+
+        // Log what changed
+        if !config_changes.is_empty() {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Config changes detected: {}", config_changes.join(", ")),
+                )
+                .await;
+        }
+        if !binary_changes.is_empty() {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Binary changes detected: {}", binary_changes.join(", ")),
+                )
+                .await;
+        }
 
         self.analyze_and_publish().await;
     }
@@ -1058,6 +1102,50 @@ fn analyze_single_target(
             Ok(result.code_points)
         }
     }
+}
+
+/// Find all config files that affect jonesy analysis.
+/// Returns paths to jonesy.toml and all Cargo.toml files (workspace + members).
+fn find_config_files(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut config_files = Vec::new();
+
+    // Always watch jonesy.toml if it exists (or might be created)
+    config_files.push(workspace_root.join("jonesy.toml"));
+
+    // Watch workspace Cargo.toml
+    let cargo_toml = workspace_root.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return config_files;
+    }
+    config_files.push(cargo_toml.clone());
+
+    // Parse manifest to find workspace members
+    let Ok(content) = std::fs::read_to_string(&cargo_toml) else {
+        return config_files;
+    };
+    let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) else {
+        return config_files;
+    };
+
+    // Add Cargo.toml for each workspace member
+    if let Some(workspace) = &manifest.workspace {
+        for member in &workspace.members {
+            let member_paths: Vec<PathBuf> = if member.contains('*') {
+                expand_workspace_glob(workspace_root, member)
+            } else {
+                vec![workspace_root.join(member)]
+            };
+
+            for member_path in member_paths {
+                let member_cargo = member_path.join("Cargo.toml");
+                if member_cargo.exists() {
+                    config_files.push(member_cargo);
+                }
+            }
+        }
+    }
+
+    config_files
 }
 
 /// Find binary and library files in the workspace
@@ -1492,5 +1580,48 @@ mod tests {
             "Allow 'unwrap' in all functions named 'parse_config'"
         );
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    }
+
+    #[test]
+    fn test_find_config_files() {
+        // Use workspace_test example which has multiple workspace members
+        let workspace_root = find_workspace_root();
+        let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
+
+        let config_files = find_config_files(&workspace_test_dir);
+
+        // Extract just file names for easier comparison
+        let file_names: Vec<String> = config_files
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .collect();
+
+        // Should always include jonesy.toml (even if it doesn't exist)
+        assert!(
+            config_files.iter().any(|p| p.ends_with("jonesy.toml")),
+            "Should include jonesy.toml path. Found: {:?}",
+            file_names
+        );
+
+        // Should include workspace Cargo.toml
+        assert!(
+            config_files.iter().any(|p| {
+                p.parent()
+                    .map(|parent| parent.ends_with("workspace_test"))
+                    .unwrap_or(false)
+                    && p.ends_with("Cargo.toml")
+            }),
+            "Should include workspace Cargo.toml. Found: {:?}",
+            config_files
+        );
+
+        // Should include member Cargo.toml files (crate_a, crate_b, crate_c)
+        let cargo_toml_count = file_names.iter().filter(|n| *n == "Cargo.toml").count();
+        assert!(
+            cargo_toml_count >= 4, // workspace + 3 members
+            "Should find at least 4 Cargo.toml files (workspace + members). Found: {}",
+            cargo_toml_count
+        );
     }
 }
