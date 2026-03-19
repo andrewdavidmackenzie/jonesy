@@ -346,6 +346,15 @@ fn description_to_cause_id(description: &str) -> String {
     if description.contains("formatting error") {
         return "format".to_string();
     }
+    if description.contains("invalid enum") {
+        return "invalid_enum".to_string();
+    }
+    if description.contains("misaligned pointer") {
+        return "misaligned_ptr".to_string();
+    }
+    if description.contains("unknown cause") {
+        return "unknown".to_string();
+    }
     // Fallback: normalize to lowercase with underscores
     description.to_lowercase().replace(' ', "_")
 }
