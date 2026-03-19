@@ -74,6 +74,10 @@ pub enum PanicCause {
     OutOfMemory,
     /// String/slice encoding or bounds error
     StringSliceError,
+    /// Invalid enum discriminant (memory corruption or unsafe code)
+    InvalidEnum,
+    /// Misaligned pointer dereference
+    MisalignedPointer,
     /// Unknown cause
     Unknown,
 }
@@ -103,6 +107,8 @@ impl PanicCause {
             PanicCause::CapacityOverflow => "capacity",
             PanicCause::OutOfMemory => "oom",
             PanicCause::StringSliceError => "str_slice",
+            PanicCause::InvalidEnum => "invalid_enum",
+            PanicCause::MisalignedPointer => "misaligned_ptr",
             PanicCause::Unknown => "unknown",
         }
     }
@@ -127,6 +133,8 @@ impl PanicCause {
             "capacity",
             "oom",
             "str_slice",
+            "invalid_enum",
+            "misaligned_ptr",
             "unknown",
         ]
     }
@@ -154,6 +162,8 @@ impl PanicCause {
             PanicCause::CapacityOverflow => "capacity overflow",
             PanicCause::OutOfMemory => "out of memory",
             PanicCause::StringSliceError => "string/slice error",
+            PanicCause::InvalidEnum => "invalid enum discriminant",
+            PanicCause::MisalignedPointer => "misaligned pointer dereference",
             PanicCause::Unknown => "unknown cause",
         }
     }
@@ -195,7 +205,15 @@ impl PanicCause {
             PanicCause::StringSliceError => {
                 "Use str::get() for safe slicing; validate UTF-8 boundaries"
             }
-            PanicCause::Unknown => "",
+            PanicCause::InvalidEnum => {
+                "Check for memory corruption or unsafe enum transmutes; validate enum discriminants"
+            }
+            PanicCause::MisalignedPointer => {
+                "Ensure pointer alignment requirements are met; review unsafe pointer casts"
+            }
+            PanicCause::Unknown => {
+                "Jonesy detected a panic path but couldn't identify the cause. Use --tree to investigate"
+            }
         }
     }
 
@@ -410,6 +428,16 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
             return Some(PanicCause::StringSliceError);
         }
         return Some(PanicCause::BoundsCheck);
+    }
+
+    // Invalid enum discriminant - happens with unsafe enum transmutes or memory corruption
+    if func_name.contains("panic_invalid_enum_construction") {
+        return Some(PanicCause::InvalidEnum);
+    }
+
+    // Misaligned pointer dereference - unsafe code dereferencing misaligned pointers
+    if func_name.contains("panic_misaligned_pointer_dereference") {
+        return Some(PanicCause::MisalignedPointer);
     }
 
     // panic_fmt is the core panic function - if we reach here without a more

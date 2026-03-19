@@ -320,6 +320,12 @@ Configuration is loaded in order of precedence (later overrides earlier):
 | `todo`          | `todo!()` reached                         | denied      | `clippy::todo` |
 | `drop`          | Panic during drop/cleanup                 | **allowed** | — |
 | `unwind`        | Panic in no-unwind context                | **allowed** | — |
+| `format`        | Formatting error (Display/Debug panic)    | denied      | — |
+| `capacity`      | Capacity overflow (collection too large)  | denied      | — |
+| `oom`           | Out of memory (allocation failed)         | denied      | — |
+| `str_slice`     | String/slice encoding or bounds error     | denied      | — |
+| `invalid_enum`  | Invalid enum discriminant (unsafe code)   | denied      | — |
+| `misaligned_ptr`| Misaligned pointer dereference            | denied      | — |
 | `unknown`       | Unknown panic cause                       | denied      | — |
 
 Clippy lints are "restriction" lints (off by default). Enable in `Cargo.toml`:
@@ -437,9 +443,34 @@ fn setup_config() {
 
 The comment applies to the line it's on. Due to DWARF debug info sometimes being slightly off, jonesy checks a small range around the reported line number (±2 lines).
 
-**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `capacity`, `drop`, `unwind`, `unknown`
+**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `format`, `capacity`, `oom`, `str_slice`, `invalid_enum`, `misaligned_ptr`, `drop`, `unwind`, `unknown`
 
 Use `*` to allow all causes at that location.
+
+#### Configuring Linters and Code Review Tools
+
+Code review tools like CodeRabbit may flag `// jonesy:allow(...)` comments as "spurious" or "undocumented annotations" because they don't recognize jonesy directives. To prevent this, configure your tools to ignore these comments.
+
+**CodeRabbit** (`.coderabbit.yaml` in your repository root):
+
+```yaml
+reviews:
+  path_filters:
+    # Don't flag jonesy inline allow comments
+    - "!**/*.rs"  # Or use path_instructions instead
+
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: |
+        Ignore comments matching the pattern `// jonesy:allow(...)` - these are
+        valid directives for the jonesy panic analysis tool, not spurious comments.
+```
+
+Alternatively, add to your PR template or repository guidelines that `jonesy:allow` comments are intentional tool directives.
+
+**Clippy**: Jonesy comments don't affect Clippy. If you use `#[allow(...)]` attributes for Clippy, those are separate from jonesy's inline comments.
+
+**Other tools**: Most linters can be configured via ignore patterns or inline disable comments. The key is to document that `jonesy:allow` is a recognized directive in your project.
 
 #### Example: Test-Friendly Configuration
 
@@ -571,8 +602,20 @@ The LSP server communicates via stdin/stdout using the standard LSP protocol.
 ### Features
 
 - **Diagnostics**: Panic points appear as warnings in your editor
+- **Quick fixes**: Click on a diagnostic to see code actions for silencing panic points
 - **Auto-refresh**: Analysis runs on initialization and when files are saved
 - **Manual refresh**: Trigger re-analysis with the `jonesy.analyze` command
+
+### Quick Fix Actions
+
+When you click on a jonesy diagnostic, you'll see quick fix options:
+
+- **"Allow '{cause}' on this line"** - Inserts `// jonesy:allow({cause})` comment
+- **"Allow '{cause}' in {file}"** - Adds a scoped rule to `jonesy.toml`
+- **"Allow '{cause}' in function '{name}'"** - Adds a function-scoped rule to `jonesy.toml`
+- **"Allow all panics on this line"** - Inserts `// jonesy:allow(*)` for multiple causes
+
+These actions integrate with the [scoped rules](#scoped-rules) and [inline allow comments](#inline-allow-comments) features.
 
 ### VS Code Setup
 

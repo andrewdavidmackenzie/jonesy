@@ -620,11 +620,14 @@ pub(crate) fn analyze_archive(
     // Search for callers of panic-related symbols
     for target_sym in merged_graph.target_symbols() {
         // Check if this is a panic-related symbol
+        // Note: be careful with std::panicking:: - set_hook/take_hook are NOT panic functions
         let is_panic_symbol = LIBRARY_PANIC_PATTERNS
             .iter()
             .any(|p| target_sym.contains(p))
             || target_sym.contains("core::panicking::")
-            || target_sym.contains("std::panicking::");
+            || (target_sym.contains("std::panicking::")
+                && !target_sym.contains("set_hook")
+                && !target_sym.contains("take_hook"));
 
         if !is_panic_symbol {
             continue;
@@ -706,15 +709,21 @@ pub(crate) fn analyze_archive(
         })
         .collect();
 
+    // Assign Unknown cause to points without identified causes (archives have no hierarchy)
+    for point in &mut code_points {
+        if point.causes.is_empty() {
+            point.causes.insert(crate::panic_cause::PanicCause::Unknown);
+        }
+    }
+
     // Filter out code points whose causes are ALL allowed (not denied) by config
     // Use is_denied_at to support scoped rules based on file/function patterns
     code_points.retain(|point| {
-        // Keep if no causes (conservative) or any denied cause
-        point.causes.is_empty()
-            || point
-                .causes
-                .iter()
-                .any(|c| config.is_denied_at(c, Some(&point.file), Some(&point.name)))
+        // Keep points with any denied cause
+        point
+            .causes
+            .iter()
+            .any(|c| config.is_denied_at(c, Some(&point.file), Some(&point.name)))
     });
 
     // Remove allowed causes, keeping only denied ones
