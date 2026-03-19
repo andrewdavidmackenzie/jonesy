@@ -706,15 +706,21 @@ pub(crate) fn analyze_archive(
         })
         .collect();
 
+    // Assign Unknown cause to points without identified causes (archives have no hierarchy)
+    for point in &mut code_points {
+        if point.causes.is_empty() {
+            point.causes.insert(crate::panic_cause::PanicCause::Unknown);
+        }
+    }
+
     // Filter out code points whose causes are ALL allowed (not denied) by config
     // Use is_denied_at to support scoped rules based on file/function patterns
     code_points.retain(|point| {
-        // Keep if no causes (conservative) or any denied cause
-        point.causes.is_empty()
-            || point
-                .causes
-                .iter()
-                .any(|c| config.is_denied_at(c, Some(&point.file), Some(&point.name)))
+        // Keep points with any denied cause
+        point
+            .causes
+            .iter()
+            .any(|c| config.is_denied_at(c, Some(&point.file), Some(&point.name)))
     });
 
     // Remove allowed causes, keeping only denied ones

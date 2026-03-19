@@ -344,6 +344,9 @@ pub fn collect_crate_code_points(
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
 
+    // Assign Unknown cause to leaf points without identified causes
+    assign_unknown_causes(&mut roots);
+
     // Filter out code points with allowed causes
     filter_allowed_causes(&mut roots, config);
 
@@ -355,6 +358,21 @@ pub fn collect_crate_code_points(
 
     let summary = count_crate_points_and_files(&roots);
     (roots, summary)
+}
+
+/// Assign `Unknown` cause to leaf points that have no identified causes.
+/// A leaf point is one with no children (closest to the panic in the call chain).
+/// This makes it clear that jonesy detected a panic path but couldn't identify the specific cause.
+fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
+    for point in points.iter_mut() {
+        // Recursively process children first
+        assign_unknown_causes(&mut point.children);
+
+        // If this is a leaf (no children) with no causes, assign Unknown
+        if point.children.is_empty() && point.causes.is_empty() {
+            point.causes.insert(PanicCause::Unknown);
+        }
+    }
 }
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config or inline comments.

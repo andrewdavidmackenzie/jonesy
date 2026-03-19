@@ -195,7 +195,9 @@ impl PanicCause {
             PanicCause::StringSliceError => {
                 "Use str::get() for safe slicing; validate UTF-8 boundaries"
             }
-            PanicCause::Unknown => "",
+            PanicCause::Unknown => {
+                "Jonesy detected a panic path but couldn't identify the cause. Use --tree to investigate"
+            }
         }
     }
 
