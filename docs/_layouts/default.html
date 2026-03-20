@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page.title }} | {{ site.title }}</title>
+  <meta name="description" content="{{ site.description }}">
+  <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600&family=Fira+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+  <header class="top-bar">
+    <div class="container">
+      <a href="{{ '/' | relative_url }}" class="logo">
+        <span class="logo-icon">🔍</span>
+        <span class="logo-text">Jonesy</span>
+      </a>
+      <nav class="nav">
+        {% for item in site.nav %}
+        <a href="{{ item.url | relative_url }}" class="nav-link">{{ item.title }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <div class="container">
+      {{ content }}
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>Jonesy - Find panic points in Rust binaries</p>
+    </div>
+  </footer>
+</body>
+</html>

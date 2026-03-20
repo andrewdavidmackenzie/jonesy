@@ -1,6 +1,6 @@
 title: Jonesy Documentation
 description: Find panic points in Rust binaries
-theme: jekyll-theme-minimal
+# Custom Rust-style theme (no external theme needed)
 # Custom domain configured - no baseurl needed
 baseurl: ""
 url: "https://jonesy.mackenzie-serres.net"
@@ -9,11 +9,11 @@ url: "https://jonesy.mackenzie-serres.net"
 markdown: kramdown
 highlighter: rouge
 
-# Navigation (using relative URLs for compatibility)
+# Navigation
 nav:
   - title: Home
-    url: ./
+    url: /
   - title: Panic Reference
-    url: ./panics/
+    url: /panics/
   - title: GitHub
     url: https://github.com/andrewdavidmackenzie/jonesy
