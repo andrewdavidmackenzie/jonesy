@@ -231,6 +231,43 @@ fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
     run_jonesy_with_args(example_dir, &["--no-hyperlinks"])
 }
 
+/// Run jonesy and return raw stdout (with timeout protection)
+fn run_jonesy_raw_output(example_dir: &Path, extra_args: &[&str]) -> String {
+    let workspace_root = find_workspace_root();
+    let jonesy_binary = std::env::var_os("CARGO_BIN_EXE_jonesy")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            workspace_root
+                .join("target")
+                .join("debug")
+                .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
+        });
+
+    let mut child = Command::new(&jonesy_binary)
+        .args(extra_args)
+        .current_dir(example_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jonesy");
+
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(_status) => {
+            let output = child.wait_with_output().expect("Failed to get output");
+            String::from_utf8_lossy(&output.stdout).to_string()
+        }
+        None => {
+            child.kill().expect("Failed to kill timed-out process");
+            let _ = child.wait();
+            panic!(
+                "Jonesy timed out after {:?} on {}",
+                JONES_TIMEOUT,
+                example_dir.display()
+            );
+        }
+    }
+}
+
 /// Parse jonesy output to extract panic points
 /// Output format: "├──> filename:line:col" or " --> filename:line:col"
 fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
@@ -788,31 +825,8 @@ fn test_rlib_line_precision() {
     let workspace_root = find_workspace_root();
     let example_dir = workspace_root.join("examples").join("rlib");
 
-    // Build the rlib example
-    let status = Command::new("cargo")
-        .args(["build"])
-        .current_dir(&example_dir)
-        .status()
-        .expect("Failed to build rlib example");
-    assert!(status.success(), "Failed to build rlib example");
-
-    // Run jonesy and get raw output
-    let jonesy_binary = std::env::var_os("CARGO_BIN_EXE_jonesy")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            workspace_root
-                .join("target")
-                .join("debug")
-                .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
-        });
-
-    let output = Command::new(&jonesy_binary)
-        .args(["--no-hyperlinks", "--lib"])
-        .current_dir(&example_dir)
-        .output()
-        .expect("Failed to run jonesy");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Run jonesy and get raw output (setup() already built the example)
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
     // Check that expect() calls have column precision (column > 1)
     // The expect_none function has `.expect(` starting at column 17 on line 21
