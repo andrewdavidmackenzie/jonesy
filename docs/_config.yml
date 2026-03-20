@@ -1,0 +1,18 @@
+title: Jonesy Documentation
+description: Find panic points in Rust binaries
+theme: jekyll-theme-minimal
+baseurl: ""
+url: "https://jonesy.mackenzie-serres.net"
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+
+# Navigation
+nav:
+  - title: Home
+    url: /
+  - title: Panic Reference
+    url: /panics/
+  - title: GitHub
+    url: https://github.com/andrewdavidmackenzie/jonesy
