@@ -96,5 +96,5 @@ overflow-checks = true
 
 ## Related
 
-- [JP004 - Shift Overflow](/jonesy/panics/JP004-shift-overflow): Bit shift overflow
-- [JP005 - Division by Zero](/jonesy/panics/JP005-division-by-zero): Division edge case
+- [JP004 - Shift Overflow](/panics/JP004-shift-overflow): Bit shift overflow
+- [JP005 - Division by Zero](/panics/JP005-division-by-zero): Division edge case

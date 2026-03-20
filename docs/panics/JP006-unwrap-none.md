@@ -106,5 +106,5 @@ fn get_cached() -> &Value {
 
 ## Related
 
-- [JP007 - Unwrap Err](/jonesy/panics/JP007-unwrap-err): `unwrap()` on `Result::Err`
-- [JP008 - Expect None](/jonesy/panics/JP008-expect-none): `expect()` on `None`
+- [JP007 - Unwrap Err](/panics/JP007-unwrap-err): `unwrap()` on `Result::Err`
+- [JP008 - Expect None](/panics/JP008-expect-none): `expect()` on `None`

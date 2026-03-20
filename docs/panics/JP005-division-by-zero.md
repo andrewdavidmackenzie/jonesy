@@ -84,4 +84,4 @@ fn average(numbers: &[i32]) -> Option<f64> {
 
 ## Related
 
-- [JP003 - Arithmetic Overflow](/jonesy/panics/JP003-arithmetic-overflow): `i32::MIN / -1` also overflows
+- [JP003 - Arithmetic Overflow](/panics/JP003-arithmetic-overflow): `i32::MIN / -1` also overflows

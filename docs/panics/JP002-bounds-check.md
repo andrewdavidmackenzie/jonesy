@@ -85,4 +85,4 @@ let (head, tail) = data.split_first()?;
 
 ## Related
 
-- [JP020 - String/Slice Error](/jonesy/panics/JP020-string-slice-error): String indexing panics
+- [JP020 - String/Slice Error](/panics/JP020-string-slice-error): String indexing panics

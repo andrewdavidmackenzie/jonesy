@@ -75,5 +75,5 @@ let content = std::fs::read_to_string("config.toml").ok();
 
 ## Related
 
-- [JP006 - Unwrap None](/jonesy/panics/JP006-unwrap-none): `unwrap()` on `Option::None`
-- [JP009 - Expect Err](/jonesy/panics/JP009-expect-err): `expect()` on `Err`
+- [JP006 - Unwrap None](/panics/JP006-unwrap-none): `unwrap()` on `Option::None`
+- [JP009 - Expect Err](/panics/JP009-expect-err): `expect()` on `Err`

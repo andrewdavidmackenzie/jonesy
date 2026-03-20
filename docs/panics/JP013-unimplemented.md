@@ -73,5 +73,5 @@ If the feature won't be implemented, remove the dead code.
 
 ## Related
 
-- [JP014 - Todo](/jonesy/panics/JP014-todo): Similar placeholder
-- [JP012 - Unreachable](/jonesy/panics/JP012-unreachable): Code that shouldn't run
+- [JP014 - Todo](/panics/JP014-todo): Similar placeholder
+- [JP012 - Unreachable](/panics/JP012-unreachable): Code that shouldn't run

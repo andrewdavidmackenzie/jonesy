@@ -74,4 +74,4 @@ let (result, overflow) = x.overflowing_shl(amount);
 
 ## Related
 
-- [JP003 - Arithmetic Overflow](/jonesy/panics/JP003-arithmetic-overflow): Other numeric overflow
+- [JP003 - Arithmetic Overflow](/panics/JP003-arithmetic-overflow): Other numeric overflow
