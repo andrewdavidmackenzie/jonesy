@@ -83,7 +83,7 @@ pub fn cause_unimplemented() {
     unimplemented!();
 }
 
-// Known limitation: todo!() in library mode (see issue #58)
+// jonesy: expect panic todo!() reached
 pub fn cause_todo() {
     todo!();
 }

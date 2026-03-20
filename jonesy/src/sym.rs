@@ -631,10 +631,12 @@ impl SymbolIndex {
         let symbols = macho.symbols.as_ref()?;
 
         // Collect and sort function symbols with their addresses
+        // Note: We allow n_value == 0 for symbols at the start of a section,
+        // but filter out undefined symbols using is_undefined()
         let mut functions: Vec<(u64, String)> = symbols
             .iter()
             .filter_map(|s| s.ok())
-            .filter(|(name, nlist)| nlist.n_value > 0 && !name.is_empty())
+            .filter(|(name, nlist)| !nlist.is_undefined() && !name.is_empty())
             .map(|(name, nlist)| {
                 let stripped = name.strip_prefix("_").unwrap_or(name);
                 (nlist.n_value, format!("{:#}", demangle(stripped)))
