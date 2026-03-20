@@ -1,6 +1,6 @@
 ---
 name: start-new-issue
-description: Starts work on a new issue from the issue list in a project. Use when starting work on a new github issue.
+description: Starts work on a new issue from the issue list in a project. Use when starting work on a new github issue. Requires git, gh.
 ---
 
 When starting work on a new issue from GitHub for a project:
