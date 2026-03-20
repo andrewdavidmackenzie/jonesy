@@ -7,7 +7,7 @@ When closing work done in a PR for the project:
 
 ## Checks
 
-Double check the points in the original issue were addressed.
+Double-check the points in the original issue were addressed.
 
 Check that documentation was updated to reflect the changes.
 
@@ -24,7 +24,7 @@ work. Warn the user before causing any change that could lose it.
 
 ## Merge the PR
 
-Merge the PR using gh, if it returns an error check to see if the user has alreadyed merged it
+Merge the PR using gh, if it returns an error check to see if the user has already merged it
 via the GH user interface or some similar method.
 
 If the user has already merged it, report that, but not as an error and consider the PR 
@@ -32,5 +32,5 @@ correctly merged and move on.
 
 ## Cleaning up
 
-If everything is OK, then check out master/main branch, and git pull. Check that the commits
+If everything is OK, then check out the master/main branch and git pull. Check that the commits
 in the PR are present and everything is OK.

@@ -3,13 +3,13 @@ name: start-new-issue
 description: Starts work on a new issue from the issue list in a project. Use when starting work on a new github issue.
 ---
 
-When starting work on a new issue from github for a project:
+When starting work on a new issue from GitHub for a project:
 
 ## New Branch named for the issue
 
 Make sure that the local master or main branch is up to date with origin by doing a git pull.
 
-Then create a new local branch to start work on, the branch name should be a short two or three word
+Then create a new local branch to start work on. The branch name should be a short two or three-word
 summary of the issue title, plus the issue number.
 
 Example:
@@ -21,7 +21,7 @@ Then a branch name could be `analyse_on_config_change_103`
 
 ## Working on the branch
 
-As we work on the branch we will commit changes once pre-commit checks pass and then later
+As we work on the branch, we will commit changes once pre-commit checks pass and then later
 push the branch and create a PR from it.
 
 ## Pre-commit checks
@@ -32,14 +32,14 @@ Before committing new work to a branch, the following checks should pass:
 - `cargo fmt` either to check or directly to reformat code.
 - tests pass via `make test` if that Makefile target exists, or `cargo test` if not
 
-## When is a PR ready to be merged
+## When is a PR ready to be merged?
 
 A PR can be considered ready to be merged when:
 - There are no local uncommitted changes
-- There are no local comitted chanegs that have not been pushed
+- There are no local committed changes that have not been pushed
 - All the points in the GH issue have been addressed via committed, pushed and reviewed changes
 - There is no code review in progress since the last pushed change
-- There are no un-addressed code review comments since the last pushed change
+- There are no unaddressed code review comments since the last change was pushed 
 - All the comments from code reviews have been addressed, even the Nit ones.
 
 Don't suggest merging until the above list is met.
