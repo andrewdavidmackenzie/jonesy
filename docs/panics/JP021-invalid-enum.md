@@ -89,7 +89,7 @@ pub extern "C" fn process_status(status_code: u8) -> i32 {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:9:14 [invalid enum discriminant]
      = help: Use TryFrom instead of transmute for enum conversion
 ```

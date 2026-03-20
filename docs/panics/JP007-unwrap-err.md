@@ -68,7 +68,7 @@ let content = std::fs::read_to_string("config.toml").ok();
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:2:16 [unwrap() on Err]
      = help: Use if let, match, unwrap_or, or ? operator instead
 ```

@@ -77,7 +77,7 @@ fn average(numbers: &[i32]) -> Option<f64> {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:5 [division by zero]
      = help: Check divisor is non-zero before division
 ```

@@ -52,7 +52,8 @@ struct Header {
 }
 
 fn parse_header(bytes: &[u8]) -> Option<&Header> {
-    try_from_bytes(&bytes[..8]).ok()
+    let header_bytes = bytes.get(..8)?;  // Bounds check first
+    try_from_bytes(header_bytes).ok()
 }
 ```
 
@@ -73,9 +74,13 @@ where
 ### Use read_unaligned for unaligned access
 
 ```rust
-fn read_u32_unaligned(bytes: &[u8], offset: usize) -> u32 {
+fn read_u32_unaligned(bytes: &[u8], offset: usize) -> Option<u32> {
+    // Bounds check: ensure 4 bytes available at offset
+    if offset.checked_add(4)? > bytes.len() {
+        return None;
+    }
     let ptr = bytes[offset..].as_ptr() as *const u32;
-    unsafe { std::ptr::read_unaligned(ptr) }
+    Some(unsafe { std::ptr::read_unaligned(ptr) })
 }
 ```
 
@@ -97,7 +102,7 @@ fn get_word(data: &PackedData) -> u32 {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:4:14 [misaligned pointer dereference]
      = help: Ensure pointer alignment requirements are met; review unsafe pointer casts
 ```

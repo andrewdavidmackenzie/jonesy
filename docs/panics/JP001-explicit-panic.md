@@ -46,7 +46,7 @@ fn process_data(data: &[u8]) -> Result<(), ProcessError> {
 ### Use Option for missing values
 
 ```rust
-fn find_item(id: u32) -> Option<Item> {
+fn find_item(items: &HashMap<u32, Item>, id: u32) -> Option<Item> {
     // Return None instead of panicking
     items.get(&id).cloned()
 }
@@ -70,7 +70,7 @@ fn process_data(data: &[u8]) {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:5:9 [explicit panic!() call]
      = help: Review if panic is intentional or add error handling
 ```

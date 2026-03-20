@@ -88,7 +88,7 @@ overflow-checks = true
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:5 [arithmetic overflow]
      = help: Use checked_*, saturating_*, or wrapping_* methods
      = warning: With default release settings (overflow-checks=false), this wraps silently

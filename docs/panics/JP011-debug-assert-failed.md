@@ -53,7 +53,7 @@ If the assertion no longer makes sense, remove it rather than leaving dead code.
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:5 [debug assertion failed]
      = help: Review assertion condition
 ```

@@ -39,7 +39,7 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:10 [expect() on Err]
      = help: Use if let, match, unwrap_or, or ? operator instead
 ```

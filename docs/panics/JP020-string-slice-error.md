@@ -20,8 +20,8 @@ fn first_three_bytes(s: &str) -> &str {
 }
 
 fn main() {
-    let emoji = "Hello!";
-    first_three_bytes(emoji);  // Panic!
+    let greeting = "Héllo";  // 'é' is 2 bytes in UTF-8
+    first_three_bytes(greeting);  // Panic! Byte 3 is inside 'é'
 }
 ```
 
@@ -89,7 +89,7 @@ fn process_ascii(s: &str) -> Result<(), Error> {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:2:5 [string/slice error]
      = help: Use .get() or .chars() for safe string indexing
 ```

@@ -99,7 +99,7 @@ fn get_cached() -> &Value {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:10 [unwrap() on None]
      = help: Use if let, match, unwrap_or, or ? operator instead
 ```

@@ -88,7 +88,7 @@ fn process_large_file(path: &Path) -> io::Result<()> {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:2:5 [out of memory]
      = help: Use streaming, fallible allocation, or resource limits
 ```

@@ -67,7 +67,7 @@ let db_url = std::env::var("DATABASE_URL")
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:5:10 [expect() on None]
      = help: Use if let, match, unwrap_or, or ? operator instead
 ```

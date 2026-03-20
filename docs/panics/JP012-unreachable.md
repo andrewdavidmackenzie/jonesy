@@ -80,7 +80,7 @@ match digit {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:10:9 [unreachable!() reached]
      = help: Review if panic is intentional or add error handling
 ```

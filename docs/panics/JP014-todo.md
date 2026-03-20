@@ -71,7 +71,7 @@ fn calculate_tax(income: f64, region: Region) -> f64 {
 
 ## Jonesy Output
 
-```
+```text
  --> src/tax.rs:5:21 [todo!() reached]
      = help: Review if panic is intentional or add error handling
 ```

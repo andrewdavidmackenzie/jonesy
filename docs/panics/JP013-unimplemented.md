@@ -66,7 +66,7 @@ If the feature won't be implemented, remove the dead code.
 
 ## Jonesy Output
 
-```
+```text
  --> src/cloud.rs:8:9 [unimplemented!() reached]
      = help: Review if panic is intentional or add error handling
 ```

@@ -71,7 +71,7 @@ fn binary_search(sorted: &[i32], target: i32) -> Option<usize> {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:5 [assertion failed]
      = help: Review assertion condition
 ```

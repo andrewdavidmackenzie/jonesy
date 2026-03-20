@@ -88,7 +88,7 @@ impl Drop for Resource {
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:8:9 [panic during drop]
      = help: Avoid panicking in Drop - log errors instead
 ```

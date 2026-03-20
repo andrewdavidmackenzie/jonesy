@@ -70,7 +70,7 @@ println!("{} + {} = {}", 1, 2, 3);
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:5:9 [formatting error]
      = help: Review Display/Debug implementations for panic paths
 ```

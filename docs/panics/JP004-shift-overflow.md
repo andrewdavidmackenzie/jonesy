@@ -66,7 +66,7 @@ let (result, overflow) = x.overflowing_shl(amount);
 
 ## Jonesy Output
 
-```
+```text
  --> src/lib.rs:3:5 [shift overflow]
      = help: Validate shift amount is within valid range
      = warning: With default release settings (overflow-checks=false), this wraps silently
