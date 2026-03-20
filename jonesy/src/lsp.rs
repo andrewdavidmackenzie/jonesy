@@ -1091,15 +1091,25 @@ fn analyze_single_target(
         }
         SymbolTable::MachO(Fat(fat)) => {
             // Fat binary - find native architecture slice and analyze it
-            // On Apple Silicon, prefer arm64 (cputype 0x100000C)
+            // Prefer slice matching the current host architecture
             const CPU_TYPE_ARM64: u32 = 0x0100_000C;
+            const CPU_TYPE_X86_64: u32 = 0x0100_0007;
 
-            // Find arm64 slice, or fall back to first available
+            let preferred_cputype = match std::env::consts::ARCH {
+                "aarch64" => Some(CPU_TYPE_ARM64),
+                "x86_64" => Some(CPU_TYPE_X86_64),
+                _ => None,
+            };
+
+            // Find host-native slice, or fall back to first available
             let mut selected_macho = None;
             for entry in fat.into_iter() {
                 match entry {
                     Ok(SingleArch::MachO(macho)) => {
-                        if macho.header.cputype == CPU_TYPE_ARM64 {
+                        if preferred_cputype
+                            .map(|cpu| macho.header.cputype == cpu)
+                            .unwrap_or(false)
+                        {
                             selected_macho = Some(macho);
                             break;
                         }
