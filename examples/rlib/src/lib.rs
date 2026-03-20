@@ -8,7 +8,7 @@ mod module;
 /// analysis without binary entry points - we can only detect direct panic calls.
 pub fn library_function() {
     if std::env::args().len() > 1 {
-        // Known limitation: conditional panics in library mode (see issue #57)
+        // jonesy: expect panic explicit panic call
         panic!("{}", PANIC_STR);
     }
 
