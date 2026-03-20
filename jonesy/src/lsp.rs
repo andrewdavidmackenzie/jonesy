@@ -1060,7 +1060,8 @@ fn analyze_single_target(
     use crate::config::Config;
     use crate::sym::{SymbolTable, read_symbols};
     use crate::{analyze_archive, analyze_macho};
-    use goblin::mach::Mach::Binary;
+    use goblin::mach::Mach::{Binary, Fat};
+    use goblin::mach::SingleArch;
 
     let binary_buffer =
         std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
@@ -1088,9 +1089,46 @@ fn analyze_single_target(
             );
             Ok(result.code_points)
         }
-        SymbolTable::MachO(_) => {
-            // Fat binary - not currently supported in LSP
-            Err("Fat binary not supported".to_string())
+        SymbolTable::MachO(Fat(fat)) => {
+            // Fat binary - find native architecture slice and analyze it
+            // On Apple Silicon, prefer arm64 (cputype 0x100000C)
+            const CPU_TYPE_ARM64: u32 = 0x0100_000C;
+
+            // Find arm64 slice, or fall back to first available
+            let mut selected_macho = None;
+            for entry in fat.into_iter() {
+                match entry {
+                    Ok(SingleArch::MachO(macho)) => {
+                        if macho.header.cputype == CPU_TYPE_ARM64 {
+                            selected_macho = Some(macho);
+                            break;
+                        }
+                        // Keep first as fallback
+                        if selected_macho.is_none() {
+                            selected_macho = Some(macho);
+                        }
+                    }
+                    Ok(SingleArch::Archive(_)) => continue, // Skip archive slices
+                    Err(_) => continue,
+                }
+            }
+
+            match selected_macho {
+                Some(macho) => {
+                    let result = analyze_macho(
+                        &macho,
+                        &binary_buffer,
+                        target_path,
+                        Some(src_filter),
+                        false, // show_timings
+                        &config,
+                        Some(workspace_root),
+                        &output,
+                    );
+                    Ok(result.code_points)
+                }
+                None => Err("Fat binary contains no analyzable MachO slices".to_string()),
+            }
         }
         SymbolTable::Archive(archive) => {
             let result = analyze_archive(
