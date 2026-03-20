@@ -1,0 +1,4 @@
+# Jekyll build output (now in ../target/jekyll)
+_site/
+.jekyll-cache/
+.jekyll-metadata

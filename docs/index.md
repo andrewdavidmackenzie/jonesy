@@ -19,6 +19,10 @@ cargo build
 jonesy
 ```
 
+For [IDE integration](/lsp), run `jonesy lsp` to get inline diagnostics and quick fixes:
+
+![Jonesy LSP showing panic diagnostics with quick fix options](./assets/images/lsp-quickfix.png)
+
 ## Features
 
 - Analyzes compiled Rust binaries using DWARF debug info
@@ -61,4 +65,4 @@ Jonesy detects and classifies panics with unique error codes. Click on any code 
 - [GitHub Repository](https://github.com/andrewdavidmackenzie/jonesy)
 - [Installation Guide](https://github.com/andrewdavidmackenzie/jonesy#installation)
 - [Command Line Options](https://github.com/andrewdavidmackenzie/jonesy#command-line-options)
-- [LSP Integration](https://github.com/andrewdavidmackenzie/jonesy#lsp-server-for-ide-integration)
+- [IDE Integration (LSP)](/lsp)
