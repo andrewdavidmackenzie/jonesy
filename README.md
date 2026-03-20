@@ -3,6 +3,8 @@
 Jonesy analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
 can originate in their code.
 
+**[Documentation](https://andrewdavidmackenzie.github.io/jonesy/)** | **[Panic Reference](https://andrewdavidmackenzie.github.io/jonesy/panics/)**
+
 Focus is currently on getting something useful working. I work on macOS and ARM64, so that's what implemented, but I
 definitely want to make it
 cross-platform and multi-architecture in the future, but will probably need help from others on Linux and Mac.
@@ -739,5 +741,7 @@ The following panic patterns are detected in library-only analysis:
 - `Result::unwrap()`, `Result::expect()`, `Result::unwrap_err()`, `Result::expect_err()`
 - Division by zero, arithmetic overflow, shift overflow
 - Slice index out of bounds
+
+See the **[Panic Reference](https://andrewdavidmackenzie.github.io/jonesy/panics/)** for detailed documentation of each panic type (JP001-JP022), including examples and how to avoid them.
 
 See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scenarios, supported panic types, and implementation status.
