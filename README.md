@@ -3,7 +3,7 @@
 Jonesy analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
 can originate in their code.
 
-**[Documentation](https://andrewdavidmackenzie.github.io/jonesy/)** | **[Panic Reference](https://andrewdavidmackenzie.github.io/jonesy/panics/)**
+**[Documentation](https://jonesy.mackenzie-serres.net/)** | **[Panic Reference](https://jonesy.mackenzie-serres.net/panics/)**
 
 Focus is currently on getting something useful working. I work on macOS and ARM64, so that's what implemented, but I
 definitely want to make it
@@ -742,6 +742,6 @@ The following panic patterns are detected in library-only analysis:
 - Division by zero, arithmetic overflow, shift overflow
 - Slice index out of bounds
 
-See the **[Panic Reference](https://andrewdavidmackenzie.github.io/jonesy/panics/)** for detailed documentation of each panic type (JP001-JP022), including examples and how to avoid them.
+See the **[Panic Reference](https://jonesy.mackenzie-serres.net/panics/)** for detailed documentation of each panic type (JP001-JP022), including examples and how to avoid them.
 
 See [SCENARIOS.md](SCENARIOS.md) for detailed documentation of all analysis scenarios, supported panic types, and implementation status.

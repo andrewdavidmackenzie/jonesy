@@ -87,5 +87,5 @@ match digit {
 
 ## Related
 
-- [JP013 - Unimplemented](/jonesy/panics/JP013-unimplemented): Placeholder for missing code
-- [JP014 - Todo](/jonesy/panics/JP014-todo): Placeholder for future work
+- [JP013 - Unimplemented](/panics/JP013-unimplemented): Placeholder for missing code
+- [JP014 - Todo](/panics/JP014-todo): Placeholder for future work

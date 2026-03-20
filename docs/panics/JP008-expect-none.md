@@ -25,7 +25,7 @@ fn get_env_port() -> u16 {
 
 ## Why It Happens
 
-Same reasons as [JP006 - Unwrap None](/jonesy/panics/JP006-unwrap-none), but the programmer added a descriptive message expecting the panic to be "informative."
+Same reasons as [JP006 - Unwrap None](/panics/JP006-unwrap-none), but the programmer added a descriptive message expecting the panic to be "informative."
 
 ## How to Avoid
 
@@ -74,5 +74,5 @@ let db_url = std::env::var("DATABASE_URL")
 
 ## Related
 
-- [JP006 - Unwrap None](/jonesy/panics/JP006-unwrap-none): `unwrap()` without message
-- [JP009 - Expect Err](/jonesy/panics/JP009-expect-err): `expect()` on `Result::Err`
+- [JP006 - Unwrap None](/panics/JP006-unwrap-none): `unwrap()` without message
+- [JP009 - Expect Err](/panics/JP009-expect-err): `expect()` on `Result::Err`

@@ -96,4 +96,4 @@ pub extern "C" fn process_status(status_code: u8) -> i32 {
 
 ## Related
 
-- [JP022 - Misaligned Pointer](/jonesy/panics/JP022-misaligned-pointer): Other unsafe memory issues
+- [JP022 - Misaligned Pointer](/panics/JP022-misaligned-pointer): Other unsafe memory issues

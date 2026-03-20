@@ -73,4 +73,4 @@ fn allocate_matrix(rows: usize, cols: usize) -> Result<Vec<Vec<i32>>, Error> {
 
 ## Related
 
-- [JP019 - Out of Memory](/jonesy/panics/JP019-out-of-memory): Allocation failure
+- [JP019 - Out of Memory](/panics/JP019-out-of-memory): Allocation failure

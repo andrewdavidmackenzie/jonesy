@@ -25,7 +25,7 @@ fn load_config() -> Config {
 
 ## How to Avoid
 
-See [JP007 - Unwrap Err](/jonesy/panics/JP007-unwrap-err) for detailed solutions.
+See [JP007 - Unwrap Err](/panics/JP007-unwrap-err) for detailed solutions.
 
 ### Quick fix: propagate with `?`
 
@@ -46,5 +46,5 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
 
 ## Related
 
-- [JP007 - Unwrap Err](/jonesy/panics/JP007-unwrap-err): `unwrap()` without message
-- [JP008 - Expect None](/jonesy/panics/JP008-expect-none): `expect()` on `Option::None`
+- [JP007 - Unwrap Err](/panics/JP007-unwrap-err): `unwrap()` without message
+- [JP008 - Expect None](/panics/JP008-expect-none): `expect()` on `Option::None`
