@@ -893,3 +893,32 @@ fn test_rlib_todo_detection() {
         stdout
     );
 }
+
+/// Test that conditional panics are detected in library analysis (issue #57).
+/// This verifies that panic!() calls inside conditionals (if blocks) are detected.
+#[test]
+fn test_rlib_conditional_panic_detection() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    // Run jonesy and get raw output
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
+
+    // The conditional panic is in library_function() at line 12 of lib.rs:
+    //   if std::env::args().len() > 1 {
+    //       panic!("{}", PANIC_STR);  // line 12
+    //   }
+    let conditional_panic_detected = stdout.lines().any(|line| {
+        // Look for lib.rs:12 (the line with the conditional panic)
+        line.contains("lib.rs:12:") || line.contains("lib.rs:11:") || line.contains("lib.rs:13:")
+    });
+
+    assert!(
+        conditional_panic_detected,
+        "Library analysis should detect conditional panic!() calls (issue #57).\n\
+         Expected a panic point at lib.rs:12 (±1 line).\n\
+         Output:\n{}",
+        stdout
+    );
+}
