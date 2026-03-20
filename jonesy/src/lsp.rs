@@ -1062,6 +1062,7 @@ fn analyze_single_target(
     use crate::{analyze_archive, analyze_macho};
     use goblin::mach::Mach::{Binary, Fat};
     use goblin::mach::SingleArch;
+    use goblin::mach::constants::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 
     let binary_buffer =
         std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
@@ -1092,9 +1093,6 @@ fn analyze_single_target(
         SymbolTable::MachO(Fat(fat)) => {
             // Fat binary - find native architecture slice and analyze it
             // Prefer slice matching the current host architecture
-            const CPU_TYPE_ARM64: u32 = 0x0100_000C;
-            const CPU_TYPE_X86_64: u32 = 0x0100_0007;
-
             let preferred_cputype = match std::env::consts::ARCH {
                 "aarch64" => Some(CPU_TYPE_ARM64),
                 "x86_64" => Some(CPU_TYPE_X86_64),
