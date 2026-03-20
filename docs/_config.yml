@@ -8,6 +8,7 @@ url: "https://jonesy.mackenzie-serres.net"
 # Build settings
 markdown: kramdown
 highlighter: rouge
+destination: ../target/jekyll
 
 # Navigation
 nav:
