@@ -231,6 +231,43 @@ fn run_jones_on_example(example_dir: &Path) -> (i32, HashSet<PanicPoint>) {
     run_jonesy_with_args(example_dir, &["--no-hyperlinks"])
 }
 
+/// Run jonesy and return raw stdout (with timeout protection)
+fn run_jonesy_raw_output(example_dir: &Path, extra_args: &[&str]) -> String {
+    let workspace_root = find_workspace_root();
+    let jonesy_binary = std::env::var_os("CARGO_BIN_EXE_jonesy")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            workspace_root
+                .join("target")
+                .join("debug")
+                .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
+        });
+
+    let mut child = Command::new(&jonesy_binary)
+        .args(extra_args)
+        .current_dir(example_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jonesy");
+
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(_status) => {
+            let output = child.wait_with_output().expect("Failed to get output");
+            String::from_utf8_lossy(&output.stdout).to_string()
+        }
+        None => {
+            child.kill().expect("Failed to kill timed-out process");
+            let _ = child.wait();
+            panic!(
+                "Jonesy timed out after {:?} on {}",
+                JONES_TIMEOUT,
+                example_dir.display()
+            );
+        }
+    }
+}
+
 /// Parse jonesy output to extract panic points
 /// Output format: "├──> filename:line:col" or " --> filename:line:col"
 fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
@@ -777,5 +814,55 @@ fn test_scoped_rules() {
     assert!(
         !other_main_panics.is_empty(),
         "Other panic types in main.rs should still be detected"
+    );
+}
+
+/// Test that library analysis provides precise line numbers with column info.
+/// This verifies issue #66 fix - expect() calls should show precise column numbers.
+#[test]
+fn test_rlib_line_precision() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    // Run jonesy and get raw output (setup() already built the example)
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
+
+    // Check that expect() calls have column precision (column > 1)
+    // The expect_none function has `.expect(` starting at column 17 on line 21
+    // The expect_err function has `.expect(` starting at column 25 on line 27
+    // We verify that at least one panic point has a non-trivial column number
+
+    let has_column_precision = stdout.lines().any(|line| {
+        // Look for lines like "mod.rs:21:22" or "mod.rs:27:30"
+        // where the column (last number) is > 1
+        if line.contains("mod.rs:") && line.contains("[") {
+            // Extract file:line:col pattern
+            if let Some(loc_start) = line.find("mod.rs:") {
+                let loc_part = &line[loc_start..];
+                // Parse the colon-separated parts
+                let parts: Vec<&str> = loc_part
+                    .split('[')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .split(':')
+                    .collect();
+                if parts.len() >= 3 {
+                    if let Ok(col) = parts[2].parse::<u32>() {
+                        return col > 1;
+                    }
+                }
+            }
+        }
+        false
+    });
+
+    assert!(
+        has_column_precision,
+        "Library analysis should provide column precision for some panic points.\n\
+         Expected lines like 'mod.rs:21:22' with column > 1.\n\
+         Output:\n{}",
+        stdout
     );
 }

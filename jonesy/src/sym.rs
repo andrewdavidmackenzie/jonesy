@@ -1164,6 +1164,35 @@ impl ObjectLineTable {
         let entry = &self.entries[idx];
         Some((Some(entry.file.clone()), Some(entry.line), entry.column))
     }
+
+    /// Find the last crate source line entry in the range [func_start, call_site_addr].
+    /// This provides more precise line numbers for calls within a function.
+    fn get_crate_line_in_range(
+        &self,
+        func_start: u64,
+        call_site_addr: u64,
+        crate_src_path: &str,
+    ) -> Option<(String, u32, Option<u32>)> {
+        if self.entries.is_empty() {
+            return None;
+        }
+
+        // Find entries in range [func_start, call_site_addr]
+        let start_idx = self.entries.partition_point(|e| e.address < func_start);
+        let end_idx = self
+            .entries
+            .partition_point(|e| e.address <= call_site_addr);
+
+        // Search backwards from end to find the last crate source entry
+        for i in (start_idx..end_idx).rev() {
+            let entry = &self.entries[i];
+            if matches_crate_pattern(&entry.file, crate_src_path) {
+                return Some((entry.file.clone(), entry.line, entry.column));
+            }
+        }
+
+        None
+    }
 }
 
 /// Call graph for library analysis - uses symbol names instead of addresses.
@@ -1177,9 +1206,15 @@ impl LibraryCallGraph {
     /// Build a library call graph from a single object file.
     /// Uses relocations to find call targets by symbol name.
     /// Also enriches caller info with file/line from DWARF debug info.
+    ///
+    /// # Arguments
+    /// * `macho` - Parsed MachO from the object file
+    /// * `buffer` - Raw bytes of the object file
+    /// * `crate_src_path` - Optional crate source path pattern for precise line numbers
     pub fn build_from_object(
         macho: &MachO,
         buffer: &[u8],
+        crate_src_path: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
 
@@ -1276,18 +1311,27 @@ impl LibraryCallGraph {
                             .and_then(|lt| lt.lookup(call_site_addr))
                             .unwrap_or((None, None, None));
 
-                        // If call site points to library code, try the function start
-                        // address as fallback (the caller function is in user code)
+                        // If call site points to library code, find the last crate source
+                        // line between function start and call site for precise line numbers
                         let (file, line, column) = if file.as_ref().is_some_and(|f| {
                             f.starts_with("/rustc/")
                                 || f.contains("/.cargo/")
                                 || f.contains("/deps/")
                         }) {
-                            // Fall back to function start address
-                            line_lookup
-                                .as_ref()
-                                .and_then(|lt| lt.lookup(func_addr))
-                                .unwrap_or((None, None, None))
+                            // Try to find precise line in crate source
+                            if let Some(crate_path) = crate_src_path
+                                && let Some(lt) = line_lookup.as_ref()
+                                && let Some((crate_file, crate_line, crate_col)) = lt
+                                    .get_crate_line_in_range(func_addr, call_site_addr, crate_path)
+                            {
+                                (Some(crate_file), Some(crate_line), crate_col)
+                            } else {
+                                // Fall back to function start address
+                                line_lookup
+                                    .as_ref()
+                                    .and_then(|lt| lt.lookup(func_addr))
+                                    .unwrap_or((None, None, None))
+                            }
                         } else {
                             (file, line, column)
                         };
