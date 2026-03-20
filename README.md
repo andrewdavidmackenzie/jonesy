@@ -95,8 +95,8 @@ There are two ways to build a Rust dynamic library:
 
 **Other notes:**
 
-- `.rlib` files (Rust static library archives) have limited support because panic symbols are unlinked references in
-  object files
+- `.rlib` files (Rust library archives) are fully supported for panic detection
+- `.a` (staticlib) files work but only detect panics in `#[no_mangle]` exported functions (see [Limitations](#static-libraries-a-and-dce))
 - The dSYM bundle provides debug symbols for source location information
 
 ## Command Line Options
@@ -708,17 +708,26 @@ Note: The LSP server runs alongside rust-analyzer—it doesn't replace it. You'l
 
 ### Library-Only Analysis Limitations
 
-When analyzing library-only crates (rlib) without binary entry points using `--lib`:
+When analyzing library-only crates (rlib/staticlib) without binary entry points using `--lib`:
 
 1. **Relocation-based detection**: Uses ARM64 branch relocations to find panic callers, which works differently from binary call tree analysis
 
-2. **`todo!()` macro**: May not be detected due to compiler generating local symbol indirection instead of direct panic calls
+2. **Line number precision**: For calls to standard library functions (like `Option::unwrap`), the reported line number is the function definition rather than the exact call site within the function
 
-3. **Conditional panics**: Panics inside conditional branches (e.g., `if condition { panic!() }`) may not be reliably detected if the code path isn't compiled into the object file
+3. **Static libraries (`.a`) and DCE**: Static libraries are designed for C FFI. Only functions exported with `#[no_mangle]` are preserved - other functions are eliminated by dead code elimination (DCE) since C code cannot call mangled Rust symbols. This is correct behavior: jonesy reports only reachable panic points.
 
-4. **Static libraries (`.a`)**: Have aggressive dead code elimination (DCE) that removes unreferenced functions. Library functions must be exported with `#[no_mangle]` to be analyzed
+   ```rust
+   // This panic WILL be detected (function preserved for C FFI)
+   #[no_mangle]
+   pub extern "C" fn exported_function() {
+       panic!("reachable from C");
+   }
 
-5. **Line number precision**: For calls to standard library functions (like `Option::unwrap`), the reported line number is the function definition rather than the exact call site within the function
+   // This panic will NOT be detected (DCE removes unreachable code)
+   pub fn internal_function() {
+       panic!("unreachable from C");
+   }
+   ```
 
 ### Detected Panic Types in Library Mode
 
