@@ -714,7 +714,7 @@ When analyzing library-only crates (rlib/staticlib) without binary entry points 
 
 2. **Line number precision**: For calls to standard library functions (like `Option::unwrap`), the reported line number is the function definition rather than the exact call site within the function
 
-3. **Static libraries (`.a`) and DCE**: Static libraries are designed for C FFI. Only functions exported with `#[no_mangle]` are preserved - other functions are eliminated by dead code elimination (DCE) since C code cannot call mangled Rust symbols. This is correct behavior: jonesy reports only reachable panic points.
+3. <a id="static-libraries-a-and-dce"></a>**Static libraries (`.a`) and DCE**: Static libraries are designed for C FFI. Only functions exported with `#[no_mangle]` are preserved - other functions are eliminated by dead code elimination (DCE) since C code cannot call mangled Rust symbols. This is correct behavior: jonesy reports only reachable panic points.
 
    ```rust
    // This panic WILL be detected (function preserved for C FFI)
