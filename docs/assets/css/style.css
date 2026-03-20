@@ -1,17 +1,18 @@
-/* Rust Documentation Style Theme for Jonesy */
+/* Rust Documentation Dark Theme for Jonesy */
 
 :root {
   --rust-orange: #f46623;
-  --rust-dark: #282828;
-  --rust-darker: #1a1a1a;
-  --rust-light: #353535;
-  --text-primary: #333;
-  --text-secondary: #666;
-  --text-light: #e0e0e0;
-  --bg-main: #fff;
-  --bg-code: #f5f5f5;
-  --border-color: #e0e0e0;
-  --link-color: #4078c0;
+  --rust-red: #c83737;
+  --bg-dark: #0f1419;
+  --bg-darker: #0a0e12;
+  --bg-card: #1a1f26;
+  --bg-code: #242a33;
+  --text-primary: #e6e6e6;
+  --text-secondary: #a0a0a0;
+  --text-dim: #6e7681;
+  --border-color: #2d333b;
+  --link-color: #58a6ff;
+  --link-hover: #79b8ff;
 }
 
 * {
@@ -21,33 +22,30 @@
 }
 
 html {
-  font-size: 16px;
-  line-height: 1.6;
+  font-size: 18px;
+  line-height: 1.7;
 }
 
 body {
-  font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: var(--text-primary);
-  background: var(--bg-main);
+  background: var(--bg-dark);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
 
 .container {
-  max-width: 1000px;
+  max-width: 1100px;
   margin: 0 auto;
-  padding: 0 20px;
+  padding: 0 24px;
 }
 
-/* Header - docs.rs style dark bar */
+/* Header - docs.rs style */
 .top-bar {
-  background: var(--rust-dark);
-  padding: 12px 0;
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  background: var(--bg-darker);
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .top-bar .container {
@@ -60,14 +58,14 @@ body {
   display: flex;
   align-items: center;
   text-decoration: none;
-  color: var(--text-light);
+  color: var(--text-primary);
   font-weight: 600;
-  font-size: 1.25rem;
+  font-size: 1.5rem;
 }
 
 .logo-icon {
-  margin-right: 8px;
-  font-size: 1.5rem;
+  margin-right: 10px;
+  font-size: 1.75rem;
 }
 
 .logo-text {
@@ -76,16 +74,17 @@ body {
 
 .nav {
   display: flex;
-  gap: 24px;
+  gap: 32px;
 }
 
 .nav-link {
-  color: var(--text-light);
+  color: var(--text-secondary);
   text-decoration: none;
-  font-size: 0.95rem;
-  padding: 6px 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  padding: 8px 0;
   border-bottom: 2px solid transparent;
-  transition: border-color 0.2s, color 0.2s;
+  transition: color 0.2s, border-color 0.2s;
 }
 
 .nav-link:hover {
@@ -93,39 +92,48 @@ body {
   border-bottom-color: var(--rust-orange);
 }
 
+.nav-link:focus-visible,
+.logo:focus-visible {
+  outline: 2px solid var(--rust-orange);
+  outline-offset: 2px;
+}
+
 /* Main content */
 .main-content {
   flex: 1;
-  padding: 40px 0;
+  padding: 48px 0;
 }
 
 /* Typography */
 h1, h2, h3, h4, h5, h6 {
-  color: var(--rust-dark);
-  margin-top: 1.5em;
-  margin-bottom: 0.5em;
+  color: var(--text-primary);
+  margin-top: 1.75em;
+  margin-bottom: 0.75em;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 h1 {
-  font-size: 2rem;
-  border-bottom: 2px solid var(--rust-orange);
-  padding-bottom: 0.3em;
+  font-size: 2.5rem;
+  border-bottom: 3px solid var(--rust-orange);
+  padding-bottom: 0.4em;
   margin-top: 0;
 }
 
 h2 {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   border-bottom: 1px solid var(--border-color);
   padding-bottom: 0.3em;
 }
 
 h3 {
-  font-size: 1.25rem;
+  font-size: 1.4rem;
+  color: var(--rust-orange);
 }
 
 p {
-  margin-bottom: 1em;
+  margin-bottom: 1.25em;
+  font-size: 1.1rem;
 }
 
 a {
@@ -134,81 +142,98 @@ a {
 }
 
 a:hover {
+  color: var(--link-hover);
   text-decoration: underline;
 }
 
 /* Lists */
 ul, ol {
-  margin-bottom: 1em;
+  margin-bottom: 1.25em;
   padding-left: 2em;
 }
 
 li {
-  margin-bottom: 0.3em;
+  margin-bottom: 0.5em;
+  font-size: 1.1rem;
 }
 
-/* Code - Rust style */
+/* Code - Dark theme */
 code {
-  font-family: 'Fira Mono', 'Source Code Pro', Consolas, monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', Consolas, monospace;
   font-size: 0.9em;
   background: var(--bg-code);
-  padding: 2px 6px;
-  border-radius: 3px;
+  color: var(--rust-orange);
+  padding: 3px 8px;
+  border-radius: 4px;
 }
 
 pre {
-  background: var(--rust-darker);
-  color: #c5c5c5;
-  padding: 16px;
-  border-radius: 4px;
+  background: var(--bg-darker);
+  color: #e6e6e6;
+  padding: 20px 24px;
+  border-radius: 8px;
   overflow-x: auto;
-  margin-bottom: 1em;
-  border-left: 3px solid var(--rust-orange);
+  margin-bottom: 1.5em;
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--rust-orange);
 }
 
 pre code {
   background: none;
   padding: 0;
   color: inherit;
+  font-size: 1rem;
 }
 
-/* Syntax highlighting - Rust theme colors */
+/* Syntax highlighting - Dark Rust theme */
 .highlight .k,
 .highlight .kd,
-.highlight .kn { color: #cc7832; } /* keywords */
+.highlight .kn { color: #ff7b72; } /* keywords - red */
 .highlight .s,
 .highlight .s1,
-.highlight .s2 { color: #6a8759; } /* strings */
+.highlight .s2 { color: #a5d6ff; } /* strings - light blue */
 .highlight .c,
 .highlight .c1,
-.highlight .cm { color: #808080; font-style: italic; } /* comments */
+.highlight .cm { color: #6e7681; font-style: italic; } /* comments */
 .highlight .nf,
-.highlight .nb { color: #ffc66d; } /* functions */
-.highlight .nc { color: #a9b7c6; } /* types */
+.highlight .nb { color: #d2a8ff; } /* functions - purple */
+.highlight .nc { color: #79c0ff; } /* types - blue */
 .highlight .mi,
-.highlight .mf { color: #6897bb; } /* numbers */
+.highlight .mf { color: #79c0ff; } /* numbers */
+.highlight .o { color: #ff7b72; } /* operators */
 
-/* Tables - crates.io style */
+/* Tables - Dark crates.io style */
 table {
   width: 100%;
   border-collapse: collapse;
-  margin-bottom: 1em;
+  margin-bottom: 1.5em;
+  background: var(--bg-card);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 th, td {
-  padding: 10px 12px;
+  padding: 14px 16px;
   text-align: left;
   border-bottom: 1px solid var(--border-color);
+  font-size: 1.05rem;
 }
 
 th {
-  background: var(--bg-code);
+  background: var(--bg-darker);
   font-weight: 600;
-  color: var(--rust-dark);
+  color: var(--text-primary);
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+}
+
+tr:last-child td {
+  border-bottom: none;
 }
 
 tr:hover {
-  background: #fafafa;
+  background: var(--bg-code);
 }
 
 /* Panic code badges */
@@ -216,51 +241,67 @@ td:first-child code,
 a code {
   background: var(--rust-orange);
   color: white;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 /* Blockquotes / callouts */
 blockquote {
   border-left: 4px solid var(--rust-orange);
-  background: #fff8f0;
-  padding: 12px 16px;
-  margin: 1em 0;
+  background: var(--bg-card);
+  padding: 16px 20px;
+  margin: 1.5em 0;
+  border-radius: 0 8px 8px 0;
 }
 
 blockquote p:last-child {
   margin-bottom: 0;
 }
 
+/* Strong emphasis */
+strong {
+  color: var(--rust-orange);
+  font-weight: 600;
+}
+
 /* Footer */
 .footer {
-  background: var(--rust-dark);
-  color: var(--text-light);
-  padding: 20px 0;
+  background: var(--bg-darker);
+  color: var(--text-dim);
+  padding: 24px 0;
   margin-top: auto;
   text-align: center;
-  font-size: 0.9rem;
+  font-size: 1rem;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Responsive */
 @media (max-width: 768px) {
-  .top-bar .container {
-    flex-direction: column;
-    gap: 12px;
+  html {
+    font-size: 16px;
   }
 
-  .nav {
+  .top-bar .container {
+    flex-direction: column;
     gap: 16px;
   }
 
+  .nav {
+    gap: 20px;
+  }
+
   h1 {
-    font-size: 1.5rem;
+    font-size: 1.75rem;
+  }
+
+  h2 {
+    font-size: 1.4rem;
   }
 
   table {
-    font-size: 0.9rem;
+    font-size: 0.95rem;
   }
 
   th, td {
-    padding: 8px;
+    padding: 10px 12px;
   }
 }

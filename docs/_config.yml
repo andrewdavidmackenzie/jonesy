@@ -13,6 +13,8 @@ highlighter: rouge
 nav:
   - title: Home
     url: /
+  - title: IDE Integration
+    url: /lsp
   - title: Panic Reference
     url: /panics/
   - title: GitHub
