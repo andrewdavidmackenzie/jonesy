@@ -96,4 +96,4 @@ fn process_ascii(s: &str) -> Result<(), Error> {
 
 ## Related
 
-- [JP002 - Bounds Check](JP002-bounds-check.md): Array/vector indexing
+- [JP002 - Bounds Check](/jonesy/panics/JP002-bounds-check): Array/vector indexing

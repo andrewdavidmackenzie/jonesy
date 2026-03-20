@@ -77,5 +77,5 @@ fn process_data(data: &[u8]) {
 
 ## Related
 
-- [JP010 - Assert Failed](JP010-assert-failed.md): Conditional panic via `assert!()`
-- [JP012 - Unreachable](JP012-unreachable.md): Panic for impossible code paths
+- [JP010 - Assert Failed](/jonesy/panics/JP010-assert-failed): Conditional panic via `assert!()`
+- [JP012 - Unreachable](/jonesy/panics/JP012-unreachable): Panic for impossible code paths
