@@ -866,3 +866,30 @@ fn test_rlib_line_precision() {
         stdout
     );
 }
+
+/// Test that todo!() macro is detected in library analysis (issue #58).
+/// This verifies that functions at address 0x0 in relocatable objects are not filtered out.
+#[test]
+fn test_rlib_todo_detection() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    // Run jonesy and get raw output
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
+
+    // The todo!() call is in cause_todo() at line 88 of mod.rs
+    // We should detect this panic point
+    let todo_detected = stdout.lines().any(|line| {
+        // Look for mod.rs:88 (the line with todo!())
+        line.contains("mod.rs:88:") || line.contains("mod.rs:87:") || line.contains("mod.rs:89:")
+    });
+
+    assert!(
+        todo_detected,
+        "Library analysis should detect todo!() macro panic (issue #58).\n\
+         Expected a panic point at mod.rs:88 (±1 line).\n\
+         Output:\n{}",
+        stdout
+    );
+}

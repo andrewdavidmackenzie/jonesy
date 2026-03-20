@@ -462,6 +462,7 @@ pub(crate) fn analyze_macho(
 /// These are the demangled names of functions that indicate panic.
 const LIBRARY_PANIC_PATTERNS: &[&str] = &[
     // Direct panic functions
+    "core::panicking::panic",
     "core::panicking::panic_fmt",
     "core::panicking::panic_display",
     "core::panicking::panic_in_cleanup",
