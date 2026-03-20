@@ -779,3 +779,76 @@ fn test_scoped_rules() {
         "Other panic types in main.rs should still be detected"
     );
 }
+
+/// Test that library analysis provides precise line numbers with column info.
+/// This verifies issue #66 fix - expect() calls should show precise column numbers.
+#[test]
+fn test_rlib_line_precision() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    // Build the rlib example
+    let status = Command::new("cargo")
+        .args(["build"])
+        .current_dir(&example_dir)
+        .status()
+        .expect("Failed to build rlib example");
+    assert!(status.success(), "Failed to build rlib example");
+
+    // Run jonesy and get raw output
+    let jonesy_binary = std::env::var_os("CARGO_BIN_EXE_jonesy")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            workspace_root
+                .join("target")
+                .join("debug")
+                .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
+        });
+
+    let output = Command::new(&jonesy_binary)
+        .args(["--no-hyperlinks", "--lib"])
+        .current_dir(&example_dir)
+        .output()
+        .expect("Failed to run jonesy");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Check that expect() calls have column precision (column > 1)
+    // The expect_none function has `.expect(` starting at column 17 on line 21
+    // The expect_err function has `.expect(` starting at column 25 on line 27
+    // We verify that at least one panic point has a non-trivial column number
+
+    let has_column_precision = stdout.lines().any(|line| {
+        // Look for lines like "mod.rs:21:22" or "mod.rs:27:30"
+        // where the column (last number) is > 1
+        if line.contains("mod.rs:") && line.contains("[") {
+            // Extract file:line:col pattern
+            if let Some(loc_start) = line.find("mod.rs:") {
+                let loc_part = &line[loc_start..];
+                // Parse the colon-separated parts
+                let parts: Vec<&str> = loc_part
+                    .split('[')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .split(':')
+                    .collect();
+                if parts.len() >= 3 {
+                    if let Ok(col) = parts[2].parse::<u32>() {
+                        return col > 1;
+                    }
+                }
+            }
+        }
+        false
+    });
+
+    assert!(
+        has_column_precision,
+        "Library analysis should provide column precision for some panic points.\n\
+         Expected lines like 'mod.rs:21:22' with column > 1.\n\
+         Output:\n{}",
+        stdout
+    );
+}
