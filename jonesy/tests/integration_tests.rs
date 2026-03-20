@@ -909,16 +909,19 @@ fn test_rlib_conditional_panic_detection() {
     //   if std::env::args().len() > 1 {
     //       panic!("{}", PANIC_STR);  // line 12
     //   }
-    let conditional_panic_detected = stdout.lines().any(|line| {
-        // Look for lib.rs:12 (the line with the conditional panic)
-        line.contains("lib.rs:12:") || line.contains("lib.rs:11:") || line.contains("lib.rs:13:")
+    // Use parse_jones_output for robust matching (not substring-based)
+    let detected = parse_jones_output(&stdout);
+    let conditional_panic_detected = detected.iter().any(|p| {
+        p.file.ends_with("lib.rs") && (11..=13).contains(&p.line)
     });
 
     assert!(
         conditional_panic_detected,
         "Library analysis should detect conditional panic!() calls (issue #57).\n\
          Expected a panic point at lib.rs:12 (±1 line).\n\
+         Detected panic points: {:?}\n\
          Output:\n{}",
+        detected,
         stdout
     );
 }
