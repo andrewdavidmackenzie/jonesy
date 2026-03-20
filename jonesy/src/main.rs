@@ -573,17 +573,19 @@ pub(crate) fn analyze_archive(
 
         // Parse the object file as Mach-O and build its call graph
         match MachO::parse(member_data, 0) {
-            Ok(obj_macho) => match LibraryCallGraph::build_from_object(&obj_macho, member_data) {
-                Ok(obj_graph) => merged_graph.merge(obj_graph),
-                Err(e) => {
-                    if show_progress {
-                        eprintln!(
-                            "  Warning: Failed to build call graph for {}: {}",
-                            member_name, e
-                        );
+            Ok(obj_macho) => {
+                match LibraryCallGraph::build_from_object(&obj_macho, member_data, crate_src_path) {
+                    Ok(obj_graph) => merged_graph.merge(obj_graph),
+                    Err(e) => {
+                        if show_progress {
+                            eprintln!(
+                                "  Warning: Failed to build call graph for {}: {}",
+                                member_name, e
+                            );
+                        }
                     }
                 }
-            },
+            }
             Err(e) => {
                 if show_progress {
                     eprintln!(
