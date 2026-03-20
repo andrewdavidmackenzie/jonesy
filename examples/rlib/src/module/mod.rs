@@ -83,7 +83,7 @@ pub fn cause_unimplemented() {
     unimplemented!();
 }
 
-// jonesy: expect panic todo!() reached
+// jonesy: expect panic
 pub fn cause_todo() {
     todo!();
 }
