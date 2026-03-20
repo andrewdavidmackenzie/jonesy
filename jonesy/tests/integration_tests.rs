@@ -508,14 +508,59 @@ fn test_rlib_example() {
     test_example("rlib");
 }
 
-// Static libraries have aggressive dead code elimination which removes
-// unreferenced panic-prone code. The staticlib test would need special
-// handling to export functions properly.
+/// Test staticlib analysis with DCE (dead code elimination).
+///
+/// Static libraries are designed for C FFI. Only `#[no_mangle]` functions are
+/// preserved - other functions are eliminated by DCE since C code cannot call
+/// mangled Rust symbols.
+///
+/// This test verifies:
+/// 1. The `#[no_mangle]` exported function's panic IS detected
+/// 2. The internal function's panic is NOT detected (eliminated by DCE)
 #[test]
-#[ignore = "staticlib requires #[no_mangle] exports to avoid DCE"]
 fn test_staticlib_example() {
     setup();
-    test_example("staticlib");
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("staticlib");
+
+    // Run jonesy on the staticlib
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
+    let detected = parse_jones_output(&stdout);
+
+    // Should detect exactly 1 panic: the exported_function's panic at line 17
+    let exported_panic = detected
+        .iter()
+        .any(|p| p.file.ends_with("lib.rs") && (16..=18).contains(&p.line));
+
+    assert!(
+        exported_panic,
+        "Staticlib should detect panic in #[no_mangle] exported_function.\n\
+         Detected: {:?}\n\
+         Output:\n{}",
+        detected, stdout
+    );
+
+    // Should NOT detect internal_function's panic (eliminated by DCE)
+    // internal_function's panic is at line 26
+    let internal_panic = detected
+        .iter()
+        .any(|p| p.file.ends_with("lib.rs") && (25..=27).contains(&p.line));
+
+    assert!(
+        !internal_panic,
+        "Staticlib should NOT detect panic in internal function (DCE eliminates it).\n\
+         Detected: {:?}",
+        detected
+    );
+
+    // Verify exactly 1 panic point total
+    assert_eq!(
+        detected.len(),
+        1,
+        "Staticlib should have exactly 1 panic point (only the exported function).\n\
+         Detected: {:?}",
+        detected
+    );
 }
 
 #[test]
