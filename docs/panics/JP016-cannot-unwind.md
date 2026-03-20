@@ -90,4 +90,4 @@ pub extern "C-unwind" fn may_panic() {
 
 ## Related
 
-- [JP015 - Panic in Drop](JP015-panic-in-drop.md): Double panic issues
+- [JP015 - Panic in Drop](/jonesy/panics/JP015-panic-in-drop): Double panic issues

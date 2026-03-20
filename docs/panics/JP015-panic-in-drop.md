@@ -95,4 +95,4 @@ impl Drop for Resource {
 
 ## Related
 
-- [JP016 - Cannot Unwind](JP016-cannot-unwind.md): FFI panic boundary
+- [JP016 - Cannot Unwind](/jonesy/panics/JP016-cannot-unwind): FFI panic boundary

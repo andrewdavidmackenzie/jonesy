@@ -109,5 +109,5 @@ fn get_word(data: &PackedData) -> u32 {
 
 ## Related
 
-- [JP021 - Invalid Enum](JP021-invalid-enum.md): Other unsafe memory issues
-- [JP002 - Bounds Check](JP002-bounds-check.md): Memory access errors
+- [JP021 - Invalid Enum](/jonesy/panics/JP021-invalid-enum): Other unsafe memory issues
+- [JP002 - Bounds Check](/jonesy/panics/JP002-bounds-check): Memory access errors

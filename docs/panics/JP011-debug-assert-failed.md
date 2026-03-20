@@ -60,4 +60,4 @@ If the assertion no longer makes sense, remove it rather than leaving dead code.
 
 ## Related
 
-- [JP010 - Assert Failed](JP010-assert-failed.md): Always-on assertions
+- [JP010 - Assert Failed](/jonesy/panics/JP010-assert-failed): Always-on assertions

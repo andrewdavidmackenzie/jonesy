@@ -1,18 +1,20 @@
 title: Jonesy Documentation
 description: Find panic points in Rust binaries
 theme: jekyll-theme-minimal
-baseurl: ""
-url: "https://jonesy.mackenzie-serres.net"
+# For GitHub Pages: baseurl is the repository name
+# Change to "" when custom domain (jonesy.mackenzie-serres.net) is configured
+baseurl: "/jonesy"
+url: "https://andrewdavidmackenzie.github.io"
 
 # Build settings
 markdown: kramdown
 highlighter: rouge
 
-# Navigation
+# Navigation (using relative URLs for compatibility)
 nav:
   - title: Home
-    url: /
+    url: ./
   - title: Panic Reference
-    url: /panics/
+    url: ./panics/
   - title: GitHub
     url: https://github.com/andrewdavidmackenzie/jonesy

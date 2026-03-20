@@ -78,5 +78,5 @@ fn binary_search(sorted: &[i32], target: i32) -> Option<usize> {
 
 ## Related
 
-- [JP011 - Debug Assert](JP011-debug-assert-failed.md): Debug-only assertions
-- [JP001 - Explicit Panic](JP001-explicit-panic.md): Direct panic call
+- [JP011 - Debug Assert](/jonesy/panics/JP011-debug-assert-failed): Debug-only assertions
+- [JP001 - Explicit Panic](/jonesy/panics/JP001-explicit-panic): Direct panic call

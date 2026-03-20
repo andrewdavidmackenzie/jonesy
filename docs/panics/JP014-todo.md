@@ -78,5 +78,5 @@ fn calculate_tax(income: f64, region: Region) -> f64 {
 
 ## Related
 
-- [JP013 - Unimplemented](JP013-unimplemented.md): Similar placeholder
-- [JP012 - Unreachable](JP012-unreachable.md): Code that shouldn't run
+- [JP013 - Unimplemented](/jonesy/panics/JP013-unimplemented): Similar placeholder
+- [JP012 - Unreachable](/jonesy/panics/JP012-unreachable): Code that shouldn't run

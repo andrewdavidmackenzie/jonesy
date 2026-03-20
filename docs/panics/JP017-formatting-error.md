@@ -77,4 +77,4 @@ println!("{} + {} = {}", 1, 2, 3);
 
 ## Related
 
-- [JP001 - Explicit Panic](JP001-explicit-panic.md): Direct panic in formatter
+- [JP001 - Explicit Panic](/jonesy/panics/JP001-explicit-panic): Direct panic in formatter

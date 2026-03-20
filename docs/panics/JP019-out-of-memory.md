@@ -95,4 +95,4 @@ fn process_large_file(path: &Path) -> io::Result<()> {
 
 ## Related
 
-- [JP018 - Capacity Overflow](JP018-capacity-overflow.md): Size calculation overflow
+- [JP018 - Capacity Overflow](/jonesy/panics/JP018-capacity-overflow): Size calculation overflow
