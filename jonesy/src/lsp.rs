@@ -1149,6 +1149,9 @@ fn find_config_files(workspace_root: &Path) -> Vec<PathBuf> {
         }
     }
 
+    // Deduplicate paths (can occur with overlapping glob patterns)
+    config_files.sort();
+    config_files.dedup();
     config_files
 }
 
@@ -1588,24 +1591,34 @@ mod tests {
 
     #[test]
     fn test_find_config_files() {
+        use std::collections::HashSet;
+
         // Use workspace_test example which has multiple workspace members
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
         let config_files = find_config_files(&workspace_test_dir);
 
-        // Extract just file names for easier comparison
-        let file_names: Vec<String> = config_files
+        // Collect unique full paths to verify no duplicates
+        let unique_paths: HashSet<String> = config_files
             .iter()
-            .filter_map(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|p| p.to_string_lossy().to_string())
             .collect();
+
+        // Verify no duplicates (set size should equal vec size)
+        assert_eq!(
+            config_files.len(),
+            unique_paths.len(),
+            "Config files should not contain duplicates. Found {} paths but {} unique.",
+            config_files.len(),
+            unique_paths.len()
+        );
 
         // Should always include jonesy.toml (even if it doesn't exist)
         assert!(
             config_files.iter().any(|p| p.ends_with("jonesy.toml")),
             "Should include jonesy.toml path. Found: {:?}",
-            file_names
+            config_files
         );
 
         // Should include workspace Cargo.toml
@@ -1620,12 +1633,27 @@ mod tests {
             config_files
         );
 
-        // Should include member Cargo.toml files (crate_a, crate_b, crate_c)
-        let cargo_toml_count = file_names.iter().filter(|n| *n == "Cargo.toml").count();
-        assert!(
-            cargo_toml_count >= 4, // workspace + 3 members
-            "Should find at least 4 Cargo.toml files (workspace + members). Found: {}",
-            cargo_toml_count
+        // Should include each member's Cargo.toml
+        for member in ["crate_a", "crate_b", "crate_c"] {
+            assert!(
+                config_files.iter().any(|p| {
+                    p.parent()
+                        .map(|parent| parent.ends_with(member))
+                        .unwrap_or(false)
+                        && p.ends_with("Cargo.toml")
+                }),
+                "Should include {}/Cargo.toml. Found: {:?}",
+                member,
+                config_files
+            );
+        }
+
+        // Total should be exactly 5: jonesy.toml + workspace Cargo.toml + 3 members
+        assert_eq!(
+            config_files.len(),
+            5,
+            "Should find exactly 5 config files. Found: {:?}",
+            config_files
         );
     }
 }
