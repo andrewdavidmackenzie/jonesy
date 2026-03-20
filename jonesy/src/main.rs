@@ -164,7 +164,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     crate_src_path.as_deref(),
                     parsed_args.show_timings,
                     &config,
-                    project_root.as_deref(),
                     &parsed_args.output,
                 );
                 total_summary.add(&result.summary);
@@ -192,11 +191,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let result = analyze_archive(
                     &archive,
                     &binary_buffer,
-                    &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_timings,
                     &config,
-                    project_root.as_deref(),
                     &parsed_args.output,
                 );
                 total_summary.add(&result.summary);
@@ -312,7 +309,6 @@ pub(crate) fn analyze_macho(
     crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
-    _project_root: Option<&Path>,
     output: &OutputFormat,
 ) -> BinaryAnalysisResult {
     let show_progress = output.show_progress();
@@ -515,18 +511,14 @@ fn is_stdlib_function(name: &str) -> bool {
 
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
-    _binary_path: &Path,
     crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
-    _project_root: Option<&Path>,
     output: &OutputFormat,
 ) -> BinaryAnalysisResult {
-    // See issue #56 for planned enhancements to these unused parameters
     use std::collections::HashSet;
 
     // Helper to check if a file path is within the crate/workspace scope
@@ -866,7 +858,6 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         Some(&workspace_src_path),
                         args.show_timings,
                         &config,
-                        Some(workspace_root.as_path()),
                         &args.output,
                     ),
                     SymbolTable::MachO(Fat(_)) => {
@@ -876,11 +867,9 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     SymbolTable::Archive(archive) => analyze_archive(
                         &archive,
                         &binary_buffer,
-                        &binary_path,
                         Some(&workspace_src_path),
                         args.show_timings,
                         &config,
-                        Some(workspace_root.as_path()),
                         &args.output,
                     ),
                 };

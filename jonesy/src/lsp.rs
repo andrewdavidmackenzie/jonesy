@@ -1085,7 +1085,6 @@ fn analyze_single_target(
                 Some(src_filter),
                 false, // show_timings
                 &config,
-                Some(workspace_root),
                 &output,
             );
             Ok(result.code_points)
@@ -1130,7 +1129,6 @@ fn analyze_single_target(
                         Some(src_filter),
                         false, // show_timings
                         &config,
-                        Some(workspace_root),
                         &output,
                     );
                     Ok(result.code_points)
@@ -1142,11 +1140,9 @@ fn analyze_single_target(
             let result = analyze_archive(
                 &archive,
                 &binary_buffer,
-                target_path,
                 Some(src_filter),
                 false, // show_timings
                 &config,
-                Some(workspace_root),
                 &output,
             );
             Ok(result.code_points)
