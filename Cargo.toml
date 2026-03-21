@@ -4,6 +4,7 @@ members = [
     "jonesy",
     "examples/cdylib",
     "examples/dylib",
+    "examples/inlined",
     "examples/multi_bin",
     "examples/panic",
     "examples/perfect",

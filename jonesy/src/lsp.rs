@@ -60,18 +60,24 @@ impl JonesyLspServer {
 
     /// Convert a CrateCodePoint to an LSP Diagnostic
     fn code_point_to_diagnostic(point: &CrateCodePoint) -> Diagnostic {
-        // Get primary cause for the message
-        let (message, suggestion, error_code, docs_url) =
-            if let Some(cause) = point.causes.iter().next() {
-                (
-                    format!("panic point: {}", cause.description()),
-                    Some(cause.suggestion(point.is_direct_panic).to_string()),
-                    Some(cause.error_code().to_string()),
-                    Url::parse(&cause.docs_url()).ok(),
-                )
-            } else {
-                ("potential panic point".to_string(), None, None, None)
-            };
+        // Get primary cause for the message - sort for determinism (same as text/json output)
+        let sorted_causes: Vec<_> = {
+            let mut causes: Vec<_> = point.causes.iter().collect();
+            causes.sort_by_key(|c| c.id());
+            causes
+        };
+
+        let (message, suggestion, error_code, docs_url) = if let Some(cause) = sorted_causes.first()
+        {
+            (
+                format!("panic point: {}", cause.description()),
+                Some(cause.suggestion(point.is_direct_panic).to_string()),
+                Some(cause.error_code().to_string()),
+                Url::parse(&cause.docs_url()).ok(),
+            )
+        } else {
+            ("potential panic point".to_string(), None, None, None)
+        };
 
         let range = Range {
             start: Position {
@@ -85,7 +91,8 @@ impl JonesyLspServer {
         };
 
         // Store cause info in data field for use by code actions
-        let cause_ids: Vec<String> = point.causes.iter().map(|c| c.id().to_string()).collect();
+        // Use sorted_causes for consistency with the displayed message
+        let cause_ids: Vec<String> = sorted_causes.iter().map(|c| c.id().to_string()).collect();
         let data = serde_json::json!({
             "causes": cause_ids,
             "function": &point.name,
