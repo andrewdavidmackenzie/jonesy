@@ -58,14 +58,17 @@ impl JonesyLspServer {
     /// Convert a CrateCodePoint to an LSP Diagnostic
     fn code_point_to_diagnostic(point: &CrateCodePoint) -> Diagnostic {
         // Get primary cause for the message
-        let (message, suggestion) = if let Some(cause) = point.causes.iter().next() {
-            (
-                format!("panic point: {}", cause.description()),
-                Some(cause.suggestion().to_string()),
-            )
-        } else {
-            ("potential panic point".to_string(), None)
-        };
+        let (message, suggestion, error_code, docs_url) =
+            if let Some(cause) = point.causes.iter().next() {
+                (
+                    format!("panic point: {}", cause.description()),
+                    Some(cause.suggestion().to_string()),
+                    Some(cause.error_code().to_string()),
+                    Url::parse(&cause.docs_url()).ok(),
+                )
+            } else {
+                ("potential panic point".to_string(), None, None, None)
+            };
 
         let range = Range {
             start: Position {
@@ -86,11 +89,14 @@ impl JonesyLspServer {
             "file": &point.file,
         });
 
+        // Create code_description with documentation URL if available
+        let code_description = docs_url.map(|href| CodeDescription { href });
+
         let mut diagnostic = Diagnostic {
             range,
             severity: Some(DiagnosticSeverity::WARNING),
-            code: None,
-            code_description: None,
+            code: error_code.map(NumberOrString::String),
+            code_description,
             source: Some("jonesy".to_string()),
             message,
             related_information: None,

@@ -7,7 +7,7 @@ use crate::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use serde_json::{Value, json};
 
 /// Schema version for JSON output format (single crate)
-pub const JSON_SCHEMA_VERSION: &str = "1.0";
+pub const JSON_SCHEMA_VERSION: &str = "1.1";
 
 /// Schema version for workspace JSON output format
 pub const JSON_WORKSPACE_SCHEMA_VERSION: &str = "1.1";
@@ -81,8 +81,10 @@ fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_childr
         causes.first().map(|c| {
             let suggestion = c.suggestion();
             let mut cause_obj = json!({
+                "code": c.error_code(),
                 "type": c.id(),
                 "description": c.description(),
+                "docs_url": c.docs_url(),
             });
             if !suggestion.is_empty() {
                 cause_obj["suggestion"] = json!(suggestion);

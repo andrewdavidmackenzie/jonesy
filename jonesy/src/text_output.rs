@@ -146,7 +146,7 @@ fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
 
     let cause_str = if is_leaf {
         primary_cause
-            .map(|c| format!(" [{}]", c.description()))
+            .map(|c| format!(" {}", format_cause(c)))
             .unwrap_or_default()
     } else {
         String::new()
@@ -186,7 +186,7 @@ fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent:
 
     let cause_str = if is_leaf {
         primary_cause
-            .map(|c| format!(" [{}]", c.description()))
+            .map(|c| format!(" {}", format_cause(c)))
             .unwrap_or_default()
     } else {
         String::new()
@@ -253,7 +253,7 @@ fn print_file_entry(
 
     let cause_str = if is_leaf {
         primary_cause
-            .map(|c| format!(" [{}]", c.description()))
+            .map(|c| format!(" {}", format_cause(c)))
             .unwrap_or_default()
     } else {
         String::new()
@@ -353,7 +353,7 @@ fn print_crate_point(
 
     let cause_str = if is_leaf {
         primary_cause
-            .map(|c| format!(" [{}]", c.description()))
+            .map(|c| format!(" {}", format_cause(c)))
             .unwrap_or_default()
     } else {
         String::new()
@@ -416,6 +416,11 @@ fn get_primary_cause(causes: &std::collections::HashSet<PanicCause>) -> Option<&
     let mut sorted: Vec<_> = causes.iter().collect();
     sorted.sort_by_key(|c| c.description());
     sorted.first().copied()
+}
+
+/// Format the cause string with error code, e.g., "[JP001: explicit panic!() call]"
+fn format_cause(cause: &PanicCause) -> String {
+    format!("[{}: {}]", cause.error_code(), cause.description())
 }
 
 /// Make a path absolute using the project root.
