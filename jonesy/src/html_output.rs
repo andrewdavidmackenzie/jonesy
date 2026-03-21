@@ -295,8 +295,10 @@ fn render_panic_point(
 
     if let Some(c) = cause {
         html.push_str(&format!(
-            "{}        <span class=\"cause-badge\">{}</span>\n",
+            "{}        <a href=\"{}\" class=\"cause-badge\" target=\"_blank\">{}: {}</a>\n",
             indent,
+            escape_html(&c.docs_url()),
+            escape_html(c.error_code()),
             escape_html(c.description())
         ));
     }
@@ -371,8 +373,10 @@ fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &
 
     if let Some(c) = cause {
         html.push_str(&format!(
-            "{}        <span class=\"cause-badge\">{}</span>\n",
+            "{}        <a href=\"{}\" class=\"cause-badge\" target=\"_blank\">{}: {}</a>\n",
             indent,
+            escape_html(&c.docs_url()),
+            escape_html(c.error_code()),
             escape_html(c.description())
         ));
     }

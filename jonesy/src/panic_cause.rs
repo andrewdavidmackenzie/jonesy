@@ -217,6 +217,77 @@ impl PanicCause {
         }
     }
 
+    /// Returns the unique error code for this panic type (e.g., "JP001").
+    /// These codes correspond to documentation pages at the jonesy docs site.
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => "JP001",
+            PanicCause::BoundsCheck => "JP002",
+            PanicCause::ArithmeticOverflow(_) => "JP003",
+            PanicCause::ShiftOverflow(_) => "JP004",
+            PanicCause::DivisionByZero => "JP005",
+            PanicCause::UnwrapNone => "JP006",
+            PanicCause::UnwrapErr => "JP007",
+            PanicCause::ExpectNone => "JP008",
+            PanicCause::ExpectErr => "JP009",
+            PanicCause::AssertFailed => "JP010",
+            PanicCause::DebugAssertFailed => "JP011",
+            PanicCause::Unreachable => "JP012",
+            PanicCause::Unimplemented => "JP013",
+            PanicCause::Todo => "JP014",
+            PanicCause::PanicInDrop => "JP015",
+            PanicCause::CannotUnwind => "JP016",
+            PanicCause::FormattingError => "JP017",
+            PanicCause::CapacityOverflow => "JP018",
+            PanicCause::OutOfMemory => "JP019",
+            PanicCause::StringSliceError => "JP020",
+            PanicCause::InvalidEnum => "JP021",
+            PanicCause::MisalignedPointer => "JP022",
+            PanicCause::Unknown => "JP000",
+        }
+    }
+
+    /// Returns the documentation URL slug for this panic type.
+    /// The full URL is `https://jonesy.mackenzie-serres.net/panics/{slug}`
+    pub fn docs_slug(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => "JP001-explicit-panic",
+            PanicCause::BoundsCheck => "JP002-bounds-check",
+            PanicCause::ArithmeticOverflow(_) => "JP003-arithmetic-overflow",
+            PanicCause::ShiftOverflow(_) => "JP004-shift-overflow",
+            PanicCause::DivisionByZero => "JP005-division-by-zero",
+            PanicCause::UnwrapNone => "JP006-unwrap-none",
+            PanicCause::UnwrapErr => "JP007-unwrap-err",
+            PanicCause::ExpectNone => "JP008-expect-none",
+            PanicCause::ExpectErr => "JP009-expect-err",
+            PanicCause::AssertFailed => "JP010-assert-failed",
+            PanicCause::DebugAssertFailed => "JP011-debug-assert-failed",
+            PanicCause::Unreachable => "JP012-unreachable",
+            PanicCause::Unimplemented => "JP013-unimplemented",
+            PanicCause::Todo => "JP014-todo",
+            PanicCause::PanicInDrop => "JP015-panic-in-drop",
+            PanicCause::CannotUnwind => "JP016-cannot-unwind",
+            PanicCause::FormattingError => "JP017-formatting-error",
+            PanicCause::CapacityOverflow => "JP018-capacity-overflow",
+            PanicCause::OutOfMemory => "JP019-out-of-memory",
+            PanicCause::StringSliceError => "JP020-string-slice-error",
+            PanicCause::InvalidEnum => "JP021-invalid-enum",
+            PanicCause::MisalignedPointer => "JP022-misaligned-pointer",
+            PanicCause::Unknown => "",
+        }
+    }
+
+    /// Returns the full documentation URL for this panic type.
+    pub fn docs_url(&self) -> String {
+        const BASE_URL: &str = "https://jonesy.mackenzie-serres.net/panics";
+        let slug = self.docs_slug();
+        if slug.is_empty() {
+            format!("{}/", BASE_URL)
+        } else {
+            format!("{}/{}", BASE_URL, slug)
+        }
+    }
+
     /// Returns true if this panic cause only occurs in debug builds (by default).
     /// In release builds, these conditions have different behavior (wrapping or omitted).
     ///

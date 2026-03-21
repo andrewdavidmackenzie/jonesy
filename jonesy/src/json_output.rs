@@ -81,8 +81,10 @@ fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_childr
         causes.first().map(|c| {
             let suggestion = c.suggestion();
             let mut cause_obj = json!({
+                "code": c.error_code(),
                 "type": c.id(),
                 "description": c.description(),
+                "docs_url": c.docs_url(),
             });
             if !suggestion.is_empty() {
                 cause_obj["suggestion"] = json!(suggestion);
