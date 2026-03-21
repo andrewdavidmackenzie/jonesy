@@ -20,6 +20,7 @@ fn main() {
 
 /// Examples of using inline allow comments to suppress specific panic warnings.
 /// These would normally be flagged by jonesy, but are suppressed with comments.
+#[allow(clippy::unnecessary_literal_unwrap)]
 fn demonstrate_inline_allows() {
     // Example 1: Allow unwrap on a known-safe value
     let always_some: Option<i32> = Some(42);

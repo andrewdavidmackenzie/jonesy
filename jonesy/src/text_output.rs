@@ -128,7 +128,7 @@ fn print_directory_tree(
     }
 }
 
-/// Print panic points in a flat format with absolute paths.
+/// Print panic points in a flat format with relative paths (CI-friendly).
 fn print_flat_format(points: &[CrateCodePoint], project_root: Option<&Path>) {
     for point in points {
         print_flat_point(point, project_root);
@@ -137,7 +137,8 @@ fn print_flat_format(points: &[CrateCodePoint], project_root: Option<&Path>) {
 
 /// Print a single point in flat format with its children.
 fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
-    let display_path = get_clickable_path(&point.file, project_root);
+    // Use relative paths for CI-friendly output (works with GitHub problem matchers)
+    let display_path = get_relative_path(&point.file, project_root);
     let column = point.column.unwrap_or(1);
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
@@ -177,7 +178,8 @@ fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
 
 /// Print a child point in flat format with indentation.
 fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent: &str) {
-    let display_path = get_clickable_path(&point.file, project_root);
+    // Use relative paths for CI-friendly output
+    let display_path = get_relative_path(&point.file, project_root);
     let column = point.column.unwrap_or(1);
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
@@ -324,11 +326,10 @@ fn print_crate_point(
     let absolute_path = make_absolute(&point.file, project_root);
     let display_root = crate_root.or(project_root);
     let display_path = if let Some(root) = display_root {
-        let root_str = root.to_string_lossy();
-        absolute_path
-            .strip_prefix(&format!("{}/", root_str))
-            .unwrap_or(&absolute_path)
-            .to_string()
+        Path::new(&absolute_path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| absolute_path.clone())
     } else {
         absolute_path.clone()
     };
@@ -439,9 +440,17 @@ fn make_absolute(file: &str, project_root: Option<&Path>) -> String {
     }
 }
 
-/// Get a clickable path for terminal output (absolute path).
-fn get_clickable_path(file: &str, project_root: Option<&Path>) -> String {
-    make_absolute(file, project_root)
+/// Get a relative path for CI-friendly output (works with GitHub problem matchers).
+fn get_relative_path(file: &str, project_root: Option<&Path>) -> String {
+    let absolute_path = make_absolute(file, project_root);
+    if let Some(root) = project_root {
+        Path::new(&absolute_path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(absolute_path)
+    } else {
+        absolute_path
+    }
 }
 
 /// Get the display path for a file (relative to crate root).
@@ -450,11 +459,10 @@ fn get_display_path(file: &str, project_root: Option<&Path>, crate_root: Option<
     let display_root = crate_root.or(project_root);
 
     if let Some(root) = display_root {
-        let root_str = root.to_string_lossy();
-        absolute_path
-            .strip_prefix(&format!("{}/", root_str))
-            .unwrap_or(&absolute_path)
-            .to_string()
+        Path::new(&absolute_path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(absolute_path)
     } else {
         absolute_path
     }

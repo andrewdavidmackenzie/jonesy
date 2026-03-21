@@ -1,0 +1,45 @@
+# Example workflow showing how to use jonesy in CI with PR annotations
+#
+# This workflow:
+# 1. Builds your Rust project in debug mode (required for DWARF debug info)
+# 2. Runs jonesy to analyze panic points
+# 3. Shows panic points as annotations on PR diffs
+#
+# NOTE: This is an example workflow. The main jonesy project uses
+# a different workflow for its own CI.
+
+name: Jonesy Panic Analysis (Example)
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+# Prevent running on the jonesy repo itself (this is just an example)
+# Remove this condition when copying to your own repo
+concurrency:
+  group: example-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    # Skip this workflow in the jonesy repo - it's just an example
+    if: github.repository != 'andrewdavidmackenzie/jonesy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build project (debug mode for DWARF info)
+        run: cargo build
+
+      - name: Run jonesy analysis
+        uses: andrewdavidmackenzie/jonesy@v1
+        with:
+          fail-on-panic: false  # Set to true to fail the build if panics found
+
+      # The action outputs the panic count for use in subsequent steps
+      # - name: Check panic count
+      #   run: echo "Found ${{ steps.jonesy.outputs.panic-count }} panic points"

@@ -119,7 +119,7 @@ Options:
   --format <fmt>     Output format: text (default), json, or html
   --config <path>    Path to a TOML config file for allow/deny rules
   --max-threads N    Maximum threads for parallel analysis (default: CPU count)
-  --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)
+  --no-hyperlinks    Disable terminal hyperlinks (use plain relative paths for CI)
   --quiet            Suppress progress messages
   --bin              Analyze a specific binary file
   --lib              Analyze a specific library object file
@@ -137,7 +137,7 @@ jonesy --tree
 
 Example output with `--tree`:
 
-```
+```text
 Full call tree:
 __rustc::rust_panic
 Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
@@ -171,18 +171,19 @@ as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5a
 clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full
 file path while displaying a shorter relative path.
 
-When output is piped or redirected (e.g., `jonesy> file.txt`), plain absolute paths are used automatically to avoid
-escape sequences in logs or files.
+When output is piped or redirected (e.g., `jonesy > file.txt`), plain relative paths are used automatically to avoid
+escape sequences in logs or files. This is also the recommended mode for CI pipelines.
 
 If your terminal doesn't support OSC 8 hyperlinks (e.g. macOS Terminal.app), the escape sequences will be invisible and
-the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this
+the output will still be readable. However, if you prefer plain relative paths even in an interactive terminal, use this
 flag:
 
 ```bash
 jonesy --no-hyperlinks
 ```
 
-This outputs paths like `/Users/me/project/src/main.rs:42:1` instead of clickable hyperlinks.
+This outputs relative paths like `src/main.rs:42:1` instead of clickable hyperlinks, which is compatible with
+GitHub Actions problem matchers for inline PR annotations. See [CI Integration](#ci-integration-github-actions).
 
 ### `--config`
 
@@ -510,6 +511,86 @@ This makes it easy to use jonesy in CI pipelines:
 ```bash
 jonesy || echo "Found potential panics!"
 ```
+
+## CI Integration (GitHub Actions)
+
+Jonesy provides a GitHub Action that shows panic points as inline annotations on PR diffs.
+
+### Quick Setup
+
+Add a workflow file (`.github/workflows/jonesy.yml`):
+
+```yaml
+name: Jonesy Analysis
+
+on: [pull_request, push]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+
+      - name: Build project
+        run: cargo build
+
+      - name: Run jonesy
+        uses: andrewdavidmackenzie/jonesy@v1
+```
+
+### Action Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `fail-on-panic` | Fail the workflow if panic points are found | `false` |
+| `working-directory` | Directory to run analysis in | `.` |
+| `binary` | Specific binary to analyze | auto-detect |
+| `extra-args` | Additional arguments to pass to jonesy | |
+
+### Action Outputs
+
+| Output | Description |
+|--------|-------------|
+| `panic-count` | Number of panic points found |
+
+### Examples
+
+**Fail on any panics:**
+
+```yaml
+- uses: andrewdavidmackenzie/jonesy@v1
+  with:
+    fail-on-panic: true
+```
+
+**Analyze a specific binary:**
+
+```yaml
+- uses: andrewdavidmackenzie/jonesy@v1
+  with:
+    binary: target/debug/my-app
+```
+
+**Use panic count in subsequent steps:**
+
+```yaml
+- name: Run jonesy
+  id: jonesy
+  uses: andrewdavidmackenzie/jonesy@v1
+
+- name: Check threshold
+  if: steps.jonesy.outputs.panic-count > 10
+  run: |
+    echo "::error::Too many panics: ${{ steps.jonesy.outputs.panic-count }}"
+    exit 1
+```
+
+### How It Works
+
+- The action registers a problem matcher that parses jonesy output
+- Panic points appear as warnings directly on the affected lines in PR diffs
+- Output uses relative paths for proper annotation linking
 
 ## Example Output
 

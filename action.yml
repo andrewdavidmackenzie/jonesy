@@ -1,0 +1,61 @@
+name: 'Jonesy Panic Analysis'
+description: 'Analyze Rust binaries for panic points and annotate PRs'
+author: 'Andrew Mackenzie'
+
+branding:
+  icon: 'alert-triangle'
+  color: 'orange'
+
+inputs:
+  fail-on-panic:
+    description: 'Fail the workflow if panic points are found'
+    required: false
+    default: 'false'
+  working-directory:
+    description: 'Directory to run analysis in (defaults to repository root)'
+    required: false
+    default: '.'
+  binary:
+    description: 'Specific binary to analyze (defaults to auto-detect)'
+    required: false
+    default: ''
+  extra-args:
+    description: 'Additional arguments to pass to jonesy'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install jonesy
+      shell: bash
+      run: cargo install jonesy
+
+    - name: Register problem matcher
+      shell: bash
+      run: echo "::add-matcher::${{ github.action_path }}/.github/problem-matcher.json"
+
+    - name: Run jonesy analysis
+      id: jonesy
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set +e
+        if [ -n "${{ inputs.binary }}" ]; then
+          jonesy --no-hyperlinks ${{ inputs.extra-args }} "${{ inputs.binary }}"
+        else
+          jonesy --no-hyperlinks ${{ inputs.extra-args }}
+        fi
+        exit_code=$?
+        echo "panic-count=$exit_code" >> $GITHUB_OUTPUT
+
+        if [ "${{ inputs.fail-on-panic }}" = "true" ] && [ $exit_code -gt 0 ]; then
+          echo "::error::Found $exit_code panic point(s)"
+          exit 1
+        fi
+        exit 0
+
+outputs:
+  panic-count:
+    description: 'Number of panic points found'
+    value: ${{ steps.jonesy.outputs.panic-count }}

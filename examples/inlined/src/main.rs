@@ -1,8 +1,9 @@
-/// This example tests that jonesy correctly reports the function name
-/// for inlined functions. When `run()` is inlined into `main()`, the
-/// panic point should still report `run` as the function name, not `main`.
+// This example tests that jonesy correctly reports the function name
+// for inlined functions. When `run()` is inlined into `main()`, the
+// panic point should still report `run` as the function name, not `main`.
 
 // jonesy: expect panic
+#[allow(clippy::unnecessary_literal_unwrap)]
 #[inline(always)]
 fn run() {
     let x: Option<i32> = None;
@@ -10,6 +11,7 @@ fn run() {
 }
 
 // jonesy: expect panic
+#[allow(clippy::unnecessary_literal_unwrap)]
 #[inline(always)]
 fn helper() {
     let result: Result<i32, &str> = Err("error");
