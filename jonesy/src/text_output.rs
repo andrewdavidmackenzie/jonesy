@@ -407,7 +407,7 @@ fn print_crate_point(
     }
 }
 
-/// Get all causes sorted by ID for deterministic output.
+/// Get all causes sorted by error code for deterministic output.
 /// Returns causes sorted by error code (JP001 < JP002 < ... < JP022).
 fn get_sorted_causes(causes: &std::collections::HashSet<PanicCause>) -> Vec<&PanicCause> {
     let mut sorted: Vec<_> = causes.iter().collect();
