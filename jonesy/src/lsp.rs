@@ -67,17 +67,17 @@ impl JonesyLspServer {
             causes
         };
 
-        let (message, suggestion, error_code, docs_url) =
-            if let Some(cause) = sorted_causes.first() {
-                (
-                    format!("panic point: {}", cause.description()),
-                    Some(cause.suggestion(point.is_direct_panic).to_string()),
-                    Some(cause.error_code().to_string()),
-                    Url::parse(&cause.docs_url()).ok(),
-                )
-            } else {
-                ("potential panic point".to_string(), None, None, None)
-            };
+        let (message, suggestion, error_code, docs_url) = if let Some(cause) = sorted_causes.first()
+        {
+            (
+                format!("panic point: {}", cause.description()),
+                Some(cause.suggestion(point.is_direct_panic).to_string()),
+                Some(cause.error_code().to_string()),
+                Url::parse(&cause.docs_url()).ok(),
+            )
+        } else {
+            ("potential panic point".to_string(), None, None, None)
+        };
 
         let range = Range {
             start: Position {
