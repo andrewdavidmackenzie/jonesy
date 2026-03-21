@@ -307,7 +307,7 @@ fn render_panic_point(
 
     // Cause details
     if let Some(c) = cause {
-        let suggestion = c.suggestion();
+        let suggestion = c.suggestion(point.is_direct_panic);
         let warning = c.release_warning();
         if !suggestion.is_empty() || warning.is_some() {
             html.push_str(&format!("{}    <div class=\"cause-details\">\n", indent));

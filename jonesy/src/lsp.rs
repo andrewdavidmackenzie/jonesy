@@ -65,7 +65,7 @@ impl JonesyLspServer {
             if let Some(cause) = point.causes.iter().next() {
                 (
                     format!("panic point: {}", cause.description()),
-                    Some(cause.suggestion().to_string()),
+                    Some(cause.suggestion(point.is_direct_panic).to_string()),
                     Some(cause.error_code().to_string()),
                     Url::parse(&cause.docs_url()).ok(),
                 )

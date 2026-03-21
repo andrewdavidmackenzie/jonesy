@@ -156,7 +156,7 @@ fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
 
     if is_leaf {
         if let Some(cause) = primary_cause {
-            let suggestion = cause.suggestion();
+            let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 println!("     = help: {}", suggestion);
             }
@@ -196,7 +196,7 @@ fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent:
 
     if is_leaf {
         if let Some(cause) = primary_cause {
-            let suggestion = cause.suggestion();
+            let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 println!("{}     = help: {}", indent, suggestion);
             }
@@ -271,7 +271,7 @@ fn print_file_entry(
 
     if is_leaf {
         if let Some(cause) = primary_cause {
-            let suggestion = cause.suggestion();
+            let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 let help_prefix = if is_root_level { "     " } else { prefix };
                 println!("{}    = help: {}", help_prefix, suggestion);
@@ -371,7 +371,7 @@ fn print_crate_point(
 
     if is_leaf {
         if let Some(cause) = primary_cause {
-            let suggestion = cause.suggestion();
+            let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 let help_prefix = if is_root { "     " } else { prefix };
                 println!("{}    = help: {}", help_prefix, suggestion);

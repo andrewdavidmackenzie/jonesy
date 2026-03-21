@@ -168,8 +168,24 @@ impl PanicCause {
         }
     }
 
-    /// Get a suggestion for how to avoid this panic
-    pub fn suggestion(&self) -> &'static str {
+    /// Get a suggestion for how to avoid this panic.
+    ///
+    /// # Arguments
+    /// * `is_direct` - Whether the panic is direct (user code calls unwrap/expect directly)
+    ///   or indirect (user code calls a function that eventually panics internally).
+    ///
+    /// For indirect panics, suggestions recommend using fallible alternatives when available,
+    /// since the user cannot simply replace the call with `if let` or `match`.
+    pub fn suggestion(&self, is_direct: bool) -> &'static str {
+        if is_direct {
+            self.direct_suggestion()
+        } else {
+            self.indirect_suggestion()
+        }
+    }
+
+    /// Suggestion for direct panics (user code directly calls panic-triggering function)
+    fn direct_suggestion(&self) -> &'static str {
         match self {
             PanicCause::ExplicitPanic => "Review if panic is intentional or add error handling",
             PanicCause::BoundsCheck => "Use .get() for safe access or validate index before use",
@@ -213,6 +229,65 @@ impl PanicCause {
             }
             PanicCause::Unknown => {
                 "Jonesy detected a panic path but couldn't identify the cause. Use --tree to investigate"
+            }
+        }
+    }
+
+    /// Suggestion for indirect panics (user code calls a function that may panic internally)
+    fn indirect_suggestion(&self) -> &'static str {
+        match self {
+            PanicCause::ExplicitPanic => {
+                "This calls a function that may panic. Review the called function or handle errors"
+            }
+            PanicCause::BoundsCheck => {
+                "This calls a function that may panic on bounds check. Validate inputs or use a fallible alternative"
+            }
+            PanicCause::ArithmeticOverflow(_) => {
+                "This calls a function that may overflow. Validate inputs or use checked arithmetic"
+            }
+            PanicCause::ShiftOverflow(_) => {
+                "This calls a function that may overflow on shift. Validate inputs"
+            }
+            PanicCause::DivisionByZero => {
+                "This calls a function that may divide by zero. Validate inputs"
+            }
+            PanicCause::UnwrapNone | PanicCause::UnwrapErr => {
+                "This calls a function that may call unwrap(). Consider a fallible alternative (e.g., try_*)"
+            }
+            PanicCause::ExpectNone | PanicCause::ExpectErr => {
+                "This calls a function that may call expect(). Consider a fallible alternative (e.g., try_*)"
+            }
+            PanicCause::AssertFailed => {
+                "This calls a function with an assertion. Review preconditions"
+            }
+            PanicCause::DebugAssertFailed => {
+                "This calls a function with a debug assertion. Review preconditions"
+            }
+            PanicCause::Unreachable => {
+                "This calls a function that may reach unreachable code. Review control flow"
+            }
+            PanicCause::Unimplemented => "This calls a function with unimplemented!() code paths",
+            PanicCause::Todo => "This calls a function with todo!() code paths",
+            PanicCause::PanicInDrop => "This calls a function that may panic during drop",
+            PanicCause::CannotUnwind => {
+                "This calls a function that may panic in a no-unwind context"
+            }
+            PanicCause::FormattingError => "This calls a function that may panic during formatting",
+            PanicCause::CapacityOverflow => {
+                "This calls a function that may overflow capacity. Consider fallible allocation (try_reserve)"
+            }
+            PanicCause::OutOfMemory => "This calls a function that may fail to allocate memory",
+            PanicCause::StringSliceError => {
+                "This calls a function that may fail on string/slice operations"
+            }
+            PanicCause::InvalidEnum => {
+                "This calls a function that may encounter an invalid enum discriminant"
+            }
+            PanicCause::MisalignedPointer => {
+                "This calls a function that may dereference a misaligned pointer"
+            }
+            PanicCause::Unknown => {
+                "This calls a function that may panic. Use --tree to investigate the call chain"
             }
         }
     }
