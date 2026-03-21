@@ -514,19 +514,11 @@ jonesy || echo "Found potential panics!"
 
 ## CI Integration (GitHub Actions)
 
-Jonesy integrates with GitHub Actions to show panic points as inline annotations on PR diffs.
+Jonesy provides a GitHub Action that shows panic points as inline annotations on PR diffs.
 
 ### Quick Setup
 
-1. Copy the problem matcher to your repository:
-
-```bash
-mkdir -p .github
-curl -o .github/problem-matcher.json \
-  https://raw.githubusercontent.com/andrewdavidmackenzie/jonesy/master/.github/problem-matcher.json
-```
-
-2. Add a workflow file (`.github/workflows/jonesy.yml`):
+Add a workflow file (`.github/workflows/jonesy.yml`):
 
 ```yaml
 name: Jonesy Analysis
@@ -543,53 +535,62 @@ jobs:
       - name: Build project
         run: cargo build
 
-      - name: Install jonesy
-        run: cargo install jonesy
-
-      - name: Register problem matcher
-        run: echo "::add-matcher::.github/problem-matcher.json"
-
       - name: Run jonesy
-        run: jonesy --no-hyperlinks
+        uses: andrewdavidmackenzie/jonesy@v1
+```
+
+### Action Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `fail-on-panic` | Fail the workflow if panic points are found | `false` |
+| `working-directory` | Directory to run analysis in | `.` |
+| `binary` | Specific binary to analyze | auto-detect |
+| `extra-args` | Additional arguments to pass to jonesy | |
+
+### Action Outputs
+
+| Output | Description |
+|--------|-------------|
+| `panic-count` | Number of panic points found |
+
+### Examples
+
+**Fail on any panics:**
+
+```yaml
+- uses: andrewdavidmackenzie/jonesy@v1
+  with:
+    fail-on-panic: true
+```
+
+**Analyze a specific binary:**
+
+```yaml
+- uses: andrewdavidmackenzie/jonesy@v1
+  with:
+    binary: target/debug/my-app
+```
+
+**Use panic count in subsequent steps:**
+
+```yaml
+- name: Run jonesy
+  id: jonesy
+  uses: andrewdavidmackenzie/jonesy@v1
+
+- name: Check threshold
+  if: steps.jonesy.outputs.panic-count > 10
+  run: |
+    echo "::error::Too many panics: ${{ steps.jonesy.outputs.panic-count }}"
+    exit 1
 ```
 
 ### How It Works
 
-- The problem matcher parses jonesy output and creates GitHub annotations
+- The action registers a problem matcher that parses jonesy output
 - Panic points appear as warnings directly on the affected lines in PR diffs
-- Use `--no-hyperlinks` for CI-friendly output with relative paths
-
-### Example Annotation
-
-When viewing a PR, you'll see warnings like:
-
-```
-src/main.rs:42
-⚠️ jonesy: unwrap() on None
-```
-
-### Failing the Build
-
-By default, the workflow shows warnings but doesn't fail. To fail on panics:
-
-```yaml
-- name: Run jonesy
-  run: |
-    jonesy --no-hyperlinks
-    # Exit code is the number of panic points (0 = pass)
-```
-
-Or for a specific threshold:
-
-```yaml
-- name: Check panic threshold
-  run: |
-    count=$(jonesy --summary-only --quiet 2>/dev/null | grep -oP 'Panic points: \K\d+' || echo "0")
-    if [ "$count" -gt "10" ]; then
-      echo "::error::Too many panic points: $count"
-      exit 1
-    fi
-```
+- Output uses relative paths for proper annotation linking
 
 ## Example Output
 
