@@ -180,21 +180,60 @@ pub struct CrateCodePoint {
     pub causes: HashSet<PanicCause>,
     /// Code points that this one calls (closer to panic in the call chain)
     pub children: Vec<CrateCodePoint>,
+    /// Whether this code point directly calls a panic-triggering function (e.g., unwrap, expect)
+    /// vs calling another function that eventually panics
+    pub is_direct_panic: bool,
 }
 
 /// Key for identifying a code point: (file, line)
 type CodePointKey = (String, u32);
 
-/// Info stored for each code point: (function name, column, set of causes, set of child keys)
+/// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic)
 type CodePointInfo = (
     String,
     Option<u32>,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
+    bool, // is_direct_panic
 );
 
 /// Map of code points: key -> info
 type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
+
+/// Check if a function name represents a panic-triggering function.
+/// These are functions that directly cause a panic (unwrap, expect, panic!, etc.)
+/// as opposed to functions that call other functions that eventually panic.
+fn is_panic_triggering_function(func_name: &str) -> bool {
+    // Unwrap/expect variants
+    func_name.contains("unwrap_failed")
+        || func_name.contains("expect_failed")
+        // Direct unwrap/expect calls (before they reach _failed)
+        || (func_name.contains("unwrap") && !func_name.contains("unwrap_or"))
+        || (func_name.contains("expect") && func_name.contains("Option"))
+        || (func_name.contains("expect") && func_name.contains("Result"))
+        // Panic functions
+        || func_name.contains("panic_fmt")
+        || func_name.contains("panic_display")
+        || func_name.contains("panic_bounds_check")
+        || func_name.contains("panic_const_")
+        || func_name.contains("panic_in_cleanup")
+        || func_name.contains("panic_cannot_unwind")
+        || func_name.contains("panic_nounwind")
+        || func_name.contains("panic_misaligned_pointer")
+        || func_name.contains("panic_invalid_enum")
+        // Assert
+        || func_name.contains("assert_failed")
+        // Capacity/allocation
+        || func_name.contains("capacity_overflow")
+        || func_name.contains("handle_alloc_error")
+        // String/slice errors
+        || func_name.contains("slice_error_fail")
+        || func_name.contains("str_index_overflow_fail")
+        // Index trait - direct bounds check
+        || func_name.starts_with("index<")
+        || func_name.contains("::index<")
+        || func_name.contains("Index::index")
+}
 
 /// Collect crate code points with hierarchy.
 /// Returns a list of "root" code points (entry points) with their children.
@@ -206,12 +245,12 @@ pub fn collect_crate_code_points_hierarchical(
     // Map: (file, line) -> (name, cause, set of child keys)
     let mut points: CodePointMap = CodePointMap::new();
 
-    collect_crate_relationships(node, crate_src_path, &mut points, None, None);
+    collect_crate_relationships(node, crate_src_path, &mut points, None, None, None);
 
     // Find roots: points that are not in any other point's children
     let all_children: HashSet<(String, u32)> = points
         .values()
-        .flat_map(|(_, _, _, children)| children.iter().cloned())
+        .flat_map(|(_, _, _, children, _)| children.iter().cloned())
         .collect();
 
     let mut roots: Vec<CodePointKey> = points
@@ -237,7 +276,7 @@ pub fn collect_crate_code_points_hierarchical(
             return None;
         }
 
-        let (name, column, causes, child_keys_set) = points.get(key)?;
+        let (name, column, causes, child_keys_set, is_direct_panic) = points.get(key)?;
         // Sort child keys for deterministic output
         let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
@@ -255,6 +294,7 @@ pub fn collect_crate_code_points_hierarchical(
             column: *column,
             causes: causes.clone(),
             children,
+            is_direct_panic: *is_direct_panic,
         })
     }
 
@@ -273,12 +313,15 @@ pub fn collect_crate_code_points_hierarchical(
 /// For our output hierarchy: B is the parent (entry point), A is the child (closer to panic).
 ///
 /// Also detects panic causes from function names in the call path.
+/// Tracks `immediate_callee` to determine if panic is direct (calling unwrap/expect directly)
+/// or indirect (calling a function that eventually panics).
 fn collect_crate_relationships(
     node: &CallTreeNode,
     crate_src_path: &str,
     points: &mut CodePointMap,
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
+    immediate_callee: Option<&str>, // Name of function this node calls (toward panic)
 ) {
     // Try to detect panic cause from this node's function name and file path
     let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
@@ -299,6 +342,11 @@ fn collect_crate_relationships(
     };
 
     if let Some(key) = &node_key {
+        // Determine if this is a direct panic (immediate callee is a panic-triggering function)
+        let is_direct = immediate_callee
+            .map(is_panic_triggering_function)
+            .unwrap_or(false);
+
         // Ensure this point exists in the map and accumulate all causes
         let entry = points.entry(key.clone()).or_insert_with(|| {
             (
@@ -306,8 +354,15 @@ fn collect_crate_relationships(
                 node.column,
                 HashSet::new(),
                 HashSet::new(),
+                is_direct,
             )
         });
+
+        // Update is_direct_panic: true if ANY path through this point is direct
+        // (conservative: if one path is direct, user could be calling directly)
+        if is_direct {
+            entry.4 = true;
+        }
 
         // Add this path's cause to the set of causes (if detected)
         if let Some(cause) = &detected_cause {
@@ -331,6 +386,7 @@ fn collect_crate_relationships(
             points,
             next_child.clone(),
             detected_cause.clone(),
+            Some(&node.name), // Current node is the callee for the caller
         );
     }
 }

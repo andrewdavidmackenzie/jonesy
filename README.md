@@ -542,6 +542,49 @@ Summary:
   Panic points: 0 in 0 file(s)
 ```
 
+### Direct vs Indirect Panics
+
+Jonesy distinguishes between **direct** and **indirect** panics, providing different suggestions for each:
+
+**Direct panic** — Your code directly calls a panic-triggering function:
+
+```rust
+let value = some_option.unwrap();  // Direct call to unwrap()
+```
+
+```
+--> src/main.rs:42:1 [JP006: unwrap() on None]
+    = help: Use if let, match, unwrap_or, or ? operator instead
+```
+
+**Indirect panic** — Your code calls a function that may panic internally:
+
+```rust
+let mut builder = Builder::from_default_env();
+builder.filter_level(level).init();  // init() internally calls unwrap()
+```
+
+```
+--> src/main.rs:70:1 [JP007: unwrap() on Err]
+    = help: This calls a function that may call unwrap(). Consider a fallible alternative (e.g., try_*)
+```
+
+There's no visible `unwrap()` on line 70, but this is correct! The `env_logger::Builder::init()` method internally calls `try_init().unwrap()`. Jonesy identifies that calling `init()` can lead to a panic, even though the `unwrap()` is inside another function.
+
+For indirect panics, the suggestion recommends using a fallible alternative when available:
+
+```rust
+builder.filter_level(level).try_init().ok();  // Won't panic
+```
+
+Common fallible alternatives:
+- `Mutex::lock()` → `Mutex::try_lock()`
+- `Vec::reserve()` → `Vec::try_reserve()`
+- `env_logger::init()` → `env_logger::try_init()`
+- `thread::spawn().join().unwrap()` → handle the `Result`
+
+Jonesy helps you find these hidden panic paths so you can decide whether to use fallible alternatives or accept the panic risk.
+
 ## Requirements
 
 - macOS with ARM64 (Apple Silicon)—currently the only supported platform

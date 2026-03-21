@@ -79,7 +79,7 @@ fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_childr
         let mut causes: Vec<_> = point.causes.iter().collect();
         causes.sort_by_key(|c| c.description());
         causes.first().map(|c| {
-            let suggestion = c.suggestion();
+            let suggestion = c.suggestion(point.is_direct_panic);
             let mut cause_obj = json!({
                 "code": c.error_code(),
                 "type": c.id(),

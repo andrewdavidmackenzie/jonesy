@@ -699,7 +699,8 @@ pub(crate) fn analyze_archive(
                 line: caller.line,
                 column: caller.column,
                 causes,
-                children: Vec::new(), // Archives don't have call tree hierarchy
+                children: Vec::new(),  // Archives don't have call tree hierarchy
+                is_direct_panic: true, // Archive analysis detects direct panic calls
             }
         })
         .collect();
