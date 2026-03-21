@@ -1747,30 +1747,48 @@ pub fn get_functions_from_dwarf<'a>(
     buffer: &'a [u8],
 ) -> Result<(Vec<FunctionInfo>, Vec<FunctionInfo>), Box<dyn std::error::Error>> {
     let dwarf = load_dwarf_sections(macho, buffer)?;
+
+    // Collect all unit headers first (fast)
+    let mut headers = Vec::new();
+    let mut units_iter = dwarf.units();
+    while let Some(header) = units_iter.next()? {
+        headers.push(header);
+    }
+
+    // Process compilation units in parallel
+    let results: Vec<_> = headers
+        .into_par_iter()
+        .filter_map(|header| {
+            let unit = dwarf.unit(header).ok()?;
+            let mut funcs = Vec::new();
+            let mut inl = Vec::new();
+
+            let mut entries = unit.entries();
+            while let Some((_, entry)) = entries.next_dfs().ok()? {
+                match entry.tag() {
+                    gimli::DW_TAG_subprogram => {
+                        if let Ok(Some(func)) = parse_function_die(&dwarf, &unit, entry) {
+                            funcs.push(func);
+                        }
+                    }
+                    gimli::DW_TAG_inlined_subroutine => {
+                        if let Ok(Some(func)) = parse_inlined_subroutine(&dwarf, &unit, entry) {
+                            inl.push(func);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some((funcs, inl))
+        })
+        .collect();
+
+    // Combine results
     let mut functions = Vec::new();
     let mut inlined = Vec::new();
-
-    // Iterate through all compilation units
-    let mut units = dwarf.units();
-    while let Some(header) = units.next()? {
-        let unit = dwarf.unit(header)?;
-        let mut entries = unit.entries();
-
-        while let Some((_, entry)) = entries.next_dfs()? {
-            match entry.tag() {
-                gimli::DW_TAG_subprogram => {
-                    if let Some(func) = parse_function_die(&dwarf, &unit, entry)? {
-                        functions.push(func);
-                    }
-                }
-                gimli::DW_TAG_inlined_subroutine => {
-                    if let Some(func) = parse_inlined_subroutine(&dwarf, &unit, entry)? {
-                        inlined.push(func);
-                    }
-                }
-                _ => {}
-            }
-        }
+    for (funcs, inl) in results {
+        functions.extend(funcs);
+        inlined.extend(inl);
     }
 
     Ok((functions, inlined))
