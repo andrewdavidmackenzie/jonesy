@@ -326,11 +326,10 @@ fn print_crate_point(
     let absolute_path = make_absolute(&point.file, project_root);
     let display_root = crate_root.or(project_root);
     let display_path = if let Some(root) = display_root {
-        let root_str = root.to_string_lossy();
-        absolute_path
-            .strip_prefix(&format!("{}/", root_str))
-            .unwrap_or(&absolute_path)
-            .to_string()
+        Path::new(&absolute_path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| absolute_path.clone())
     } else {
         absolute_path.clone()
     };
@@ -445,11 +444,10 @@ fn make_absolute(file: &str, project_root: Option<&Path>) -> String {
 fn get_relative_path(file: &str, project_root: Option<&Path>) -> String {
     let absolute_path = make_absolute(file, project_root);
     if let Some(root) = project_root {
-        let root_str = root.to_string_lossy();
-        absolute_path
-            .strip_prefix(&format!("{}/", root_str))
-            .unwrap_or(&absolute_path)
-            .to_string()
+        Path::new(&absolute_path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(absolute_path)
     } else {
         absolute_path
     }
@@ -461,11 +459,10 @@ fn get_display_path(file: &str, project_root: Option<&Path>, crate_root: Option<
     let display_root = crate_root.or(project_root);
 
     if let Some(root) = display_root {
-        let root_str = root.to_string_lossy();
-        absolute_path
-            .strip_prefix(&format!("{}/", root_str))
-            .unwrap_or(&absolute_path)
-            .to_string()
+        Path::new(&absolute_path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(absolute_path)
     } else {
         absolute_path
     }

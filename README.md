@@ -119,7 +119,7 @@ Options:
   --format <fmt>     Output format: text (default), json, or html
   --config <path>    Path to a TOML config file for allow/deny rules
   --max-threads N    Maximum threads for parallel analysis (default: CPU count)
-  --no-hyperlinks    Disable terminal hyperlinks (use plain absolute paths)
+  --no-hyperlinks    Disable terminal hyperlinks (use plain relative paths for CI)
   --quiet            Suppress progress messages
   --bin              Analyze a specific binary file
   --lib              Analyze a specific library object file
@@ -137,7 +137,7 @@ jonesy --tree
 
 Example output with `--tree`:
 
-```
+```text
 Full call tree:
 __rustc::rust_panic
 Called from: 'panic_with_hook' (source: library/std/src/panicking.rs:796)
