@@ -1029,3 +1029,63 @@ fn test_inlined_function_names() {
         function_names
     );
 }
+
+/// Test that indirect panic messages include the called function name (issue #125).
+/// For indirect panics, the help message should show "This calls `func_name` which may..."
+#[test]
+fn test_indirect_panic_shows_called_function() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+
+    // Run jonesy and get raw output with text format
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks"]);
+
+    // Check that indirect panics show the called function name in help messages
+    // The panic example has indirect panics that call functions like print_to
+    // The help message should contain "This calls `" followed by a function name
+
+    // Look for the pattern "This calls `<name>`" in the output
+    let has_called_function_message = stdout.contains("This calls `")
+        && stdout.lines().any(|line| {
+            line.contains("= help: This calls `") && line.contains("` which")
+        });
+
+    assert!(
+        has_called_function_message,
+        "Indirect panic help messages should include the called function name.\n\
+         Expected pattern like: 'This calls `func_name` which may...'\n\
+         Output:\n{}",
+        stdout
+    );
+
+    // Also verify with JSON output that the suggestion field contains the function name
+    let json_stdout = run_jonesy_raw_output(&example_dir, &["--format", "json"]);
+    let json: serde_json::Value =
+        serde_json::from_str(&json_stdout).expect("Failed to parse JSON output");
+
+    let panic_points = json["panic_points"]
+        .as_array()
+        .expect("Expected panic_points array");
+
+    // Find at least one cause with a suggestion containing "This calls `"
+    let has_function_in_json = panic_points.iter().any(|p| {
+        p["causes"]
+            .as_array()
+            .map(|causes| {
+                causes.iter().any(|c| {
+                    c["suggestion"]
+                        .as_str()
+                        .map(|s| s.contains("This calls `"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    });
+
+    assert!(
+        has_function_in_json,
+        "JSON output should include called function name in suggestion field.\n\
+         Expected suggestion containing: 'This calls `func_name`...'"
+    );
+}
