@@ -1047,9 +1047,9 @@ fn test_indirect_panic_shows_called_function() {
 
     // Look for the pattern "This calls `<name>`" in the output
     let has_called_function_message = stdout.contains("This calls `")
-        && stdout.lines().any(|line| {
-            line.contains("= help: This calls `") && line.contains("` which")
-        });
+        && stdout
+            .lines()
+            .any(|line| line.contains("= help: This calls `") && line.contains("` which"));
 
     assert!(
         has_called_function_message,

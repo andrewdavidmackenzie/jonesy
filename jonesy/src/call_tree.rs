@@ -197,8 +197,8 @@ type CodePointInfo = (
     Option<u32>,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
-    bool,            // is_direct_panic
-    Option<String>,  // called_function (for indirect panics)
+    bool,           // is_direct_panic
+    Option<String>, // called_function (for indirect panics)
 );
 
 /// Map of code points: key -> info

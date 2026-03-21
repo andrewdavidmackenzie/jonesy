@@ -306,10 +306,14 @@ impl PanicCause {
                 format!("This calls `{func}` which may panic. Review `{func}` or handle errors")
             }
             PanicCause::BoundsCheck => {
-                format!("This calls `{func}` which may panic on bounds check. Validate inputs or use a fallible alternative")
+                format!(
+                    "This calls `{func}` which may panic on bounds check. Validate inputs or use a fallible alternative"
+                )
             }
             PanicCause::ArithmeticOverflow(_) => {
-                format!("This calls `{func}` which may overflow. Validate inputs or use checked arithmetic")
+                format!(
+                    "This calls `{func}` which may overflow. Validate inputs or use checked arithmetic"
+                )
             }
             PanicCause::ShiftOverflow(_) => {
                 format!("This calls `{func}` which may overflow on shift. Validate inputs")
@@ -318,10 +322,14 @@ impl PanicCause {
                 format!("This calls `{func}` which may divide by zero. Validate inputs")
             }
             PanicCause::UnwrapNone | PanicCause::UnwrapErr => {
-                format!("This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{func})")
+                format!(
+                    "This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{func})"
+                )
             }
             PanicCause::ExpectNone | PanicCause::ExpectErr => {
-                format!("This calls `{func}` which may call expect(). Consider a fallible alternative (e.g., try_{func})")
+                format!(
+                    "This calls `{func}` which may call expect(). Consider a fallible alternative (e.g., try_{func})"
+                )
             }
             PanicCause::AssertFailed => {
                 format!("This calls `{func}` which has an assertion. Review preconditions")
@@ -346,10 +354,14 @@ impl PanicCause {
                 format!("This calls `{func}` which may panic during formatting")
             }
             PanicCause::CapacityOverflow => {
-                format!("This calls `{func}` which may overflow capacity. Consider fallible allocation (try_reserve)")
+                format!(
+                    "This calls `{func}` which may overflow capacity. Consider fallible allocation (try_reserve)"
+                )
             }
             PanicCause::OutOfMemory => {
-                format!("This calls `{func}` which may fail on allocation. Consider fallible allocation")
+                format!(
+                    "This calls `{func}` which may fail on allocation. Consider fallible allocation"
+                )
             }
             PanicCause::StringSliceError => {
                 format!("This calls `{func}` which may fail on string/slice operations")
