@@ -1,0 +1,62 @@
+# Example workflow showing how to use jonesy in CI with PR annotations
+# Copy this file to your repository's .github/workflows/ directory
+#
+# This workflow:
+# 1. Builds your Rust project in debug mode (required for DWARF debug info)
+# 2. Runs jonesy to analyze panic points
+# 3. Shows panic points as annotations on PR diffs
+#
+# NOTE: This is an example workflow. The main jonesy project uses
+# a different workflow for its own CI.
+
+name: Jonesy Panic Analysis (Example)
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+# Prevent running on the jonesy repo itself (this is just an example)
+# Remove this condition when copying to your own repo
+concurrency:
+  group: example-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    # Skip this workflow in the jonesy repo - it's just an example
+    if: github.repository != 'andrewdavidmackenzie/jonesy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build project (debug mode for DWARF info)
+        run: cargo build
+
+      - name: Install jonesy
+        run: cargo install jonesy
+
+      # Register the problem matcher before running jonesy
+      # This tells GitHub Actions how to parse jonesy output into annotations
+      - name: Register jonesy problem matcher
+        run: echo "::add-matcher::.github/problem-matcher.json"
+
+      - name: Run jonesy analysis
+        run: |
+          # Run jonesy with --no-hyperlinks for CI-friendly output
+          # Exit code is the number of panic points (0 = no panics)
+          jonesy --no-hyperlinks || true
+        continue-on-error: true
+
+      # Optionally fail the build if panics are found
+      # Uncomment the following to enforce panic-free code:
+      # - name: Check for panics
+      #   run: |
+      #     count=$(jonesy --summary-only --quiet 2>/dev/null | grep -oP 'Panic points: \K\d+' || echo "0")
+      #     if [ "$count" -gt "0" ]; then
+      #       echo "::error::Found $count panic point(s)"
+      #       exit 1
+      #     fi

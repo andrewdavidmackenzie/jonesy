@@ -171,18 +171,19 @@ as [OSC 8 terminal hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5a
 clickable in supported terminals (iTerm2, Kitty, WezTerm, VS Code terminal, and others). The link points to the full
 file path while displaying a shorter relative path.
 
-When output is piped or redirected (e.g., `jonesy> file.txt`), plain absolute paths are used automatically to avoid
-escape sequences in logs or files.
+When output is piped or redirected (e.g., `jonesy > file.txt`), plain relative paths are used automatically to avoid
+escape sequences in logs or files. This is also the recommended mode for CI pipelines.
 
 If your terminal doesn't support OSC 8 hyperlinks (e.g. macOS Terminal.app), the escape sequences will be invisible and
-the output will still be readable. However, if you prefer plain absolute paths even in an interactive terminal, use this
+the output will still be readable. However, if you prefer plain relative paths even in an interactive terminal, use this
 flag:
 
 ```bash
 jonesy --no-hyperlinks
 ```
 
-This outputs paths like `/Users/me/project/src/main.rs:42:1` instead of clickable hyperlinks.
+This outputs relative paths like `src/main.rs:42:1` instead of clickable hyperlinks, which is compatible with
+GitHub Actions problem matchers for inline PR annotations. See [CI Integration](#ci-integration-github-actions).
 
 ### `--config`
 
@@ -509,6 +510,85 @@ This makes it easy to use jonesy in CI pipelines:
 
 ```bash
 jonesy || echo "Found potential panics!"
+```
+
+## CI Integration (GitHub Actions)
+
+Jonesy integrates with GitHub Actions to show panic points as inline annotations on PR diffs.
+
+### Quick Setup
+
+1. Copy the problem matcher to your repository:
+
+```bash
+mkdir -p .github
+curl -o .github/problem-matcher.json \
+  https://raw.githubusercontent.com/andrewdavidmackenzie/jonesy/master/.github/problem-matcher.json
+```
+
+2. Add a workflow file (`.github/workflows/jonesy.yml`):
+
+```yaml
+name: Jonesy Analysis
+
+on: [pull_request, push]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+
+      - name: Build project
+        run: cargo build
+
+      - name: Install jonesy
+        run: cargo install jonesy
+
+      - name: Register problem matcher
+        run: echo "::add-matcher::.github/problem-matcher.json"
+
+      - name: Run jonesy
+        run: jonesy --no-hyperlinks
+```
+
+### How It Works
+
+- The problem matcher parses jonesy output and creates GitHub annotations
+- Panic points appear as warnings directly on the affected lines in PR diffs
+- Use `--no-hyperlinks` for CI-friendly output with relative paths
+
+### Example Annotation
+
+When viewing a PR, you'll see warnings like:
+
+```
+src/main.rs:42
+⚠️ jonesy: unwrap() on None
+```
+
+### Failing the Build
+
+By default, the workflow shows warnings but doesn't fail. To fail on panics:
+
+```yaml
+- name: Run jonesy
+  run: |
+    jonesy --no-hyperlinks
+    # Exit code is the number of panic points (0 = pass)
+```
+
+Or for a specific threshold:
+
+```yaml
+- name: Check panic threshold
+  run: |
+    count=$(jonesy --summary-only --quiet 2>/dev/null | grep -oP 'Panic points: \K\d+' || echo "0")
+    if [ "$count" -gt "10" ]; then
+      echo "::error::Too many panic points: $count"
+      exit 1
+    fi
 ```
 
 ## Example Output
