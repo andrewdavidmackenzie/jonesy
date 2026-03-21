@@ -482,9 +482,23 @@ impl FunctionIndex {
         let mut best_size: u64 = u64::MAX;
 
         // Check backward from idx (entries with start_address <= addr)
+        // Early termination: once start_address + best_size <= addr, no function
+        // starting there or earlier can be smaller than our best AND contain addr.
         for i in (0..=idx).rev() {
             let func = &self.inlined[i];
-            if addr >= func.start_address && addr < func.end_address {
+
+            // Early termination: if we have a match and this function starts too early
+            // to possibly be smaller while still containing addr, stop searching
+            if best.is_some() && func.start_address.saturating_add(best_size) <= addr {
+                break;
+            }
+
+            // Skip functions that can't contain addr
+            if func.end_address <= addr {
+                continue;
+            }
+
+            if addr >= func.start_address {
                 let size = func.end_address - func.start_address;
                 if size < best_size {
                     best = Some(func);
@@ -1563,15 +1577,21 @@ fn process_instruction_data_with_crate_table(
             }
         }
 
-        // Get the most specific function name (checks inlined functions first)
-        // Demangle if it's a mangled Rust name
-        let display_name = function_index
-            .find_function_name(data.address)
-            .map(|s| {
-                let stripped = s.strip_prefix('_').unwrap_or(s);
-                format!("{:#}", demangle(stripped))
-            })
-            .unwrap_or_else(|| func.name.clone());
+        // Get function name - only do expensive inlined lookup for crate source functions
+        // For non-crate functions, use the containing function's name (fast path)
+        let display_name = if file_in_crate {
+            // Crate function: get the most specific name (checks inlined functions)
+            function_index
+                .find_function_name(data.address)
+                .map(|s| {
+                    let stripped = s.strip_prefix('_').unwrap_or(s);
+                    format!("{:#}", demangle(stripped))
+                })
+                .unwrap_or_else(|| func.name.clone())
+        } else {
+            // Non-crate function: use containing function name directly (skip inlined search)
+            func.name.clone()
+        };
 
         // Note: We intentionally use the inlined function's name but keep the
         // containing function's address range (start/end) for call graph building.
