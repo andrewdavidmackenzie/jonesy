@@ -7,7 +7,7 @@ use crate::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use serde_json::{Value, json};
 
 /// Schema version for JSON output format (single crate)
-pub const JSON_SCHEMA_VERSION: &str = "1.0";
+pub const JSON_SCHEMA_VERSION: &str = "1.1";
 
 /// Schema version for workspace JSON output format
 pub const JSON_WORKSPACE_SCHEMA_VERSION: &str = "1.1";
