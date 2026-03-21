@@ -1548,9 +1548,13 @@ fn process_instruction_data_with_crate_table(
         }
 
         // Get the most specific function name (checks inlined functions first)
+        // Demangle if it's a mangled Rust name
         let display_name = function_index
             .find_function_name(data.address)
-            .map(|s| s.to_string())
+            .map(|s| {
+                let stripped = s.strip_prefix('_').unwrap_or(s);
+                format!("{:#}", demangle(stripped))
+            })
             .unwrap_or_else(|| func.name.clone());
 
         Some((
@@ -1992,9 +1996,13 @@ pub fn find_callers_with_debug_info(
                     }
 
                     // Get the most specific function name (checks inlined functions first)
+                    // Demangle if it's a mangled Rust name
                     let display_name = function_index
                         .find_function_name(instruction.address())
-                        .map(|s| s.to_string())
+                        .map(|s| {
+                            let stripped = s.strip_prefix('_').unwrap_or(s);
+                            format!("{:#}", demangle(stripped))
+                        })
                         .unwrap_or_else(|| func.name.clone());
 
                     callers.push(CallerInfo {

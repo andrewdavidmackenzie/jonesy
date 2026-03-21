@@ -969,3 +969,64 @@ fn test_rlib_conditional_panic_detection() {
         detected, stdout
     );
 }
+
+/// Test that inlined functions report the correct function name.
+/// When a function is inlined into main(), the panic point should still
+/// report the original function name, not "main".
+#[test]
+fn test_inlined_function_names() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("inlined");
+
+    // Build the example
+    let build_status = Command::new("cargo")
+        .args(["build"])
+        .current_dir(&example_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build inlined example");
+    assert!(build_status.success(), "Failed to build inlined example");
+
+    // Run jonesy with JSON output
+    let stdout = run_jonesy_raw_output(&example_dir, &["--format", "json"]);
+
+    // Parse JSON and check function names
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Failed to parse JSON output");
+
+    let panic_points = json["panic_points"]
+        .as_array()
+        .expect("Expected panic_points array");
+
+    // Verify we have the expected panic points
+    assert!(
+        panic_points.len() >= 2,
+        "Expected at least 2 panic points, got {}",
+        panic_points.len()
+    );
+
+    // Check that function names are the inlined function names, not "main"
+    let function_names: Vec<&str> = panic_points
+        .iter()
+        .filter_map(|p| p["function"].as_str())
+        .collect();
+
+    // The functions should be "inlined::run" and "inlined::helper", not "main"
+    assert!(
+        function_names.iter().any(|n| n.contains("run")),
+        "Expected a function name containing 'run', got: {:?}",
+        function_names
+    );
+    assert!(
+        function_names.iter().any(|n| n.contains("helper")),
+        "Expected a function name containing 'helper', got: {:?}",
+        function_names
+    );
+    assert!(
+        !function_names.iter().any(|n| *n == "main"),
+        "Function names should be the inlined function names, not 'main': {:?}",
+        function_names
+    );
+}
