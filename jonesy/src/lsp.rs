@@ -60,15 +60,18 @@ impl JonesyLspServer {
 
     /// Convert a CrateCodePoint to an LSP Diagnostic
     fn code_point_to_diagnostic(point: &CrateCodePoint) -> Diagnostic {
-        // Get primary cause for the message - sort for determinism (same as text/json output)
+        // Get all causes sorted by error code for determinism
         let sorted_causes: Vec<_> = {
             let mut causes: Vec<_> = point.causes.iter().collect();
-            causes.sort_by_key(|c| c.id());
+            causes.sort_by_key(|c| c.error_code());
             causes
         };
 
-        let (message, suggestion, error_code, docs_url) = if let Some(cause) = sorted_causes.first()
-        {
+        // Build message showing all causes
+        let (message, suggestion, error_code, docs_url) = if sorted_causes.is_empty() {
+            ("potential panic point".to_string(), None, None, None)
+        } else if sorted_causes.len() == 1 {
+            let cause = sorted_causes[0];
             (
                 format!("panic point: {}", cause.description()),
                 Some(cause.suggestion(point.is_direct_panic).to_string()),
@@ -76,7 +79,19 @@ impl JonesyLspServer {
                 Url::parse(&cause.docs_url()).ok(),
             )
         } else {
-            ("potential panic point".to_string(), None, None, None)
+            // Multiple causes - show all in message
+            let descriptions: Vec<_> = sorted_causes
+                .iter()
+                .map(|c| format!("{}: {}", c.error_code(), c.description()))
+                .collect();
+            let primary = sorted_causes[0];
+            (
+                format!("panic point: {}", descriptions.join(", ")),
+                Some(primary.suggestion(point.is_direct_panic).to_string()),
+                // Show first error code (most specific/important)
+                Some(primary.error_code().to_string()),
+                Url::parse(&primary.docs_url()).ok(),
+            )
         };
 
         let range = Range {

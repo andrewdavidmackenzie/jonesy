@@ -7,10 +7,12 @@ use crate::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use serde_json::{Value, json};
 
 /// Schema version for JSON output format (single crate)
-pub const JSON_SCHEMA_VERSION: &str = "1.1";
+/// 1.2: Changed "cause" to "causes" array to show all causes at a code point
+pub const JSON_SCHEMA_VERSION: &str = "1.2";
 
 /// Schema version for workspace JSON output format
-pub const JSON_WORKSPACE_SCHEMA_VERSION: &str = "1.1";
+/// 1.2: Changed "cause" to "causes" array to show all causes at a code point
+pub const JSON_WORKSPACE_SCHEMA_VERSION: &str = "1.2";
 
 /// A workspace member's analysis result for JSON/HTML output
 pub struct WorkspaceMemberResult {
@@ -74,26 +76,29 @@ pub fn generate_json_output(
 
 /// Convert a CrateCodePoint to JSON value.
 fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_children: bool) -> Value {
-    // Get primary cause (sorted for determinism)
-    let cause = {
+    // Get all causes sorted by error code for determinism
+    let causes_json: Vec<Value> = {
         let mut causes: Vec<_> = point.causes.iter().collect();
-        causes.sort_by_key(|c| c.description());
-        causes.first().map(|c| {
-            let suggestion = c.suggestion(point.is_direct_panic);
-            let mut cause_obj = json!({
-                "code": c.error_code(),
-                "type": c.id(),
-                "description": c.description(),
-                "docs_url": c.docs_url(),
-            });
-            if !suggestion.is_empty() {
-                cause_obj["suggestion"] = json!(suggestion);
-            }
-            if let Some(warning) = c.release_warning() {
-                cause_obj["warning"] = json!(warning);
-            }
-            cause_obj
-        })
+        causes.sort_by_key(|c| c.error_code());
+        causes
+            .iter()
+            .map(|c| {
+                let suggestion = c.suggestion(point.is_direct_panic);
+                let mut cause_obj = json!({
+                    "code": c.error_code(),
+                    "type": c.id(),
+                    "description": c.description(),
+                    "docs_url": c.docs_url(),
+                });
+                if !suggestion.is_empty() {
+                    cause_obj["suggestion"] = json!(suggestion);
+                }
+                if let Some(warning) = c.release_warning() {
+                    cause_obj["warning"] = json!(warning);
+                }
+                cause_obj
+            })
+            .collect()
     };
 
     let children: Vec<Value> = if include_children {
@@ -115,8 +120,8 @@ fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_childr
     if let Some(col) = point.column {
         obj["column"] = json!(col);
     }
-    if let Some(c) = cause {
-        obj["cause"] = c;
+    if !causes_json.is_empty() {
+        obj["causes"] = json!(causes_json);
     }
     if !children.is_empty() {
         obj["children"] = json!(children);

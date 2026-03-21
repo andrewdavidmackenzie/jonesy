@@ -271,11 +271,11 @@ fn render_panic_point(
         format!("{}:{}", point.file, point.line)
     };
 
-    // Get primary cause
-    let cause = {
+    // Get all causes sorted by error code
+    let sorted_causes: Vec<_> = {
         let mut causes: Vec<_> = point.causes.iter().collect();
-        causes.sort_by_key(|c| c.description());
-        causes.first().copied()
+        causes.sort_by_key(|c| c.error_code());
+        causes
     };
 
     html.push_str(&format!(
@@ -293,7 +293,8 @@ fn render_panic_point(
         escape_html(&point.name)
     ));
 
-    if let Some(c) = cause {
+    // Show all causes as badges
+    for c in &sorted_causes {
         html.push_str(&format!(
             "{}        <a href=\"{}\" class=\"cause-badge\" target=\"_blank\" rel=\"noopener\">{}: {}</a>\n",
             indent,
@@ -305,8 +306,8 @@ fn render_panic_point(
 
     html.push_str(&format!("{}    </div>\n", indent));
 
-    // Cause details
-    if let Some(c) = cause {
+    // Cause details (show for primary cause only)
+    if let Some(c) = sorted_causes.first() {
         let suggestion = c.suggestion(point.is_direct_panic);
         let warning = c.release_warning();
         if !suggestion.is_empty() || warning.is_some() {
@@ -352,10 +353,11 @@ fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &
         format!("{}:{}", point.file, point.line)
     };
 
-    let cause = {
+    // Get all causes sorted by error code
+    let sorted_causes: Vec<_> = {
         let mut causes: Vec<_> = point.causes.iter().collect();
-        causes.sort_by_key(|c| c.description());
-        causes.first().copied()
+        causes.sort_by_key(|c| c.error_code());
+        causes
     };
 
     html.push_str(&format!(
@@ -371,7 +373,8 @@ fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &
         escape_html(&point.name)
     ));
 
-    if let Some(c) = cause {
+    // Show all causes as badges
+    for c in &sorted_causes {
         html.push_str(&format!(
             "{}        <a href=\"{}\" class=\"cause-badge\" target=\"_blank\" rel=\"noopener\">{}: {}</a>\n",
             indent,
