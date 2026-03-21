@@ -4,7 +4,7 @@
 //! panic point diagnostics to IDEs and code editors. It runs alongside
 //! rust-analyzer, publishing its own diagnostics.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -27,6 +27,8 @@ struct ServerState {
     workspace_root: Option<PathBuf>,
     /// Cached panic points by file URI
     panic_points: HashMap<Url, Vec<CrateCodePoint>>,
+    /// Files that have been opened (for re-publishing after analysis)
+    opened_files: HashSet<Url>,
 }
 
 impl ServerState {
@@ -34,6 +36,7 @@ impl ServerState {
         Self {
             workspace_root: None,
             panic_points: HashMap::new(),
+            opened_files: HashSet::new(),
         }
     }
 }
@@ -508,6 +511,28 @@ impl JonesyLspServer {
                 ),
             )
             .await;
+
+        // Re-publish diagnostics to files that were opened before/during analysis
+        let state = self.state.read().await;
+        let opened_files: Vec<Url> = state.opened_files.iter().cloned().collect();
+        drop(state);
+
+        for uri in opened_files {
+            let state = self.state.read().await;
+            if let Some(points) = state.panic_points.get(&uri) {
+                let diagnostics: Vec<Diagnostic> = points
+                    .iter()
+                    .map(Self::code_point_to_diagnostic)
+                    .collect();
+                drop(state);
+
+                if !diagnostics.is_empty() {
+                    self.client
+                        .publish_diagnostics(uri, diagnostics, None)
+                        .await;
+                }
+            }
+        }
         true
     }
 
@@ -785,16 +810,36 @@ impl LanguageServer for JonesyLspServer {
         Ok(())
     }
 
-    async fn did_open(&self, _params: DidOpenTextDocumentParams) {
-        // No-op: we analyze binaries, not source text
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let uri = params.text_document.uri;
+
+        // Track opened file for re-publishing diagnostics
+        self.state.write().await.opened_files.insert(uri.clone());
+
+        // If we have cached diagnostics for this file, publish them now
+        let state = self.state.read().await;
+        if let Some(points) = state.panic_points.get(&uri) {
+            let diagnostics: Vec<Diagnostic> = points
+                .iter()
+                .map(Self::code_point_to_diagnostic)
+                .collect();
+            drop(state); // Release lock before async call
+
+            if !diagnostics.is_empty() {
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            }
+        }
     }
 
     async fn did_change(&self, _params: DidChangeTextDocumentParams) {
         // No-op: we analyze binaries, not source text
     }
 
-    async fn did_close(&self, _params: DidCloseTextDocumentParams) {
-        // No-op: we don't track open documents
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        // Remove from opened files tracking
+        self.state.write().await.opened_files.remove(&params.text_document.uri);
     }
 
     async fn did_save(&self, _params: DidSaveTextDocumentParams) {
