@@ -513,24 +513,27 @@ impl JonesyLspServer {
             .await;
 
         // Re-publish diagnostics to files that were opened before/during analysis
-        let state = self.state.read().await;
-        let opened_files: Vec<Url> = state.opened_files.iter().cloned().collect();
-        drop(state);
-
-        for uri in opened_files {
+        // Snapshot all data while holding the lock once, then publish outside the lock
+        let republish: Vec<(Url, Vec<Diagnostic>)> = {
             let state = self.state.read().await;
-            if let Some(points) = state.panic_points.get(&uri) {
-                let diagnostics: Vec<Diagnostic> = points
-                    .iter()
-                    .map(Self::code_point_to_diagnostic)
-                    .collect();
-                drop(state);
+            state
+                .opened_files
+                .iter()
+                .filter_map(|uri| {
+                    state.panic_points.get(uri).map(|points| {
+                        let diagnostics =
+                            points.iter().map(Self::code_point_to_diagnostic).collect();
+                        (uri.clone(), diagnostics)
+                    })
+                })
+                .collect()
+        };
 
-                if !diagnostics.is_empty() {
-                    self.client
-                        .publish_diagnostics(uri, diagnostics, None)
-                        .await;
-                }
+        for (uri, diagnostics) in republish {
+            if !diagnostics.is_empty() {
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
             }
         }
         true
@@ -819,10 +822,8 @@ impl LanguageServer for JonesyLspServer {
         // If we have cached diagnostics for this file, publish them now
         let state = self.state.read().await;
         if let Some(points) = state.panic_points.get(&uri) {
-            let diagnostics: Vec<Diagnostic> = points
-                .iter()
-                .map(Self::code_point_to_diagnostic)
-                .collect();
+            let diagnostics: Vec<Diagnostic> =
+                points.iter().map(Self::code_point_to_diagnostic).collect();
             drop(state); // Release lock before async call
 
             if !diagnostics.is_empty() {
@@ -839,7 +840,11 @@ impl LanguageServer for JonesyLspServer {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         // Remove from opened files tracking
-        self.state.write().await.opened_files.remove(&params.text_document.uri);
+        self.state
+            .write()
+            .await
+            .opened_files
+            .remove(&params.text_document.uri);
     }
 
     async fn did_save(&self, _params: DidSaveTextDocumentParams) {
