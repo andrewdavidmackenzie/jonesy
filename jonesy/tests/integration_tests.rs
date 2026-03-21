@@ -16,14 +16,14 @@ use wait_timeout::ChildExt;
 /// Can optionally specify expected cause: "// jonesy: expect panic(unwrap)"
 const PANIC_MARKER: &str = "// jonesy: expect panic";
 
-/// Represents a panic point location with optional cause
+/// Represents a panic point location with causes
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PanicPoint {
     file: String,
     line: u32,
-    /// The panic cause identifier (e.g., "unwrap", "overflow", "bounds")
-    /// None means any cause (or no cause) is acceptable
-    cause: Option<String>,
+    /// The panic cause identifiers (e.g., "unwrap", "overflow", "bounds")
+    /// A single code point may have multiple causes when different panic paths converge
+    causes: Vec<String>,
 }
 
 /// Find the workspace root by looking for Cargo.toml with [workspace]
@@ -131,11 +131,10 @@ fn has_nearby_marker(detected: &PanicPoint, markers: &[ExpectedMarker]) -> bool 
             return false;
         }
 
-        // If marker specifies a cause, it must match
-        match (&marker.cause, &detected.cause) {
-            (Some(expected), Some(actual)) => expected == actual,
-            (Some(_expected), None) => false, // Expected cause but none detected - FAIL
-            (None, _) => true,                // No expected cause - any cause OK
+        // If marker specifies a cause, it must be in the detected causes
+        match &marker.cause {
+            Some(expected) => detected.causes.contains(expected),
+            None => true, // No expected cause - any cause OK
         }
     })
 }
@@ -150,11 +149,10 @@ fn has_nearby_detection(marker: &ExpectedMarker, detected: &HashSet<PanicPoint>)
             return false;
         }
 
-        // If marker specifies a cause, it must match
-        match (&marker.cause, &p.cause) {
-            (Some(expected), Some(actual)) => expected == actual,
-            (Some(_expected), None) => false, // Expected cause but none detected
-            (None, _) => true,                // No expected cause - any cause OK
+        // If marker specifies a cause, it must be in the detected causes
+        match &marker.cause {
+            Some(expected) => p.causes.contains(expected),
+            None => true, // No expected cause - any cause OK
         }
     })
 }
@@ -297,18 +295,19 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
         };
 
         if let Some(location) = location {
-            // Extract cause from square brackets if present: "[arithmetic overflow]"
-            let cause = if let Some(bracket_start) = location.find('[') {
-                if let Some(bracket_end) = location.find(']') {
-                    let cause_desc = &location[bracket_start + 1..bracket_end];
+            // Extract all causes from square brackets: "[JP001: desc] [JP006: desc]"
+            let mut causes = Vec::new();
+            let mut remaining = location;
+            while let Some(bracket_start) = remaining.find('[') {
+                if let Some(bracket_end) = remaining[bracket_start..].find(']') {
+                    let cause_desc = &remaining[bracket_start + 1..bracket_start + bracket_end];
                     // Map description to cause ID
-                    Some(description_to_cause_id(cause_desc))
+                    causes.push(description_to_cause_id(cause_desc));
+                    remaining = &remaining[bracket_start + bracket_end + 1..];
                 } else {
-                    None
+                    break;
                 }
-            } else {
-                None
-            };
+            }
 
             // Strip the cause description for parsing file:line:col
             let location = location.split('[').next().unwrap_or(location).trim();
@@ -323,7 +322,7 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
                 points.insert(PanicPoint {
                     file: file.to_string(),
                     line: line_num,
-                    cause,
+                    causes,
                 });
             }
         }
@@ -473,10 +472,10 @@ fn test_example(example_name: &str) {
     if !unexpected.is_empty() {
         eprintln!("Unexpected panic points (detected but no marker):");
         for p in &unexpected {
-            if let Some(cause) = &p.cause {
-                eprintln!("  {}:{} [{}]", p.file, p.line, cause);
-            } else {
+            if p.causes.is_empty() {
                 eprintln!("  {}:{} [NO CAUSE DETECTED]", p.file, p.line);
+            } else {
+                eprintln!("  {}:{} [{}]", p.file, p.line, p.causes.join(", "));
             }
         }
     }
@@ -665,10 +664,10 @@ fn test_workspace_test_example() {
     if !unexpected.is_empty() {
         eprintln!("Unexpected panic points (detected but no marker):");
         for p in &unexpected {
-            if let Some(cause) = &p.cause {
-                eprintln!("  {}:{} [{}]", p.file, p.line, cause);
-            } else {
+            if p.causes.is_empty() {
                 eprintln!("  {}:{} [NO CAUSE DETECTED]", p.file, p.line);
+            } else {
+                eprintln!("  {}:{} [{}]", p.file, p.line, p.causes.join(", "));
             }
         }
     }

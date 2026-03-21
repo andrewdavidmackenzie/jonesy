@@ -142,12 +142,10 @@ fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
     let is_leaf = point.children.is_empty();
-    let primary_cause = get_primary_cause(&point.causes);
+    let sorted_causes = get_sorted_causes(&point.causes);
 
-    let cause_str = if is_leaf {
-        primary_cause
-            .map(|c| format!(" {}", format_cause(c)))
-            .unwrap_or_default()
+    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+        format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
     };
@@ -155,7 +153,8 @@ fn print_flat_point(point: &CrateCodePoint, project_root: Option<&Path>) {
     println!(" --> {}{}", location, cause_str);
 
     if is_leaf {
-        if let Some(cause) = primary_cause {
+        // Show help/warning for primary cause only (first in sorted order)
+        if let Some(cause) = sorted_causes.first() {
             let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 println!("     = help: {}", suggestion);
@@ -182,12 +181,10 @@ fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent:
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
     let is_leaf = point.children.is_empty();
-    let primary_cause = get_primary_cause(&point.causes);
+    let sorted_causes = get_sorted_causes(&point.causes);
 
-    let cause_str = if is_leaf {
-        primary_cause
-            .map(|c| format!(" {}", format_cause(c)))
-            .unwrap_or_default()
+    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+        format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
     };
@@ -195,7 +192,8 @@ fn print_flat_child(point: &CrateCodePoint, project_root: Option<&Path>, indent:
     println!("{}└──  --> {}{}", indent, location, cause_str);
 
     if is_leaf {
-        if let Some(cause) = primary_cause {
+        // Show help/warning for primary cause only (first in sorted order)
+        if let Some(cause) = sorted_causes.first() {
             let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 println!("{}     = help: {}", indent, suggestion);
@@ -248,13 +246,11 @@ fn print_file_entry(
         format!("{}:{}:{}", absolute_path, point.line, column)
     };
 
-    let primary_cause = get_primary_cause(&point.causes);
+    let sorted_causes = get_sorted_causes(&point.causes);
     let is_leaf = point.children.is_empty();
 
-    let cause_str = if is_leaf {
-        primary_cause
-            .map(|c| format!(" {}", format_cause(c)))
-            .unwrap_or_default()
+    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+        format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
     };
@@ -270,7 +266,8 @@ fn print_file_entry(
     println!("{}{} {}{}", prefix, connector, location, cause_str);
 
     if is_leaf {
-        if let Some(cause) = primary_cause {
+        // Show help/warning for primary cause only (first in sorted order)
+        if let Some(cause) = sorted_causes.first() {
             let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 let help_prefix = if is_root_level { "     " } else { prefix };
@@ -348,13 +345,11 @@ fn print_crate_point(
         format!("{}:{}:{}", absolute_path, point.line, column)
     };
 
-    let primary_cause = get_primary_cause(&point.causes);
+    let sorted_causes = get_sorted_causes(&point.causes);
     let is_leaf = point.children.is_empty();
 
-    let cause_str = if is_leaf {
-        primary_cause
-            .map(|c| format!(" {}", format_cause(c)))
-            .unwrap_or_default()
+    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+        format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
     };
@@ -370,7 +365,8 @@ fn print_crate_point(
     println!("{}{} {}{}", prefix, connector, location, cause_str);
 
     if is_leaf {
-        if let Some(cause) = primary_cause {
+        // Show help/warning for primary cause only (first in sorted order)
+        if let Some(cause) = sorted_causes.first() {
             let suggestion = cause.suggestion(point.is_direct_panic);
             if !suggestion.is_empty() {
                 let help_prefix = if is_root { "     " } else { prefix };
@@ -411,16 +407,21 @@ fn print_crate_point(
     }
 }
 
-/// Get the primary cause from a set of causes (sorted for determinism).
-fn get_primary_cause(causes: &std::collections::HashSet<PanicCause>) -> Option<&PanicCause> {
+/// Get all causes sorted by error code for deterministic output.
+/// Returns causes sorted by error code (JP001 < JP002 < ... < JP022).
+fn get_sorted_causes(causes: &std::collections::HashSet<PanicCause>) -> Vec<&PanicCause> {
     let mut sorted: Vec<_> = causes.iter().collect();
-    sorted.sort_by_key(|c| c.description());
-    sorted.first().copied()
+    sorted.sort_by_key(|c| c.error_code());
+    sorted
 }
 
-/// Format the cause string with error code, e.g., "[JP001: explicit panic!() call]"
-fn format_cause(cause: &PanicCause) -> String {
-    format!("[{}: {}]", cause.error_code(), cause.description())
+/// Format all causes as a string, e.g., "[JP001: explicit panic!() call] [JP006: unwrap() on None]"
+fn format_causes(causes: &[&PanicCause]) -> String {
+    causes
+        .iter()
+        .map(|c| format!("[{}: {}]", c.error_code(), c.description()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Make a path absolute using the project root.

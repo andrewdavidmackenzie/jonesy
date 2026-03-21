@@ -206,8 +206,8 @@ The JSON output includes a versioned schema for compatibility:
 
 ```json
 {
-  "version": "1.0",
-  "jonesy_version": "0.4.0",
+  "version": "1.2",
+  "jonesy_version": "0.5.0",
   "project": {
     "name": "my-crate",
     "root": "/path/to/project"
@@ -222,15 +222,21 @@ The JSON output includes a versioned schema for compatibility:
       "line": 10,
       "column": 5,
       "function": "main",
-      "cause": {
-        "type": "unwrap_option",
-        "description": "unwrap() on None",
-        "suggestion": "Use if-let, match, or unwrap_or instead"
-      }
+      "causes": [
+        {
+          "code": "JP006",
+          "type": "unwrap",
+          "description": "unwrap() on None",
+          "docs_url": "https://jonesy.mackenzie-serres.net/panics/JP006-unwrap-none",
+          "suggestion": "Use if let, match, unwrap_or, or ? operator instead"
+        }
+      ]
     }
   ]
 }
 ```
+
+Each panic point may have multiple causes when different panic paths converge at the same location.
 
 The `--tree` and `--summary-only` flags work with JSON output:
 
@@ -240,12 +246,12 @@ The `--tree` and `--summary-only` flags work with JSON output:
 
 #### Workspace JSON Output
 
-For workspaces, JSON output uses schema version `1.1` with a hierarchical structure:
+For workspaces, JSON output uses schema version `1.2` with a hierarchical structure:
 
 ```json
 {
-  "version": "1.1",
-  "jonesy_version": "0.4.0",
+  "version": "1.2",
+  "jonesy_version": "0.5.0",
   "workspace": {
     "root": "/path/to/workspace",
     "members": [
