@@ -183,18 +183,22 @@ pub struct CrateCodePoint {
     /// Whether this code point directly calls a panic-triggering function (e.g., unwrap, expect)
     /// vs calling another function that eventually panics
     pub is_direct_panic: bool,
+    /// Name of the function called at this code point (for indirect panics)
+    /// Used to show "This calls `foo` which may panic" in help messages
+    pub called_function: Option<String>,
 }
 
 /// Key for identifying a code point: (file, line)
 type CodePointKey = (String, u32);
 
-/// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic)
+/// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic, called_function)
 type CodePointInfo = (
     String,
     Option<u32>,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
-    bool, // is_direct_panic
+    bool,           // is_direct_panic
+    Option<String>, // called_function (for indirect panics)
 );
 
 /// Map of code points: key -> info
@@ -235,6 +239,27 @@ fn is_panic_triggering_function(func_name: &str) -> bool {
         || func_name.contains("Index::index")
 }
 
+/// Extract a simple, readable function name from a potentially complex DWARF name.
+/// E.g., "my_crate::module::init" -> "init"
+///       "init<T>" -> "init"
+///       "collect<std::env::Args>" -> "collect"
+fn extract_simple_function_name(full_name: &str) -> String {
+    // Remove generic parameters first (handles nested generics)
+    let name = if let Some(bracket_pos) = full_name.find('<') {
+        &full_name[..bracket_pos]
+    } else {
+        full_name
+    };
+
+    // Take the last segment after ::
+    let name = name.rsplit("::").next().unwrap_or(name);
+
+    // Clean up any remaining special characters
+    let name = name.trim_end_matches('>').trim();
+
+    name.to_string()
+}
+
 /// Collect crate code points with hierarchy.
 /// Returns a list of "root" code points (entry points) with their children.
 pub fn collect_crate_code_points_hierarchical(
@@ -250,7 +275,7 @@ pub fn collect_crate_code_points_hierarchical(
     // Find roots: points that are not in any other point's children
     let all_children: HashSet<(String, u32)> = points
         .values()
-        .flat_map(|(_, _, _, children, _)| children.iter().cloned())
+        .flat_map(|(_, _, _, children, _, _)| children.iter().cloned())
         .collect();
 
     let mut roots: Vec<CodePointKey> = points
@@ -276,7 +301,8 @@ pub fn collect_crate_code_points_hierarchical(
             return None;
         }
 
-        let (name, column, causes, child_keys_set, is_direct_panic) = points.get(key)?;
+        let (name, column, causes, child_keys_set, is_direct_panic, called_function) =
+            points.get(key)?;
         // Sort child keys for deterministic output
         let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
@@ -295,6 +321,7 @@ pub fn collect_crate_code_points_hierarchical(
             causes: causes.clone(),
             children,
             is_direct_panic: *is_direct_panic,
+            called_function: called_function.clone(),
         })
     }
 
@@ -347,6 +374,13 @@ fn collect_crate_relationships(
             .map(is_panic_triggering_function)
             .unwrap_or(false);
 
+        // For indirect panics, store the called function name for help messages
+        let called_fn = if !is_direct {
+            immediate_callee.map(extract_simple_function_name)
+        } else {
+            None
+        };
+
         // Ensure this point exists in the map and accumulate all causes
         let entry = points.entry(key.clone()).or_insert_with(|| {
             (
@@ -355,6 +389,7 @@ fn collect_crate_relationships(
                 HashSet::new(),
                 HashSet::new(),
                 is_direct,
+                called_fn.clone(),
             )
         });
 
@@ -362,6 +397,10 @@ fn collect_crate_relationships(
         // (conservative: if one path is direct, user could be calling directly)
         if is_direct {
             entry.4 = true;
+            entry.5 = None; // Clear called_function for direct panics
+        } else if entry.5.is_none() && called_fn.is_some() {
+            // Store called function if not already set
+            entry.5 = called_fn;
         }
 
         // Add this path's cause to the set of causes (if detected)

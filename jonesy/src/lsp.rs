@@ -74,7 +74,10 @@ impl JonesyLspServer {
             let cause = sorted_causes[0];
             (
                 format!("panic point: {}", cause.description()),
-                Some(cause.suggestion(point.is_direct_panic).to_string()),
+                Some(
+                    cause
+                        .format_suggestion(point.is_direct_panic, point.called_function.as_deref()),
+                ),
                 Some(cause.error_code().to_string()),
                 Url::parse(&cause.docs_url()).ok(),
             )
@@ -87,7 +90,10 @@ impl JonesyLspServer {
             let primary = sorted_causes[0];
             (
                 format!("panic point: {}", descriptions.join(", ")),
-                Some(primary.suggestion(point.is_direct_panic).to_string()),
+                Some(
+                    primary
+                        .format_suggestion(point.is_direct_panic, point.called_function.as_deref()),
+                ),
                 // Show first error code (most specific/important)
                 Some(primary.error_code().to_string()),
                 Url::parse(&primary.docs_url()).ok(),
