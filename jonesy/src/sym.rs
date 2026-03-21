@@ -475,15 +475,31 @@ impl FunctionIndex {
             Err(i) => i - 1,
         };
 
-        // Check this and previous entries - we want the smallest range containing addr
+        // Check all entries that could contain addr - we want the smallest range
+        // (deepest inline frame). Since list is sorted by start_address only,
+        // we must check both backward and forward from idx.
         let mut best: Option<&FunctionInfo> = None;
         let mut best_size: u64 = u64::MAX;
 
+        // Check backward from idx (entries with start_address <= addr)
         for i in (0..=idx).rev() {
             let func = &self.inlined[i];
-            // Stop if we've gone past all possible candidates
-            if func.end_address <= addr && best.is_some() {
-                break;
+            if addr >= func.start_address && addr < func.end_address {
+                let size = func.end_address - func.start_address;
+                if size < best_size {
+                    best = Some(func);
+                    best_size = size;
+                }
+            }
+        }
+
+        // Check forward for entries with same start_address as idx
+        // (siblings that binary search may have landed before)
+        let start_addr_at_idx = self.inlined[idx].start_address;
+        for i in (idx + 1)..self.inlined.len() {
+            let func = &self.inlined[i];
+            if func.start_address != start_addr_at_idx {
+                break; // Past entries with same start_address
             }
             if addr >= func.start_address && addr < func.end_address {
                 let size = func.end_address - func.start_address;
@@ -1557,6 +1573,10 @@ fn process_instruction_data_with_crate_table(
             })
             .unwrap_or_else(|| func.name.clone());
 
+        // Note: We intentionally use the inlined function's name but keep the
+        // containing function's address range (start/end) for call graph building.
+        // The caller.file/line fields are the function *definition* location,
+        // while CallerInfo.file/line/column below are the actual *call site*.
         Some((
             call_target,
             CallerInfo {
@@ -1823,6 +1843,7 @@ fn parse_function_die<R: Reader>(
 
 /// Parse a DW_TAG_inlined_subroutine DIE into FunctionInfo.
 /// Inlined subroutines use DW_AT_abstract_origin to reference the original function.
+/// Handles both DW_AT_low_pc/DW_AT_high_pc and DW_AT_ranges (DWARF 5).
 fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
@@ -1832,6 +1853,7 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
     let mut high_pc_is_offset = false;
+    let mut ranges_attr: Option<AttributeValue<R>> = None;
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
@@ -1856,6 +1878,10 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
                 }
                 _ => {}
             },
+            gimli::DW_AT_ranges => {
+                // DWARF 5: inlined subroutines can use DW_AT_ranges for non-contiguous ranges
+                ranges_attr = Some(attr.value());
+            }
             _ => {}
         }
     }
@@ -1867,6 +1893,25 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
         _ => None,
     };
 
+    // If we have ranges instead of low_pc/high_pc, use the first range
+    // (FunctionInfo only stores a single range; multi-range support would require Vec)
+    let (final_low_pc, final_high_pc) = if low_pc.is_some() && high_pc.is_some() {
+        (low_pc, high_pc)
+    } else if let Some(ranges_value) = ranges_attr {
+        // Try to get the first range from DW_AT_ranges using gimli's attr_ranges helper
+        if let Ok(Some(mut ranges)) = dwarf.attr_ranges(unit, ranges_value) {
+            if let Ok(Some(range)) = ranges.next() {
+                (Some(range.begin), Some(range.end))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
     // Resolve the function name from abstract_origin
     let name = if let Some(offset) = abstract_origin {
         resolve_abstract_origin_name(dwarf, unit, offset)?
@@ -1874,7 +1919,7 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
         None
     };
 
-    match (name, low_pc, high_pc) {
+    match (name, final_low_pc, final_high_pc) {
         (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(FunctionInfo {
             name,
             start_address: low_pc,
@@ -2005,6 +2050,8 @@ pub fn find_callers_with_debug_info(
                         })
                         .unwrap_or_else(|| func.name.clone());
 
+                    // Note: See comment in process_instruction_data_with_crate_table
+                    // for why we use inlined name but containing function's address range
                     callers.push(CallerInfo {
                         caller: FunctionInfo {
                             name: display_name,
@@ -2283,6 +2330,10 @@ pub fn find_callers_with_debug_map(
         };
 
         // Get functions from this object file
+        // TODO: _inlined is currently unused in the debug-map fallback path.
+        // Using inlined functions here would require mapping object file addresses
+        // to binary addresses, which is complex. The main path (dSYM/embedded DWARF)
+        // handles inlined functions correctly via FunctionIndex.find_function_name().
         let Ok((functions, _inlined)) = get_functions_from_dwarf(&obj_macho, &obj_info.buffer)
         else {
             continue;
