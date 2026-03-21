@@ -308,7 +308,8 @@ fn render_panic_point(
 
     // Cause details (show for primary cause only)
     if let Some(c) = sorted_causes.first() {
-        let suggestion = c.suggestion(point.is_direct_panic);
+        let suggestion =
+            c.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
         let warning = c.release_warning();
         if !suggestion.is_empty() || warning.is_some() {
             html.push_str(&format!("{}    <div class=\"cause-details\">\n", indent));
@@ -316,7 +317,7 @@ fn render_panic_point(
                 html.push_str(&format!(
                     "{}        <div class=\"suggestion\">{}</div>\n",
                     indent,
-                    escape_html(suggestion)
+                    escape_html(&suggestion)
                 ));
             }
             if let Some(w) = warning {

@@ -292,6 +292,80 @@ impl PanicCause {
         }
     }
 
+    /// Format suggestion with the called function name for indirect panics.
+    /// Returns a dynamically formatted string that includes the function name when available.
+    pub fn format_suggestion(&self, is_direct: bool, called_function: Option<&str>) -> String {
+        if is_direct || called_function.is_none() {
+            // Direct panic or no function name - use static suggestion
+            return self.suggestion(is_direct).to_string();
+        }
+
+        let func = called_function.unwrap();
+        match self {
+            PanicCause::ExplicitPanic => {
+                format!("This calls `{func}` which may panic. Review `{func}` or handle errors")
+            }
+            PanicCause::BoundsCheck => {
+                format!("This calls `{func}` which may panic on bounds check. Validate inputs or use a fallible alternative")
+            }
+            PanicCause::ArithmeticOverflow(_) => {
+                format!("This calls `{func}` which may overflow. Validate inputs or use checked arithmetic")
+            }
+            PanicCause::ShiftOverflow(_) => {
+                format!("This calls `{func}` which may overflow on shift. Validate inputs")
+            }
+            PanicCause::DivisionByZero => {
+                format!("This calls `{func}` which may divide by zero. Validate inputs")
+            }
+            PanicCause::UnwrapNone | PanicCause::UnwrapErr => {
+                format!("This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{func})")
+            }
+            PanicCause::ExpectNone | PanicCause::ExpectErr => {
+                format!("This calls `{func}` which may call expect(). Consider a fallible alternative (e.g., try_{func})")
+            }
+            PanicCause::AssertFailed => {
+                format!("This calls `{func}` which has an assertion. Review preconditions")
+            }
+            PanicCause::DebugAssertFailed => {
+                format!("This calls `{func}` which has a debug assertion. Review preconditions")
+            }
+            PanicCause::Unreachable => {
+                format!("This calls `{func}` which may reach unreachable code. Review control flow")
+            }
+            PanicCause::Unimplemented => {
+                format!("This calls `{func}` which has unimplemented!() code paths")
+            }
+            PanicCause::Todo => format!("This calls `{func}` which has todo!() code paths"),
+            PanicCause::PanicInDrop => {
+                format!("This calls `{func}` which may panic during drop")
+            }
+            PanicCause::CannotUnwind => {
+                format!("This calls `{func}` which may panic in a no-unwind context")
+            }
+            PanicCause::FormattingError => {
+                format!("This calls `{func}` which may panic during formatting")
+            }
+            PanicCause::CapacityOverflow => {
+                format!("This calls `{func}` which may overflow capacity. Consider fallible allocation (try_reserve)")
+            }
+            PanicCause::OutOfMemory => {
+                format!("This calls `{func}` which may fail on allocation. Consider fallible allocation")
+            }
+            PanicCause::StringSliceError => {
+                format!("This calls `{func}` which may fail on string/slice operations")
+            }
+            PanicCause::InvalidEnum => {
+                format!("This calls `{func}` which may encounter an invalid enum discriminant")
+            }
+            PanicCause::MisalignedPointer => {
+                format!("This calls `{func}` which may dereference a misaligned pointer")
+            }
+            PanicCause::Unknown => {
+                format!("This calls `{func}` which may panic. Use --tree to investigate")
+            }
+        }
+    }
+
     /// Returns the unique error code for this panic type (e.g., "JP001").
     /// These codes correspond to documentation pages at the jonesy docs site.
     pub fn error_code(&self) -> &'static str {

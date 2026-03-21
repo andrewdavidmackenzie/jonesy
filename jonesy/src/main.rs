@@ -701,6 +701,7 @@ pub(crate) fn analyze_archive(
                 causes,
                 children: Vec::new(),  // Archives don't have call tree hierarchy
                 is_direct_panic: true, // Archive analysis detects direct panic calls
+                called_function: None, // Direct panics don't need called function name
             }
         })
         .collect();
