@@ -170,11 +170,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
                     let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key.clone()) {
+                    if seen_code_points.insert(key) {
                         all_code_points.push(point);
                     } else if let Some(existing) = all_code_points
                         .iter_mut()
-                        .find(|p| p.file == key.0 && p.line == key.1)
+                        .find(|p| p.file == point.file && p.line == point.line)
                     {
                         existing.causes.extend(point.causes);
                     }
@@ -201,11 +201,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
                     let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key.clone()) {
+                    if seen_code_points.insert(key) {
                         all_code_points.push(point);
                     } else if let Some(existing) = all_code_points
                         .iter_mut()
-                        .find(|p| p.file == key.0 && p.line == key.1)
+                        .find(|p| p.file == point.file && p.line == point.line)
                     {
                         existing.causes.extend(point.causes);
                     }
@@ -333,7 +333,7 @@ pub(crate) fn analyze_macho(
 
     for pattern in PANIC_SYMBOL_PATTERNS {
         if let Ok(Some((sym, dem))) = find_symbol_containing(macho, pattern)
-            && let Some((_name, addr)) = find_symbol_address(macho, &sym)
+            && let Some(addr) = find_symbol_address(macho, &sym)
         {
             panic_symbol = Some(sym);
             demangled = dem;
@@ -413,7 +413,7 @@ pub(crate) fn analyze_macho(
     }
 
     // Create the root node for the call tree
-    let mut root = CallTreeNode::new_root(demangled.clone());
+    let mut root = CallTreeNode::new_root(demangled);
 
     // Track visited addresses to avoid infinite recursion (thread-safe)
     let visited = Arc::new(DashSet::new());
@@ -888,11 +888,11 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             // Collect code points with deduplication, merging causes
             for point in result.code_points {
                 let key = (point.file.clone(), point.line);
-                if seen_code_points.insert(key.clone()) {
+                if seen_code_points.insert(key) {
                     member_code_points.push(point);
                 } else if let Some(existing) = member_code_points
                     .iter_mut()
-                    .find(|p| p.file == key.0 && p.line == key.1)
+                    .find(|p| p.file == point.file && p.line == point.line)
                 {
                     existing.causes.extend(point.causes);
                 }
