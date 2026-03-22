@@ -12,8 +12,8 @@ use crate::json_output::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, find_symbol_address,
-    find_symbol_containing, load_debug_info, read_symbols,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, ValidSourceFiles, find_symbol_address,
+    find_symbol_containing, load_debug_info, matches_crate_pattern_validated, read_symbols,
 };
 use crate::text_output::generate_text_output;
 use dashmap::DashSet;
@@ -191,6 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let result = analyze_archive(
                     &archive,
                     &binary_buffer,
+                    &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_timings,
                     &config,
@@ -314,6 +315,13 @@ pub(crate) fn analyze_macho(
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 
+    // Build set of valid source files for single-crate project filtering
+    // This prevents false positives from dependencies with relative src/ paths
+    let project_root = find_project_root(binary_path);
+    let valid_files = project_root
+        .as_ref()
+        .map(|root| ValidSourceFiles::from_project_root(root));
+
     // Try each panic symbol pattern until we find one
     if show_progress {
         eprintln!("  Finding panic entry point...");
@@ -428,7 +436,7 @@ pub(crate) fn analyze_macho(
     let spinner = create_spinner(show_progress, "Pruning to crate code...");
     let step_start = Instant::now();
     if let Some(crate_path) = crate_src_path {
-        prune_call_tree(&mut root, crate_path);
+        prune_call_tree(&mut root, crate_path, valid_files.as_ref());
     }
     finish_spinner(spinner, "Pruning complete");
     if show_timings {
@@ -438,7 +446,8 @@ pub(crate) fn analyze_macho(
     // Always collect code points for unified output handling in main
     let step_start = Instant::now();
     let result = if let Some(crate_path) = crate_src_path {
-        let (code_points, summary) = collect_crate_code_points(&root, crate_path, config);
+        let (code_points, summary) =
+            collect_crate_code_points(&root, crate_path, config, valid_files.as_ref());
         BinaryAnalysisResult {
             summary,
             code_points,
@@ -514,6 +523,7 @@ fn is_stdlib_function(name: &str) -> bool {
 pub(crate) fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
+    binary_path: &Path,
     crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
@@ -521,18 +531,19 @@ pub(crate) fn analyze_archive(
 ) -> BinaryAnalysisResult {
     use std::collections::HashSet;
 
+    // Build set of valid source files for single-crate project filtering
+    let project_root = find_project_root(binary_path);
+    let valid_files = project_root
+        .as_ref()
+        .map(|root| ValidSourceFiles::from_project_root(root));
+
     // Helper to check if a file path is within the crate/workspace scope
-    // Uses path prefix matching to avoid false positives from substring matching
+    // Uses ValidSourceFiles for single-crate validation to prevent dependency false positives
     let file_in_scope = |file: &str| {
         crate_src_path.is_none_or(|paths| {
             let file = file.replace('\\', "/");
-            paths.split('|').any(|p| {
-                if p.is_empty() {
-                    return false;
-                }
-                // Match if file starts with pattern or contains /pattern
-                file.starts_with(p) || file.contains(&format!("/{}", p))
-            })
+            // Use the same validated matching as binary analysis
+            matches_crate_pattern_validated(&file, paths, valid_files.as_ref())
         })
     };
 
@@ -852,6 +863,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     SymbolTable::Archive(archive) => analyze_archive(
                         &archive,
                         &binary_buffer,
+                        &binary_path,
                         Some(&workspace_src_path),
                         args.show_timings,
                         &config,

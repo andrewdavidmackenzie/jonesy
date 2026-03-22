@@ -33,10 +33,188 @@ type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
 
 /// Check if a file path matches a crate source pattern.
 /// Supports multi-pattern format with "|" separator for workspace mode.
+/// Check if a file path matches the crate source pattern.
+/// For single-crate projects with pattern "src/", uses the valid_files set
+/// to exclude dependency paths that happen to start with src/.
 pub fn matches_crate_pattern(file_path: &str, crate_pattern: &str) -> bool {
-    crate_pattern
+    matches_crate_pattern_validated(file_path, crate_pattern, None)
+}
+
+/// Check if a file path matches the crate source pattern, with optional validation.
+/// When valid_files is provided and pattern is generic ("src/"), validates against actual project files.
+pub fn matches_crate_pattern_validated(
+    file_path: &str,
+    crate_pattern: &str,
+    valid_files: Option<&ValidSourceFiles>,
+) -> bool {
+    // Check if path matches the pattern first
+    let matches = crate_pattern
         .split('|')
-        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern))
+        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern));
+
+    if !matches {
+        return false;
+    }
+
+    // For single-crate projects (pattern is just "src/"), validate against actual project files
+    // This prevents false positives from dependencies with relative src/ paths in DWARF
+    // The allowlist check comes BEFORE dependency heuristics to ensure legitimate project files
+    // (like "library/src/..." or "src/__generated.rs") are not incorrectly excluded
+    if let Some(valid) = valid_files {
+        if valid.needs_validation(crate_pattern) {
+            return valid.contains(file_path);
+        }
+    }
+
+    // Only apply dependency heuristics when we don't have an allowlist for validation
+    // This is for workspace patterns like "flowc/src/" where we rely on pattern specificity
+    if is_dependency_path(file_path) {
+        return false;
+    }
+
+    true
+}
+
+/// A set of valid source files for a project.
+/// Used to filter out dependency paths that have relative src/ paths.
+#[derive(Debug, Default)]
+pub struct ValidSourceFiles {
+    /// Set of valid file paths (relative to project root, e.g., "src/main.rs")
+    files: std::collections::HashSet<String>,
+    /// Canonical project root path for absolute path matching
+    project_root: Option<std::path::PathBuf>,
+}
+
+impl ValidSourceFiles {
+    /// Build a set of valid source files by scanning the entire project directory.
+    /// This handles all cases including #[path] directives pointing outside src/.
+    /// Excludes target/, .git/, and other non-source directories.
+    pub fn from_project_root(project_root: &std::path::Path) -> Self {
+        let mut files = std::collections::HashSet::new();
+
+        // Scan the entire project for .rs files, excluding build artifacts
+        Self::scan_project_directory(project_root, project_root, &mut files);
+
+        // Store canonical project root for absolute path matching
+        let canonical_root = std::fs::canonicalize(project_root).ok();
+
+        Self {
+            files,
+            project_root: canonical_root,
+        }
+    }
+
+    /// Recursively scan directory for .rs files, excluding non-source directories
+    fn scan_project_directory(
+        project_root: &std::path::Path,
+        dir: &std::path::Path,
+        files: &mut std::collections::HashSet<String>,
+    ) {
+        // Directories to exclude (build artifacts, version control, examples, tests, benches)
+        const EXCLUDED_DIRS: &[&str] = &[
+            "target",
+            ".git",
+            ".hg",
+            ".svn",
+            "node_modules",
+            ".cargo",
+            ".rustup",
+            "examples",
+            "tests",
+            "benches",
+        ];
+
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            if path.is_file() && name_str.ends_with(".rs") && name_str != "build.rs" {
+                // Store path relative to project root
+                if let Ok(rel_path) = path.strip_prefix(project_root) {
+                    files.insert(rel_path.to_string_lossy().to_string());
+                }
+            } else if path.is_dir()
+                && !name_str.starts_with('.')
+                && !EXCLUDED_DIRS.contains(&name_str.as_ref())
+            {
+                Self::scan_project_directory(project_root, &path, files);
+            }
+        }
+    }
+
+    /// Check if this file set should be used for validation.
+    /// Only validates when the pattern is generic (just "src/").
+    fn needs_validation(&self, pattern: &str) -> bool {
+        // Validate for single-crate projects where pattern is generic
+        // Workspace patterns like "flowc/src/" are specific enough
+        pattern == "src/" && !self.files.is_empty()
+    }
+
+    /// Check if a file path is in the valid set.
+    fn contains(&self, file_path: &str) -> bool {
+        // Direct match (relative paths)
+        if self.files.contains(file_path) {
+            return true;
+        }
+
+        // Also check with leading "./" stripped
+        if let Some(stripped) = file_path.strip_prefix("./") {
+            if self.files.contains(stripped) {
+                return true;
+            }
+        }
+
+        // For absolute paths, check if they resolve to a file in our project
+        // Use canonical path comparison to avoid false positives from suffix matching
+        if let Some(project_root) = &self.project_root {
+            let file_path_buf = std::path::Path::new(file_path);
+            if file_path_buf.is_absolute() {
+                // Try to canonicalize and check if it starts with project root
+                if let Ok(canonical_file) = std::fs::canonicalize(file_path_buf) {
+                    if let Ok(relative) = canonical_file.strip_prefix(project_root) {
+                        // Check if this relative path is in our set
+                        let rel_str = relative.to_string_lossy();
+                        return self.files.contains(rel_str.as_ref());
+                    }
+                }
+            }
+        }
+
+        false
+    }
+}
+
+/// Check if a file path is from a dependency or stdlib, not user code.
+/// These paths should never be reported as user crate panic points.
+fn is_dependency_path(file_path: &str) -> bool {
+    // Cargo registry dependencies (absolute paths)
+    if file_path.contains(".cargo/registry/") || file_path.contains(".cargo\\registry\\") {
+        return true;
+    }
+
+    // Rust stdlib and compiler-generated paths
+    if file_path.contains("/rustc/")
+        || file_path.starts_with("/rust/deps/")
+        || file_path.starts_with("library/")
+    {
+        return true;
+    }
+
+    // Internal/generated paths from dependencies (common patterns)
+    // These use relative src/ paths that would match "src/" pattern for single-crate projects
+    // The __ prefixes are used by macro-generated code in crates like objc2
+    // Use segment-boundary checks to avoid false positives on user dirs like /Users/__myuser__/
+    if file_path.contains("/__/") || file_path.starts_with("__") || file_path.starts_with("src/__")
+    {
+        return true;
+    }
+
+    false
 }
 
 #[allow(clippy::large_enum_variant)]

@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::panic_cause::{PanicCause, detect_panic_cause};
-use crate::sym::{CallGraph, matches_crate_pattern};
+use crate::sym::{CallGraph, ValidSourceFiles, matches_crate_pattern_validated};
 use dashmap::DashSet;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -41,27 +41,36 @@ impl CallTreeNode {
 
 /// Returns true if the node's source file matches the crate source path.
 /// For workspace mode (when crate_src_path contains "|"), checks against multiple paths.
-pub fn is_in_crate(node: &CallTreeNode, crate_src_path: &str) -> bool {
+/// When valid_files is provided, validates against actual project files to exclude dependencies.
+pub fn is_in_crate(
+    node: &CallTreeNode,
+    crate_src_path: &str,
+    valid_files: Option<&ValidSourceFiles>,
+) -> bool {
     node.file
         .as_ref()
-        .is_some_and(|file| matches_crate_pattern(file, crate_src_path))
+        .is_some_and(|file| matches_crate_pattern_validated(file, crate_src_path, valid_files))
 }
 
 /// Prune branches that don't lead to a leaf node in the target crate's source.
 /// Note: Allowed cause filtering is done during code point collection, not here,
 /// to avoid incorrectly pruning shared subtrees that are reachable via denied causes.
 /// Returns true if this node should be kept.
-pub fn prune_call_tree(node: &mut CallTreeNode, crate_src_path: &str) -> bool {
+pub fn prune_call_tree(
+    node: &mut CallTreeNode,
+    crate_src_path: &str,
+    valid_files: Option<&ValidSourceFiles>,
+) -> bool {
     // Recursively prune children first
     node.callers
-        .retain_mut(|caller| prune_call_tree(caller, crate_src_path));
+        .retain_mut(|caller| prune_call_tree(caller, crate_src_path, valid_files));
 
     // Keep this node if:
     // 1. It's a leaf AND in the crate source, OR
     // 2. It still has children after pruning (meaning it leads to crate code)
     if node.callers.is_empty() {
         // Leaf node: keep only if it's in the crate source
-        is_in_crate(node, crate_src_path)
+        is_in_crate(node, crate_src_path, valid_files)
     } else {
         // Has children that lead to crate code, so keep it
         true
@@ -265,12 +274,21 @@ fn extract_simple_function_name(full_name: &str) -> String {
 pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
     crate_src_path: &str,
+    valid_files: Option<&ValidSourceFiles>,
 ) -> Vec<CrateCodePoint> {
     // First pass: collect all crate code points and their relationships
     // Map: (file, line) -> (name, cause, set of child keys)
     let mut points: CodePointMap = CodePointMap::new();
 
-    collect_crate_relationships(node, crate_src_path, &mut points, None, None, None);
+    collect_crate_relationships(
+        node,
+        crate_src_path,
+        &mut points,
+        None,
+        None,
+        None,
+        valid_files,
+    );
 
     // Find roots: points that are not in any other point's children
     let all_children: HashSet<(String, u32)> = points
@@ -375,6 +393,7 @@ fn collect_crate_relationships(
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
     immediate_callee: Option<&str>, // Name of function this node calls (toward panic)
+    valid_files: Option<&ValidSourceFiles>,
 ) {
     // Try to detect panic cause from this node's function name and file path
     let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
@@ -383,7 +402,7 @@ fn collect_crate_relationships(
     let file_matches = node
         .file
         .as_ref()
-        .is_some_and(|file| matches_crate_pattern(file, crate_src_path));
+        .is_some_and(|file| matches_crate_pattern_validated(file, crate_src_path, valid_files));
 
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
         && file_matches
@@ -452,6 +471,7 @@ fn collect_crate_relationships(
             next_child.clone(),
             detected_cause.clone(),
             Some(&node.name), // Current node is the callee for the caller
+            valid_files,
         );
     }
 }
@@ -462,8 +482,9 @@ pub fn collect_crate_code_points(
     node: &CallTreeNode,
     crate_src_path: &str,
     config: &Config,
+    valid_files: Option<&ValidSourceFiles>,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
-    let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path);
+    let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path, valid_files);
 
     // Assign Unknown cause to leaf points without identified causes
     assign_unknown_causes(&mut roots);
