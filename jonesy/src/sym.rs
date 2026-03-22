@@ -860,12 +860,15 @@ pub(crate) fn find_symbol_containing(
 }
 
 // TODO Restrict this to text segments?
-/// Returns the address of the first symbol found whose name matches `name` exactly
+/// Returns the address of the first defined symbol found whose name matches `name` exactly.
+/// Skips undefined/import symbols which have n_value == 0.
 pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
     let symbols = macho.symbols.as_ref()?;
     for symbol in symbols.iter() {
         if let Ok((sym_name, nlist)) = symbol
             && sym_name == name
+            && !nlist.is_undefined()
+            && nlist.n_value != 0
         {
             return Some(nlist.n_value);
         }
