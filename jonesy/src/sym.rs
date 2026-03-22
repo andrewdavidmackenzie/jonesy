@@ -1662,7 +1662,8 @@ fn process_instruction_basic<'a>(
     let operand = instruction.op_str()?;
     let addr_str = operand.trim_start_matches("#0x");
     let call_target = u64::from_str_radix(addr_str, 16).ok()?;
-    let (func_addr, func_name) = symbol_index.and_then(|idx| idx.find_containing(instruction.address()))?;
+    let (func_addr, func_name) =
+        symbol_index.and_then(|idx| idx.find_containing(instruction.address()))?;
 
     Some((
         call_target,
@@ -2241,8 +2242,9 @@ pub fn find_callers_with_debug_info(
                         line,
                         column,
                     });
-                } else if let Some((func_addr, func_name)) =
-                    symbol_index.as_ref().and_then(|idx| idx.find_containing(instruction.address()))
+                } else if let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(instruction.address()))
                 {
                     // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
                     let (file, line, column) =
