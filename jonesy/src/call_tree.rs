@@ -82,7 +82,7 @@ pub fn prune_call_tree(
 /// Uses pre-computed CallGraph for O(1) lookups instead of re-scanning instructions.
 /// Parallelizes exploration of top-level callers, with sequential recursion within each branch.
 pub fn build_call_tree_parallel(
-    call_graph: &CallGraph,
+    call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
 ) -> Vec<CallTreeNode> {
@@ -95,7 +95,7 @@ pub fn build_call_tree_parallel(
     callers
         .into_par_iter()
         .filter_map(|caller_info| {
-            let caller_addr = caller_info.caller.start_address;
+            let caller_addr = caller_info.caller_start_address;
 
             // Atomically try to insert - if already present, skip recursion but still create node
             let should_recurse = visited.insert(caller_addr);
@@ -103,7 +103,7 @@ pub fn build_call_tree_parallel(
             // Create a new node for this caller
             // Use the function's declaration file for crate identification,
             // falling back to the call site file if not available
-            let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+            let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
                 // Use sequential recursion within each branch to ensure deterministic behavior
                 build_call_tree_sequential(call_graph, caller_addr, visited)
@@ -114,7 +114,7 @@ pub fn build_call_tree_parallel(
             };
 
             Some(CallTreeNode {
-                name: caller_info.caller.name.clone(),
+                name: caller_info.caller_name.into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -126,7 +126,7 @@ pub fn build_call_tree_parallel(
 
 /// Sequential version for recursion within parallel branches.
 fn build_call_tree_sequential(
-    call_graph: &CallGraph,
+    call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
 ) -> Vec<CallTreeNode> {
@@ -135,10 +135,10 @@ fn build_call_tree_sequential(
     callers
         .into_iter()
         .map(|caller_info| {
-            let caller_addr = caller_info.caller.start_address;
+            let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
 
-            let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+            let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
                 build_call_tree_sequential(call_graph, caller_addr, visited)
             } else {
@@ -147,7 +147,7 @@ fn build_call_tree_sequential(
             };
 
             CallTreeNode {
-                name: caller_info.caller.name.clone(),
+                name: caller_info.caller_name.into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -160,14 +160,14 @@ fn build_call_tree_sequential(
 /// Build shallow caller nodes without recursion.
 /// Used when a function was already visited through another path.
 /// This ensures we still capture caller relationships even for visited functions.
-fn build_shallow_callers(call_graph: &CallGraph, target_addr: u64) -> Vec<CallTreeNode> {
+fn build_shallow_callers(call_graph: &CallGraph<'_>, target_addr: u64) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
         .into_iter()
         .map(|caller_info| {
-            let file = caller_info.caller.file.clone().or(caller_info.file.clone());
+            let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             CallTreeNode {
-                name: caller_info.caller.name.clone(),
+                name: caller_info.caller_name.into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,

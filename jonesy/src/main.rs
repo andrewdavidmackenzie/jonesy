@@ -12,8 +12,9 @@ use crate::json_output::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, ValidSourceFiles, find_symbol_address,
-    find_symbol_containing, load_debug_info, matches_crate_pattern_validated, read_symbols,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, ValidSourceFiles,
+    find_symbol_address, find_symbol_containing, load_debug_info, matches_crate_pattern_validated,
+    read_symbols,
 };
 use crate::text_output::generate_text_output;
 use dashmap::DashSet;
@@ -363,17 +364,29 @@ pub(crate) fn analyze_macho(
     // Use debug info variant for source file/line enrichment
     let spinner = create_spinner(show_progress, "Scanning for function calls...");
     let step_start = Instant::now();
+
+    // Create SymbolIndex once - CallGraph borrows from it to avoid allocations in hot path
+    let symbol_index = SymbolIndex::new(macho);
+
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
-            CallGraph::build_with_debug_info(macho, buffer, macho, buffer, crate_src_path, show_timings)
-                .or_else(|e| {
-                    eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                    CallGraph::build(macho, buffer)
-                })
-                .unwrap_or_else(|e| {
-                    eprintln!("Error: call graph build failed: {e}");
-                    CallGraph::empty()
-                })
+            CallGraph::build_with_debug_info(
+                macho,
+                buffer,
+                macho,
+                buffer,
+                crate_src_path,
+                show_timings,
+                symbol_index.as_ref(),
+            )
+            .or_else(|e| {
+                eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
+                CallGraph::build(macho, buffer, symbol_index.as_ref())
+            })
+            .unwrap_or_else(|e| {
+                eprintln!("Error: call graph build failed: {e}");
+                CallGraph::empty()
+            })
         }
         DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
             if let Binary(debug_mach) = debug_macho {
@@ -384,24 +397,25 @@ pub(crate) fn analyze_macho(
                     dsym_info.borrow_debug_buffer(),
                     crate_src_path,
                     show_timings,
+                    symbol_index.as_ref(),
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                    CallGraph::build(macho, buffer)
+                    CallGraph::build(macho, buffer, symbol_index.as_ref())
                 })
                 .unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             } else {
-                CallGraph::build(macho, buffer).unwrap_or_else(|e| {
+                CallGraph::build(macho, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             }
         }),
         DebugInfo::DebugMap(_) | DebugInfo::None => {
-            CallGraph::build(macho, buffer).unwrap_or_else(|e| {
+            CallGraph::build(macho, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
                 CallGraph::empty()
             })
@@ -641,12 +655,12 @@ pub(crate) fn analyze_archive(
 
         for caller_info in merged_graph.get_callers(target_sym) {
             // Skip standard library functions - we only want user code
-            if is_stdlib_function(&caller_info.caller.name) {
+            if is_stdlib_function(&caller_info.caller_name) {
                 continue;
             }
 
             // Get file from DWARF info, filtering out library code paths
-            let dwarf_file = caller_info.caller.file.as_ref().filter(|f| {
+            let dwarf_file = caller_info.caller_file.as_ref().filter(|f| {
                 // Skip standard library and dependency paths
                 !f.starts_with("/rustc/")
                     && !f.starts_with("/rust/")
@@ -666,7 +680,7 @@ pub(crate) fn analyze_archive(
             {
                 panic_callers.insert(PanicCaller {
                     file: file.clone(),
-                    name: caller_info.caller.name.clone(),
+                    name: caller_info.caller_name.to_string(),
                     line,
                     column: caller_info.column,
                     target: target_sym.to_string(),
