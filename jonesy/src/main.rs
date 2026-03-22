@@ -333,7 +333,7 @@ pub(crate) fn analyze_macho(
 
     for pattern in PANIC_SYMBOL_PATTERNS {
         if let Ok(Some((sym, dem))) = find_symbol_containing(macho, pattern)
-            && let Some((_name, addr)) = find_symbol_address(macho, &sym)
+            && let Some(addr) = find_symbol_address(macho, &sym)
         {
             panic_symbol = Some(sym);
             demangled = dem;

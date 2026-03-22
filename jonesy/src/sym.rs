@@ -852,14 +852,14 @@ pub(crate) fn find_symbol_containing(
 }
 
 // TODO Restrict this to text segments?
-/// Returns the first symbol found whose name matches `name` exactly, plus the address it is at
-pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<(String, u64)> {
+/// Returns the address of the first symbol found whose name matches `name` exactly
+pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
     let symbols = macho.symbols.as_ref()?;
     for symbol in symbols.iter() {
         if let Ok((sym_name, nlist)) = symbol
             && sym_name == name
         {
-            return Some((sym_name.to_string(), nlist.n_value));
+            return Some(nlist.n_value);
         }
     }
     None
@@ -932,44 +932,6 @@ impl SymbolIndex {
             Err(i) => Some((self.functions[i - 1].0, &self.functions[i - 1].1)),
         }
     }
-}
-
-/// Returns (function_start_address, demangled_name) for the function containing `addr`
-pub(crate) fn find_containing_function_with_addr(
-    macho: &MachO,
-    addr: u64,
-) -> Option<(u64, String)> {
-    let symbols = macho.symbols.as_ref()?;
-
-    // Collect function symbols with their addresses
-    // Filter out empty names - goblin may return duplicate entries with empty names
-    let mut functions: Vec<(u64, &str)> = symbols
-        .iter()
-        .filter_map(|s| s.ok())
-        .filter(|(name, nlist)| nlist.n_value > 0 && !name.is_empty())
-        .map(|(name, nlist)| (nlist.n_value, name))
-        .collect();
-
-    functions.sort_by_key(|(a, _)| *a);
-
-    // Find the function that contains this address
-    let mut containing: Option<(u64, &str)> = None;
-    for (func_addr, name) in &functions {
-        if *func_addr <= addr {
-            containing = Some((*func_addr, *name));
-        } else {
-            break;
-        }
-    }
-
-    containing.map(|(func_addr, name)| {
-        let stripped = name.strip_prefix("_").unwrap_or(name);
-        (func_addr, format!("{:#}", demangle(stripped)))
-    })
-}
-
-pub(crate) fn find_containing_function(macho: &MachO, addr: u64) -> Option<String> {
-    find_containing_function_with_addr(macho, addr).map(|(_, name)| name)
 }
 
 // TODO segments() seems to create copies that it returns, see if we can get references instead
@@ -2454,22 +2416,20 @@ pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// More detailed check - returns which debug sections are present
-pub fn get_dwarf_sections(macho: &MachO) -> Vec<String> {
-    let mut sections = Vec::new();
-
+/// Check if the binary has any DWARF debug sections
+pub fn has_dwarf_sections(macho: &MachO) -> bool {
     for segment in macho.segments.iter() {
         if let Ok(sects) = segment.sections() {
             for (section, _) in sects {
                 if let Ok(name) = section.name()
                     && name.starts_with("__debug_")
                 {
-                    sections.push(name.to_string());
+                    return true;
                 }
             }
         }
     }
-    sections
+    false
 }
 
 /// Extract object file paths from the debug map (OSO stab entries)
@@ -2614,7 +2574,7 @@ fn load_debug_map(macho: &MachO, quiet: bool) -> Option<DebugMapInfo> {
         };
 
         // Only include if it has debug info
-        if get_dwarf_sections(&obj_macho).is_empty() {
+        if !has_dwarf_sections(&obj_macho) {
             continue;
         }
 
@@ -2711,7 +2671,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
         }
     }
 
-    if !get_dwarf_sections(macho).is_empty() {
+    if has_dwarf_sections(macho) {
         if !quiet {
             println!("  Using embedded DWARF debugging info");
         }
