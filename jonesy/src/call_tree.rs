@@ -305,9 +305,20 @@ pub fn collect_crate_code_points_hierarchical(
             return None;
         }
 
-        // Return cached result if already built (clone to allow multiple parents)
+        // Return cached result if already built
+        // Return a shallow copy WITHOUT children to avoid exponential memory from deep cloning.
+        // The full subtree is available at its first occurrence.
         if let Some(cached) = cache.get(key) {
-            return Some(cached.clone());
+            return Some(CrateCodePoint {
+                name: cached.name.clone(),
+                file: cached.file.clone(),
+                line: cached.line,
+                column: cached.column,
+                causes: cached.causes.clone(),
+                children: vec![], // Don't clone children - they're at first occurrence
+                is_direct_panic: cached.is_direct_panic,
+                called_function: cached.called_function.clone(),
+            });
         }
 
         path.insert(key.clone());
