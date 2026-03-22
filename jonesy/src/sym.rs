@@ -22,6 +22,7 @@ use ouroboros::self_referencing;
 use rayon::prelude::*;
 use regex::Regex;
 use rustc_demangle::demangle;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -712,9 +713,16 @@ impl FunctionIndex {
 }
 
 /// Information about a call site
-#[derive(Debug, Clone, Default)]
-pub struct CallerInfo {
-    pub caller: FunctionInfo,
+/// Uses Cow<'a, str> for caller_name to support both borrowed (from SymbolIndex)
+/// and owned (from DWARF) strings without allocation in the hot path.
+#[derive(Debug, Clone)]
+pub struct CallerInfo<'a> {
+    /// Demangled name of the calling function
+    pub caller_name: Cow<'a, str>,
+    /// Start address of the calling function
+    pub caller_start_address: u64,
+    /// File of the calling function (from DWARF, if available)
+    pub caller_file: Option<String>,
     /// Address of the calling instruction
     pub call_site_addr: u64,
     /// Source location of the calling instruction
@@ -852,14 +860,17 @@ pub(crate) fn find_symbol_containing(
 }
 
 // TODO Restrict this to text segments?
-/// Returns the first symbol found whose name matches `name` exactly, plus the address it is at
-pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<(String, u64)> {
+/// Returns the address of the first defined symbol found whose name matches `name` exactly.
+/// Skips undefined/import symbols which have n_value == 0.
+pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
     let symbols = macho.symbols.as_ref()?;
     for symbol in symbols.iter() {
         if let Ok((sym_name, nlist)) = symbol
             && sym_name == name
+            && !nlist.is_undefined()
+            && nlist.n_value != 0
         {
-            return Some((sym_name.to_string(), nlist.n_value));
+            return Some(nlist.n_value);
         }
     }
     None
@@ -898,6 +909,7 @@ fn find_segment<'a>(macho: &'a MachO, segment_name: &str) -> Option<&'a Segment<
 #[derive(Debug)]
 pub(crate) struct SymbolIndex {
     /// Sorted by address: (func_addr, demangled_name)
+    /// Owns the strings so CallGraph can borrow from it
     functions: Vec<(u64, String)>,
 }
 
@@ -915,7 +927,8 @@ impl SymbolIndex {
             .filter(|(name, nlist)| !nlist.is_undefined() && !name.is_empty())
             .map(|(name, nlist)| {
                 let stripped = name.strip_prefix("_").unwrap_or(name);
-                (nlist.n_value, format!("{:#}", demangle(stripped)))
+                let demangled = format!("{:#}", demangle(stripped));
+                (nlist.n_value, demangled)
             })
             .collect();
 
@@ -924,6 +937,7 @@ impl SymbolIndex {
     }
 
     /// Find the function containing `addr` using binary search.
+    /// Returns a borrowed reference to the name (caller must ensure SymbolIndex outlives usage).
     pub fn find_containing(&self, addr: u64) -> Option<(u64, &str)> {
         // Binary search for the largest address <= addr
         match self.functions.binary_search_by_key(&addr, |(a, _)| *a) {
@@ -932,44 +946,6 @@ impl SymbolIndex {
             Err(i) => Some((self.functions[i - 1].0, &self.functions[i - 1].1)),
         }
     }
-}
-
-/// Returns (function_start_address, demangled_name) for the function containing `addr`
-pub(crate) fn find_containing_function_with_addr(
-    macho: &MachO,
-    addr: u64,
-) -> Option<(u64, String)> {
-    let symbols = macho.symbols.as_ref()?;
-
-    // Collect function symbols with their addresses
-    // Filter out empty names - goblin may return duplicate entries with empty names
-    let mut functions: Vec<(u64, &str)> = symbols
-        .iter()
-        .filter_map(|s| s.ok())
-        .filter(|(name, nlist)| nlist.n_value > 0 && !name.is_empty())
-        .map(|(name, nlist)| (nlist.n_value, name))
-        .collect();
-
-    functions.sort_by_key(|(a, _)| *a);
-
-    // Find the function that contains this address
-    let mut containing: Option<(u64, &str)> = None;
-    for (func_addr, name) in &functions {
-        if *func_addr <= addr {
-            containing = Some((*func_addr, *name));
-        } else {
-            break;
-        }
-    }
-
-    containing.map(|(func_addr, name)| {
-        let stripped = name.strip_prefix("_").unwrap_or(name);
-        (func_addr, format!("{:#}", demangle(stripped)))
-    })
-}
-
-pub(crate) fn find_containing_function(macho: &MachO, addr: u64) -> Option<String> {
-    find_containing_function_with_addr(macho, addr).map(|(_, name)| name)
 }
 
 // TODO segments() seems to create copies that it returns, see if we can get references instead
@@ -991,9 +967,10 @@ fn find_sections<'a>(macho: &'a MachO, section_name: &str) -> Vec<(Section, Sect
 
 /// Pre-computed call graph mapping target addresses to their callers.
 /// This allows O(1) lookup instead of O(n) scanning for each query.
-pub struct CallGraph {
+/// Lifetime 'a comes from SymbolIndex - caller_name may borrow from it.
+pub struct CallGraph<'a> {
     /// Maps target_addr -> list of CallerInfo
-    edges: HashMap<u64, Vec<CallerInfo>>,
+    edges: HashMap<u64, Vec<CallerInfo<'a>>>,
 }
 
 /// Extracted instruction data for parallel processing (avoids Insn lifetime issues)
@@ -1134,10 +1111,15 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
         .collect()
 }
 
-impl CallGraph {
+impl<'a> CallGraph<'a> {
     /// Build a call graph by scanning all instructions once (no debug info).
     /// Uses parallel disassembly and parallel processing for faster analysis.
-    pub fn build(macho: &MachO, buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    /// Symbol names are borrowed from the provided SymbolIndex.
+    pub fn build(
+        macho: &MachO,
+        buffer: &[u8],
+        symbol_index: Option<&'a SymbolIndex>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
             return Ok(Self {
                 edges: HashMap::new(),
@@ -1152,31 +1134,27 @@ impl CallGraph {
         let insn_data = sequential_disassemble_arm64(text_data, text_addr);
 
         // Process bl instructions in parallel (the expensive part is function lookup)
-        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
-        // Precompute symbol index once for efficient lookups
-        let symbol_index = SymbolIndex::new(macho);
+        let edges: DashMap<u64, Vec<CallerInfo<'a>>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
-                && let Some((func_addr, func_name)) = symbol_index
-                    .as_ref()
-                    .and_then(|idx| idx.find_containing(data.address))
-                    .map(|(addr, name)| (addr, name.to_string()))
+                && let Some((func_addr, func_name)) =
+                    symbol_index.and_then(|idx| idx.find_containing(data.address))
             {
                 edges.entry(call_target).or_default().push(CallerInfo {
-                    caller: FunctionInfo {
-                        name: func_name,
-                        start_address: func_addr,
-                        ..Default::default()
-                    },
+                    caller_name: Cow::Borrowed(func_name), // No allocation - borrows from SymbolIndex
+                    caller_start_address: func_addr,
+                    caller_file: None,
                     call_site_addr: data.address,
-                    ..Default::default()
+                    file: None,
+                    line: None,
+                    column: None,
                 });
             }
         });
 
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
-        let mut edges: HashMap<u64, Vec<CallerInfo>> = edges.into_iter().collect();
+        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = edges.into_iter().collect();
         for callers in edges.values_mut() {
             callers.sort_by_key(|c| c.call_site_addr);
         }
@@ -1189,8 +1167,9 @@ impl CallGraph {
     pub fn build_sequential(
         macho: &MachO,
         buffer: &[u8],
+        symbol_index: Option<&'a SymbolIndex>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut edges: HashMap<u64, Vec<CallerInfo>> = HashMap::new();
+        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = HashMap::new();
 
         let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
             return Ok(Self { edges });
@@ -1205,12 +1184,9 @@ impl CallGraph {
             .disasm_all(text_data, text_addr)
             .map_err(|e| format!("Disassembly failed: {e}"))?;
 
-        // Precompute symbol index once for efficient lookups
-        let symbol_index = SymbolIndex::new(macho);
-
         for instruction in instructions.iter() {
             if let Some((call_target, caller_info)) =
-                process_instruction_basic(symbol_index.as_ref(), instruction)
+                process_instruction_basic(symbol_index, instruction)
             {
                 edges.entry(call_target).or_default().push(caller_info);
             }
@@ -1221,6 +1197,7 @@ impl CallGraph {
 
     /// Build a call graph with debug info enrichment.
     /// Uses parallel disassembly and parallel processing for faster analysis.
+    /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
     pub fn build_with_debug_info(
         binary_macho: &MachO,
         binary_buffer: &[u8],
@@ -1228,6 +1205,7 @@ impl CallGraph {
         debug_buffer: &[u8],
         crate_src_path: Option<&str>,
         show_timings: bool,
+        symbol_index: Option<&'a SymbolIndex>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -1300,9 +1278,7 @@ impl CallGraph {
 
         // Process bl instructions in parallel
         let step = Instant::now();
-        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::new();
-        // Precompute symbol index once for efficient fallback lookups
-        let symbol_index = SymbolIndex::new(binary_macho);
+        let edges: DashMap<u64, Vec<CallerInfo<'a>>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
@@ -1312,7 +1288,7 @@ impl CallGraph {
                     crate_src_path,
                     &full_line_table,
                     crate_line_table.as_ref(),
-                    symbol_index.as_ref(),
+                    symbol_index,
                 )
             {
                 edges.entry(target).or_default().push(caller_info);
@@ -1323,7 +1299,7 @@ impl CallGraph {
         }
 
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
-        let mut edges: HashMap<u64, Vec<CallerInfo>> = edges.into_iter().collect();
+        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = edges.into_iter().collect();
         for callers in edges.values_mut() {
             callers.sort_by_key(|c| c.call_site_addr);
         }
@@ -1331,8 +1307,12 @@ impl CallGraph {
     }
 
     /// Get all callers of a target address.
-    pub fn get_callers(&self, target_addr: u64) -> Vec<CallerInfo> {
-        self.edges.get(&target_addr).cloned().unwrap_or_default()
+    /// Returns a slice reference to avoid cloning CallerInfo instances.
+    pub fn get_callers(&self, target_addr: u64) -> &[CallerInfo<'a>] {
+        self.edges
+            .get(&target_addr)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Create an empty call graph.
@@ -1479,7 +1459,8 @@ impl ObjectLineTable {
 /// This allows cross-object-file resolution in archives (rlib/staticlib).
 pub struct LibraryCallGraph {
     /// Maps target symbol name -> list of CallerInfo (aggregated from all .o files)
-    edges: HashMap<String, Vec<CallerInfo>>,
+    /// Uses 'static lifetime because LibraryCallGraph owns all its data
+    edges: HashMap<String, Vec<CallerInfo<'static>>>,
 }
 
 impl LibraryCallGraph {
@@ -1496,7 +1477,7 @@ impl LibraryCallGraph {
         buffer: &[u8],
         crate_src_path: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
+        let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
 
         // Get symbols for lookup
         let symbols: Vec<(String, u64)> = macho
@@ -1573,10 +1554,10 @@ impl LibraryCallGraph {
                         let Some((func_addr, func_name)) = symbol_index
                             .as_ref()
                             .and_then(|idx| idx.find_containing(call_site_addr))
-                            .map(|(addr, name)| (addr, name.to_string()))
                         else {
                             continue;
                         };
+                        let func_name = func_name.to_string();
 
                         // Demangle the target symbol name
                         let target_demangled = {
@@ -1618,12 +1599,9 @@ impl LibraryCallGraph {
 
                         // Record the call: target_symbol -> caller
                         edges.entry(target_demangled).or_default().push(CallerInfo {
-                            caller: FunctionInfo {
-                                name: func_name,
-                                start_address: func_addr,
-                                file: file.clone(),
-                                ..Default::default()
-                            },
+                            caller_name: Cow::Owned(func_name),
+                            caller_start_address: func_addr,
+                            caller_file: file.clone(),
                             call_site_addr,
                             file,
                             line,
@@ -1645,12 +1623,12 @@ impl LibraryCallGraph {
     }
 
     /// Get all callers of a symbol by name (demangled).
-    pub fn get_callers(&self, symbol_name: &str) -> Vec<CallerInfo> {
+    pub fn get_callers(&self, symbol_name: &str) -> Vec<CallerInfo<'static>> {
         self.edges.get(symbol_name).cloned().unwrap_or_default()
     }
 
     /// Get all callers of symbols matching a pattern.
-    pub fn get_callers_matching(&self, pattern: &Regex) -> Vec<(&str, &[CallerInfo])> {
+    pub fn get_callers_matching(&self, pattern: &Regex) -> Vec<(&str, &[CallerInfo<'static>])> {
         self.edges
             .iter()
             .filter(|(name, _)| pattern.is_match(name))
@@ -1678,10 +1656,10 @@ impl LibraryCallGraph {
 
 /// Process a single instruction and extract call information (basic version without debug info).
 /// Returns (call_target, CallerInfo) if this is a bl/b instruction, None otherwise.
-fn process_instruction_basic(
-    symbol_index: Option<&SymbolIndex>,
+fn process_instruction_basic<'a>(
+    symbol_index: Option<&'a SymbolIndex>,
     instruction: &Insn,
-) -> Option<(u64, CallerInfo)> {
+) -> Option<(u64, CallerInfo<'a>)> {
     // Match both BL (branch with link) and B (branch) for tail call detection
     let mnemonic = instruction.mnemonic();
     if mnemonic != Some("bl") && mnemonic != Some("b") {
@@ -1691,34 +1669,34 @@ fn process_instruction_basic(
     let operand = instruction.op_str()?;
     let addr_str = operand.trim_start_matches("#0x");
     let call_target = u64::from_str_radix(addr_str, 16).ok()?;
-    let (func_addr, func_name) = symbol_index
-        .and_then(|idx| idx.find_containing(instruction.address()))
-        .map(|(addr, name)| (addr, name.to_string()))?;
+    let (func_addr, func_name) =
+        symbol_index.and_then(|idx| idx.find_containing(instruction.address()))?;
 
     Some((
         call_target,
         CallerInfo {
-            caller: FunctionInfo {
-                name: func_name,
-                start_address: func_addr,
-                ..Default::default()
-            },
+            caller_name: Cow::Borrowed(func_name),
+            caller_start_address: func_addr,
+            caller_file: None,
             call_site_addr: instruction.address(),
-            ..Default::default()
+            file: None,
+            line: None,
+            column: None,
         },
     ))
 }
 
 /// Process instruction data using pre-built line tables for fast O(log n) lookups.
 /// Falls back to symbol table lookup if DWARF doesn't contain the function.
-fn process_instruction_data_with_crate_table(
+/// DWARF names use Cow::Owned, symbol fallback uses Cow::Borrowed from SymbolIndex.
+fn process_instruction_data_with_crate_table<'a>(
     data: &InsnData,
     function_index: &FunctionIndex,
     crate_src_path: Option<&str>,
     full_line_table: &FullLineTable,
     crate_line_table: Option<&CrateLineTable>,
-    symbol_index: Option<&SymbolIndex>,
-) -> Option<(u64, CallerInfo)> {
+    symbol_index: Option<&'a SymbolIndex>,
+) -> Option<(u64, CallerInfo<'a>)> {
     let call_target = data.call_target?;
 
     // Find the function containing this call - try DWARF first, fall back to symbol table
@@ -1757,18 +1735,20 @@ fn process_instruction_data_with_crate_table(
 
         // Get function name - only do expensive inlined lookup for crate source functions
         // For non-crate functions, use the containing function's name (fast path)
-        let display_name = if file_in_crate {
+        let display_name: Cow<'a, str> = if file_in_crate {
             // Crate function: get the most specific name (checks inlined functions)
-            function_index
-                .find_function_name(data.address)
-                .map(|s| {
-                    let stripped = s.strip_prefix('_').unwrap_or(s);
-                    format!("{:#}", demangle(stripped))
-                })
-                .unwrap_or_else(|| func.name.clone())
+            Cow::Owned(
+                function_index
+                    .find_function_name(data.address)
+                    .map(|s| {
+                        let stripped = s.strip_prefix('_').unwrap_or(s);
+                        format!("{:#}", demangle(stripped))
+                    })
+                    .unwrap_or_else(|| func.name.clone()),
+            )
         } else {
             // Non-crate function: use containing function name directly (skip inlined search)
-            func.name.clone()
+            Cow::Owned(func.name.clone())
         };
 
         // Note: We intentionally use the inlined function's name but keep the
@@ -1778,22 +1758,17 @@ fn process_instruction_data_with_crate_table(
         Some((
             call_target,
             CallerInfo {
-                caller: FunctionInfo {
-                    name: display_name,
-                    start_address: func.start_address,
-                    end_address: func.end_address,
-                    file: func.file.clone(),
-                    line: func.line,
-                },
+                caller_name: display_name,
+                caller_start_address: func.start_address,
+                caller_file: func.file.clone(),
                 call_site_addr: data.address,
                 file,
                 line,
                 column,
             },
         ))
-    } else if let Some((func_addr, func_name)) = symbol_index
-        .and_then(|idx| idx.find_containing(data.address))
-        .map(|(addr, name)| (addr, name.to_string()))
+    } else if let Some((func_addr, func_name)) =
+        symbol_index.and_then(|idx| idx.find_containing(data.address))
     {
         // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
         // Don't use line table for source location - addresses outside DWARF functions
@@ -1802,11 +1777,9 @@ fn process_instruction_data_with_crate_table(
         Some((
             call_target,
             CallerInfo {
-                caller: FunctionInfo {
-                    name: func_name,
-                    start_address: func_addr,
-                    ..Default::default()
-                },
+                caller_name: Cow::Borrowed(func_name), // No allocation - borrows from SymbolIndex
+                caller_start_address: func_addr,
+                caller_file: None,
                 call_site_addr: data.address,
                 file: None,
                 line: None,
@@ -1827,7 +1800,7 @@ pub(crate) fn find_callers(
     macho: &MachO,
     buffer: &[u8],
     target_addr: u64,
-) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
+) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     let mut callers = Vec::new();
 
     let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
@@ -1858,16 +1831,15 @@ pub(crate) fn find_callers(
                 && let Some((func_addr, func_name)) = symbol_index
                     .as_ref()
                     .and_then(|idx| idx.find_containing(instruction.address()))
-                    .map(|(addr, name)| (addr, name.to_string()))
             {
                 callers.push(CallerInfo {
-                    caller: FunctionInfo {
-                        name: func_name,
-                        start_address: func_addr,
-                        ..Default::default()
-                    },
+                    caller_name: Cow::Owned(func_name.to_string()),
+                    caller_start_address: func_addr,
+                    caller_file: None,
                     call_site_addr: instruction.address(),
-                    ..Default::default()
+                    file: None,
+                    line: None,
+                    column: None,
                 });
             }
         }
@@ -2195,7 +2167,7 @@ pub fn find_callers_with_debug_info(
     debug_buffer: &[u8],
     target_addr: u64,
     crate_src_path: Option<&str>,
-) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
+) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
     let (functions, inlined) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
     // Build function index for O(log n) lookups
@@ -2269,13 +2241,9 @@ pub fn find_callers_with_debug_info(
                     // Note: See comment in process_instruction_data_with_crate_table
                     // for why we use inlined name but containing function's address range
                     callers.push(CallerInfo {
-                        caller: FunctionInfo {
-                            name: display_name,
-                            start_address: func.start_address,
-                            end_address: func.end_address,
-                            file: func.file.clone(),
-                            line: func.line,
-                        },
+                        caller_name: Cow::Owned(display_name),
+                        caller_start_address: func.start_address,
+                        caller_file: func.file.clone(),
                         call_site_addr: instruction.address(),
                         file,
                         line,
@@ -2284,18 +2252,15 @@ pub fn find_callers_with_debug_info(
                 } else if let Some((func_addr, func_name)) = symbol_index
                     .as_ref()
                     .and_then(|idx| idx.find_containing(instruction.address()))
-                    .map(|(addr, name)| (addr, name.to_string()))
                 {
                     // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
                     let (file, line, column) =
                         get_source_location(&dwarf, func_addr).unwrap_or((None, None, None));
 
                     callers.push(CallerInfo {
-                        caller: FunctionInfo {
-                            name: func_name,
-                            start_address: func_addr,
-                            ..Default::default()
-                        },
+                        caller_name: Cow::Owned(func_name.to_string()),
+                        caller_start_address: func_addr,
+                        caller_file: None,
                         call_site_addr: instruction.address(),
                         file,
                         line,
@@ -2454,22 +2419,20 @@ pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// More detailed check - returns which debug sections are present
-pub fn get_dwarf_sections(macho: &MachO) -> Vec<String> {
-    let mut sections = Vec::new();
-
+/// Check if the binary has any DWARF debug sections
+pub fn has_dwarf_sections(macho: &MachO) -> bool {
     for segment in macho.segments.iter() {
         if let Ok(sects) = segment.sections() {
             for (section, _) in sects {
                 if let Ok(name) = section.name()
                     && name.starts_with("__debug_")
                 {
-                    sections.push(name.to_string());
+                    return true;
                 }
             }
         }
     }
-    sections
+    false
 }
 
 /// Extract object file paths from the debug map (OSO stab entries)
@@ -2532,7 +2495,7 @@ pub fn find_callers_with_debug_map(
     debug_map: &DebugMapInfo,
     target_addr: u64,
     _crate_src_path: Option<&str>,
-) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
+) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     // First, get callers from the binary's text section
     let mut callers = find_callers(binary_macho, binary_buffer, target_addr)?;
 
@@ -2574,9 +2537,9 @@ pub fn find_callers_with_debug_map(
     // Enrich caller info with source locations from DWARF by matching function names
     for caller in &mut callers {
         // Try to find source info by function name
-        if let Some((file, line)) = func_source_map.get(&caller.caller.name) {
-            caller.caller.file = file.clone();
-            caller.caller.line = *line;
+        // Note: caller_name is Cow<'static, str>, convert to string for lookup
+        if let Some((file, line)) = func_source_map.get(caller.caller_name.as_ref()) {
+            caller.caller_file = file.clone();
             caller.file = file.clone();
             caller.line = *line;
         }
@@ -2614,7 +2577,7 @@ fn load_debug_map(macho: &MachO, quiet: bool) -> Option<DebugMapInfo> {
         };
 
         // Only include if it has debug info
-        if get_dwarf_sections(&obj_macho).is_empty() {
+        if !has_dwarf_sections(&obj_macho) {
             continue;
         }
 
@@ -2711,7 +2674,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
         }
     }
 
-    if !get_dwarf_sections(macho).is_empty() {
+    if has_dwarf_sections(macho) {
         if !quiet {
             println!("  Using embedded DWARF debugging info");
         }
