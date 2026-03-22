@@ -208,8 +208,10 @@ fn is_dependency_path(file_path: &str) -> bool {
 
     // Internal/generated paths from dependencies (common patterns)
     // These use relative src/ paths that would match "src/" pattern for single-crate projects
-    // The __ and _ prefixes are used by macro-generated code in crates like objc2
-    if file_path.contains("/__") || file_path.starts_with("src/__") {
+    // The __ prefixes are used by macro-generated code in crates like objc2
+    // Use segment-boundary checks to avoid false positives on user dirs like /Users/__myuser__/
+    if file_path.contains("/__/") || file_path.starts_with("__") || file_path.starts_with("src/__")
+    {
         return true;
     }
 
