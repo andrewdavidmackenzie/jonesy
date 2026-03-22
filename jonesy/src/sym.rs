@@ -33,10 +33,213 @@ type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
 
 /// Check if a file path matches a crate source pattern.
 /// Supports multi-pattern format with "|" separator for workspace mode.
+/// Check if a file path matches the crate source pattern.
+/// For single-crate projects with pattern "src/", uses the valid_files set
+/// to exclude dependency paths that happen to start with src/.
 pub fn matches_crate_pattern(file_path: &str, crate_pattern: &str) -> bool {
-    crate_pattern
+    matches_crate_pattern_validated(file_path, crate_pattern, None)
+}
+
+/// Check if a file path matches the crate source pattern, with optional validation.
+/// When valid_files is provided and pattern is generic ("src/"), validates against actual project files.
+pub fn matches_crate_pattern_validated(
+    file_path: &str,
+    crate_pattern: &str,
+    valid_files: Option<&ValidSourceFiles>,
+) -> bool {
+    // Exclude paths that are clearly from dependencies or stdlib, not user code
+    if is_dependency_path(file_path) {
+        return false;
+    }
+
+    // Check if path matches the pattern
+    let matches = crate_pattern
         .split('|')
-        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern))
+        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern));
+
+    if !matches {
+        return false;
+    }
+
+    // For single-crate projects (pattern is just "src/"), validate against actual project files
+    // This prevents false positives from dependencies with relative src/ paths in DWARF
+    if let Some(valid) = valid_files {
+        if valid.needs_validation(crate_pattern) {
+            return valid.contains(file_path);
+        }
+    }
+
+    true
+}
+
+/// A set of valid source files for a project.
+/// Used to filter out dependency paths that have relative src/ paths.
+#[derive(Debug, Default)]
+pub struct ValidSourceFiles {
+    /// Set of valid file paths (relative to project root, e.g., "src/main.rs")
+    files: std::collections::HashSet<String>,
+}
+
+impl ValidSourceFiles {
+    /// Build a set of valid source files by reading Cargo.toml and scanning directories.
+    /// Focuses on [lib] and [[bin]] source locations only.
+    pub fn from_project_root(project_root: &std::path::Path) -> Self {
+        use cargo_toml::Manifest;
+
+        let mut files = std::collections::HashSet::new();
+
+        // Try to read Cargo.toml for configured paths
+        let cargo_toml = project_root.join("Cargo.toml");
+        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+            if let Ok(manifest) = Manifest::from_slice(content.as_bytes()) {
+                Self::collect_manifest_sources(project_root, &manifest, &mut files);
+            }
+        }
+
+        // If no paths found from manifest, fall back to scanning src/
+        if files.is_empty() {
+            let src_dir = project_root.join("src");
+            if src_dir.exists() {
+                Self::scan_directory(&src_dir, "src", &mut files);
+            }
+        }
+
+        Self { files }
+    }
+
+    /// Collect source paths from Cargo.toml manifest - [lib] and [[bin]] only
+    fn collect_manifest_sources(
+        project_root: &std::path::Path,
+        manifest: &cargo_toml::Manifest,
+        files: &mut std::collections::HashSet<String>,
+    ) {
+        // [lib] path (default: src/lib.rs)
+        if let Some(lib) = &manifest.lib {
+            if let Some(path) = &lib.path {
+                Self::add_source_file(project_root, path, files);
+            } else {
+                // Default lib path
+                Self::add_source_file(project_root, "src/lib.rs", files);
+            }
+        }
+
+        // [[bin]] paths (default: src/main.rs or src/bin/*.rs)
+        for bin in &manifest.bin {
+            if let Some(path) = &bin.path {
+                Self::add_source_file(project_root, path, files);
+            }
+        }
+
+        // If no explicit bins, check for default main.rs
+        if manifest.bin.is_empty() {
+            let main_rs = project_root.join("src/main.rs");
+            if main_rs.exists() {
+                Self::add_source_file(project_root, "src/main.rs", files);
+            }
+        }
+    }
+
+    /// Add a source file path, normalizing it for matching
+    fn add_source_file(
+        project_root: &std::path::Path,
+        path: &str,
+        files: &mut std::collections::HashSet<String>,
+    ) {
+        // Add the path as-is (relative)
+        files.insert(path.to_string());
+
+        // If it's a directory reference, scan it
+        let full_path = project_root.join(path);
+        if full_path.is_dir() {
+            Self::scan_directory(&full_path, path, files);
+        } else if full_path.is_file() {
+            // Also scan the parent directory for sibling modules
+            if let Some(parent) = full_path.parent() {
+                if let Ok(parent_rel) = parent.strip_prefix(project_root) {
+                    let parent_str = parent_rel.to_string_lossy();
+                    if !parent_str.is_empty() {
+                        Self::scan_directory(parent, &parent_str, files);
+                    }
+                }
+            }
+        }
+    }
+
+    fn scan_directory(
+        dir: &std::path::Path,
+        prefix: &str,
+        files: &mut std::collections::HashSet<String>,
+    ) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+
+                if path.is_file() && name_str.ends_with(".rs") {
+                    let rel_path = format!("{}/{}", prefix, name_str);
+                    files.insert(rel_path);
+                } else if path.is_dir() && !name_str.starts_with('.') {
+                    let sub_prefix = format!("{}/{}", prefix, name_str);
+                    Self::scan_directory(&path, &sub_prefix, files);
+                }
+            }
+        }
+    }
+
+    /// Check if this file set should be used for validation.
+    /// Only validates when the pattern is generic (just "src/").
+    fn needs_validation(&self, pattern: &str) -> bool {
+        // Validate for single-crate projects where pattern is generic
+        // Workspace patterns like "flowc/src/" are specific enough
+        pattern == "src/" && !self.files.is_empty()
+    }
+
+    /// Check if a file path is in the valid set.
+    fn contains(&self, file_path: &str) -> bool {
+        // Direct match
+        if self.files.contains(file_path) {
+            return true;
+        }
+
+        // Also check with leading "./" stripped
+        if let Some(stripped) = file_path.strip_prefix("./") {
+            if self.files.contains(stripped) {
+                return true;
+            }
+        }
+
+        // Check if any valid file ends with this path (for absolute paths)
+        // e.g., "/Users/foo/project/src/main.rs" should match "src/main.rs"
+        self.files.iter().any(|valid| file_path.ends_with(valid))
+    }
+}
+
+/// Check if a file path is from a dependency or stdlib, not user code.
+/// These paths should never be reported as user crate panic points.
+fn is_dependency_path(file_path: &str) -> bool {
+    // Cargo registry dependencies (absolute paths)
+    if file_path.contains(".cargo/registry/") || file_path.contains(".cargo\\registry\\") {
+        return true;
+    }
+
+    // Rust stdlib and compiler-generated paths
+    if file_path.starts_with("/rustc/")
+        || file_path.contains("/rustc/")
+        || file_path.starts_with("/rust/deps/")
+        || file_path.starts_with("library/")
+    {
+        return true;
+    }
+
+    // Internal/generated paths from dependencies (common patterns)
+    // These use relative src/ paths that would match "src/" pattern for single-crate projects
+    // The __ and _ prefixes are used by macro-generated code in crates like objc2
+    if file_path.contains("/__") || file_path.starts_with("src/__") {
+        return true;
+    }
+
+    false
 }
 
 #[allow(clippy::large_enum_variant)]
