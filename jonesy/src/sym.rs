@@ -81,108 +81,57 @@ pub struct ValidSourceFiles {
 }
 
 impl ValidSourceFiles {
-    /// Build a set of valid source files by reading Cargo.toml and scanning directories.
-    /// Focuses on [lib] and [[bin]] source locations only.
+    /// Build a set of valid source files by scanning the entire project directory.
+    /// This handles all cases including #[path] directives pointing outside src/.
+    /// Excludes target/, .git/, and other non-source directories.
     pub fn from_project_root(project_root: &std::path::Path) -> Self {
-        use cargo_toml::Manifest;
-
         let mut files = std::collections::HashSet::new();
 
-        // Try to read Cargo.toml for configured paths
-        let cargo_toml = project_root.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = Manifest::from_slice(content.as_bytes()) {
-                Self::collect_manifest_sources(project_root, &manifest, &mut files);
-            }
-        }
-
-        // If no paths found from manifest, fall back to scanning src/
-        if files.is_empty() {
-            let src_dir = project_root.join("src");
-            if src_dir.exists() {
-                Self::scan_directory(&src_dir, "src", &mut files);
-            }
-        }
+        // Scan the entire project for .rs files, excluding build artifacts
+        Self::scan_project_directory(project_root, project_root, &mut files);
 
         Self { files }
     }
 
-    /// Collect source paths from Cargo.toml manifest - [lib] and [[bin]] only
-    fn collect_manifest_sources(
+    /// Recursively scan directory for .rs files, excluding non-source directories
+    fn scan_project_directory(
         project_root: &std::path::Path,
-        manifest: &cargo_toml::Manifest,
-        files: &mut std::collections::HashSet<String>,
-    ) {
-        // [lib] path (default: src/lib.rs)
-        if let Some(lib) = &manifest.lib {
-            if let Some(path) = &lib.path {
-                Self::add_source_file(project_root, path, files);
-            } else {
-                // Default lib path
-                Self::add_source_file(project_root, "src/lib.rs", files);
-            }
-        }
-
-        // [[bin]] paths (default: src/main.rs or src/bin/*.rs)
-        for bin in &manifest.bin {
-            if let Some(path) = &bin.path {
-                Self::add_source_file(project_root, path, files);
-            }
-        }
-
-        // If no explicit bins, check for default main.rs
-        if manifest.bin.is_empty() {
-            let main_rs = project_root.join("src/main.rs");
-            if main_rs.exists() {
-                Self::add_source_file(project_root, "src/main.rs", files);
-            }
-        }
-    }
-
-    /// Add a source file path, normalizing it for matching
-    fn add_source_file(
-        project_root: &std::path::Path,
-        path: &str,
-        files: &mut std::collections::HashSet<String>,
-    ) {
-        // Add the path as-is (relative)
-        files.insert(path.to_string());
-
-        // If it's a directory reference, scan it
-        let full_path = project_root.join(path);
-        if full_path.is_dir() {
-            Self::scan_directory(&full_path, path, files);
-        } else if full_path.is_file() {
-            // Also scan the parent directory for sibling modules
-            if let Some(parent) = full_path.parent() {
-                if let Ok(parent_rel) = parent.strip_prefix(project_root) {
-                    let parent_str = parent_rel.to_string_lossy();
-                    if !parent_str.is_empty() {
-                        Self::scan_directory(parent, &parent_str, files);
-                    }
-                }
-            }
-        }
-    }
-
-    fn scan_directory(
         dir: &std::path::Path,
-        prefix: &str,
         files: &mut std::collections::HashSet<String>,
     ) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
+        // Directories to exclude (build artifacts, version control, examples, tests, benches)
+        const EXCLUDED_DIRS: &[&str] = &[
+            "target",
+            ".git",
+            ".hg",
+            ".svn",
+            "node_modules",
+            ".cargo",
+            ".rustup",
+            "examples",
+            "tests",
+            "benches",
+        ];
 
-                if path.is_file() && name_str.ends_with(".rs") {
-                    let rel_path = format!("{}/{}", prefix, name_str);
-                    files.insert(rel_path);
-                } else if path.is_dir() && !name_str.starts_with('.') {
-                    let sub_prefix = format!("{}/{}", prefix, name_str);
-                    Self::scan_directory(&path, &sub_prefix, files);
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            if path.is_file() && name_str.ends_with(".rs") && name_str != "build.rs" {
+                // Store path relative to project root
+                if let Ok(rel_path) = path.strip_prefix(project_root) {
+                    files.insert(rel_path.to_string_lossy().to_string());
                 }
+            } else if path.is_dir()
+                && !name_str.starts_with('.')
+                && !EXCLUDED_DIRS.contains(&name_str.as_ref())
+            {
+                Self::scan_project_directory(project_root, &path, files);
             }
         }
     }
