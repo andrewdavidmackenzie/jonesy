@@ -5,6 +5,9 @@
 # 2. Runs jonesy to analyze panic points
 # 3. Shows panic points as annotations on PR diffs
 #
+# NOTE: jonesy currently only supports macOS (Mach-O binary analysis).
+# This workflow must run on macos-latest or macos-14.
+#
 # NOTE: This is an example workflow. The main jonesy project uses
 # a different workflow for its own CI.
 
@@ -25,7 +28,7 @@ jobs:
   analyze:
     # Skip this workflow in the jonesy repo - it's just an example
     if: github.repository != 'andrewdavidmackenzie/jonesy'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest  # jonesy requires macOS (Mach-O binary analysis)
     steps:
       - uses: actions/checkout@v4
 
