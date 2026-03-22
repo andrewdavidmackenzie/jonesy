@@ -1307,8 +1307,12 @@ impl<'a> CallGraph<'a> {
     }
 
     /// Get all callers of a target address.
-    pub fn get_callers(&self, target_addr: u64) -> Vec<CallerInfo<'a>> {
-        self.edges.get(&target_addr).cloned().unwrap_or_default()
+    /// Returns a slice reference to avoid cloning CallerInfo instances.
+    pub fn get_callers(&self, target_addr: u64) -> &[CallerInfo<'a>] {
+        self.edges
+            .get(&target_addr)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Create an empty call graph.

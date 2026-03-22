@@ -93,7 +93,7 @@ pub fn build_call_tree_parallel(
     // Note: We share visited across all branches to avoid exponential blowup.
     // This means shared subtrees are only explored once, but all nodes are still created.
     callers
-        .into_par_iter()
+        .par_iter()
         .filter_map(|caller_info| {
             let caller_addr = caller_info.caller_start_address;
 
@@ -114,7 +114,7 @@ pub fn build_call_tree_parallel(
             };
 
             Some(CallTreeNode {
-                name: caller_info.caller_name.into_owned(),
+                name: caller_info.caller_name.clone().into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -133,7 +133,7 @@ fn build_call_tree_sequential(
     let callers = call_graph.get_callers(target_addr);
 
     callers
-        .into_iter()
+        .iter()
         .map(|caller_info| {
             let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
@@ -147,7 +147,7 @@ fn build_call_tree_sequential(
             };
 
             CallTreeNode {
-                name: caller_info.caller_name.into_owned(),
+                name: caller_info.caller_name.clone().into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -163,11 +163,11 @@ fn build_call_tree_sequential(
 fn build_shallow_callers(call_graph: &CallGraph<'_>, target_addr: u64) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
-        .into_iter()
+        .iter()
         .map(|caller_info| {
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             CallTreeNode {
-                name: caller_info.caller_name.into_owned(),
+                name: caller_info.caller_name.clone().into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
