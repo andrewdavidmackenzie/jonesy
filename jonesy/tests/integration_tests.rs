@@ -1024,7 +1024,7 @@ fn test_inlined_function_names() {
         function_names
     );
     assert!(
-        !function_names.iter().any(|n| *n == "main"),
+        !function_names.contains(&"main"),
         "Function names should be the inlined function names, not 'main': {:?}",
         function_names
     );

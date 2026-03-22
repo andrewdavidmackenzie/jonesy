@@ -290,16 +290,38 @@ pub fn collect_crate_code_points_hierarchical(
         roots.sort();
     }
 
-    // Build tree from roots, propagating causes from children to parents
+    // Build tree from roots with caching to avoid exponential rebuilding of shared subtrees
+    // Cache: key -> built subtree (avoids rebuilding same subtree multiple times)
+    let mut cache: HashMap<CodePointKey, CrateCodePoint> = HashMap::new();
+
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,
         path: &mut HashSet<CodePointKey>,
+        cache: &mut HashMap<CodePointKey, CrateCodePoint>,
     ) -> Option<CrateCodePoint> {
-        // Prevent cycles only on current DFS path (not across sibling/root branches)
-        if !path.insert(key.clone()) {
+        // Prevent cycles only on current DFS path
+        if path.contains(key) {
             return None;
         }
+
+        // Return cached result if already built
+        // Return a shallow copy WITHOUT children to avoid exponential memory from deep cloning.
+        // The full subtree is available at its first occurrence.
+        if let Some(cached) = cache.get(key) {
+            return Some(CrateCodePoint {
+                name: cached.name.clone(),
+                file: cached.file.clone(),
+                line: cached.line,
+                column: cached.column,
+                causes: cached.causes.clone(),
+                children: vec![], // Don't clone children - they're at first occurrence
+                is_direct_panic: cached.is_direct_panic,
+                called_function: cached.called_function.clone(),
+            });
+        }
+
+        path.insert(key.clone());
 
         let (name, column, causes, child_keys_set, is_direct_panic, called_function) =
             points.get(key)?;
@@ -308,12 +330,12 @@ pub fn collect_crate_code_points_hierarchical(
         child_keys.sort();
         let mut children: Vec<CrateCodePoint> = child_keys
             .iter()
-            .filter_map(|child_key| build_subtree(child_key, points, path))
+            .filter_map(|child_key| build_subtree(child_key, points, path, cache))
             .collect();
         children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         path.remove(key);
 
-        Some(CrateCodePoint {
+        let point = CrateCodePoint {
             name: name.clone(),
             file: key.0.clone(),
             line: key.1,
@@ -322,12 +344,16 @@ pub fn collect_crate_code_points_hierarchical(
             children,
             is_direct_panic: *is_direct_panic,
             called_function: called_function.clone(),
-        })
+        };
+
+        // Cache for reuse by other parents
+        cache.insert(key.clone(), point.clone());
+        Some(point)
     }
 
     roots
         .iter()
-        .filter_map(|root| build_subtree(root, &points, &mut HashSet::new()))
+        .filter_map(|root| build_subtree(root, &points, &mut HashSet::new(), &mut cache))
         .collect()
 }
 
