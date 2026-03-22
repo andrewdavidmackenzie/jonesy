@@ -13,7 +13,7 @@ use crate::json_output::{
 };
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolTable, ValidSourceFiles, find_symbol_address,
-    find_symbol_containing, load_debug_info, read_symbols,
+    find_symbol_containing, load_debug_info, matches_crate_pattern_validated, read_symbols,
 };
 use crate::text_output::generate_text_output;
 use dashmap::DashSet;
@@ -191,6 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let result = analyze_archive(
                     &archive,
                     &binary_buffer,
+                    &binary_path,
                     crate_src_path.as_deref(),
                     parsed_args.show_timings,
                     &config,
@@ -522,6 +523,7 @@ fn is_stdlib_function(name: &str) -> bool {
 pub(crate) fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
+    binary_path: &Path,
     crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
@@ -529,18 +531,19 @@ pub(crate) fn analyze_archive(
 ) -> BinaryAnalysisResult {
     use std::collections::HashSet;
 
+    // Build set of valid source files for single-crate project filtering
+    let project_root = find_project_root(binary_path);
+    let valid_files = project_root
+        .as_ref()
+        .map(|root| ValidSourceFiles::from_project_root(root));
+
     // Helper to check if a file path is within the crate/workspace scope
-    // Uses path prefix matching to avoid false positives from substring matching
+    // Uses ValidSourceFiles for single-crate validation to prevent dependency false positives
     let file_in_scope = |file: &str| {
         crate_src_path.is_none_or(|paths| {
             let file = file.replace('\\', "/");
-            paths.split('|').any(|p| {
-                if p.is_empty() {
-                    return false;
-                }
-                // Match if file starts with pattern or contains /pattern
-                file.starts_with(p) || file.contains(&format!("/{}", p))
-            })
+            // Use the same validated matching as binary analysis
+            matches_crate_pattern_validated(&file, paths, valid_files.as_ref())
         })
     };
 
@@ -860,6 +863,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     SymbolTable::Archive(archive) => analyze_archive(
                         &archive,
                         &binary_buffer,
+                        &binary_path,
                         Some(&workspace_src_path),
                         args.show_timings,
                         &config,
