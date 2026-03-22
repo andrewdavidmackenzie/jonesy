@@ -198,8 +198,7 @@ fn is_dependency_path(file_path: &str) -> bool {
     }
 
     // Rust stdlib and compiler-generated paths
-    if file_path.starts_with("/rustc/")
-        || file_path.contains("/rustc/")
+    if file_path.contains("/rustc/")
         || file_path.starts_with("/rust/deps/")
         || file_path.starts_with("library/")
     {
