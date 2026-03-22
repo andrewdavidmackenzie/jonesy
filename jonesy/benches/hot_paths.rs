@@ -47,9 +47,7 @@ fn bench_full_analysis(c: &mut Criterion) {
 /// Benchmark with different binary sizes by running on workspace examples
 fn bench_analysis_scaling(c: &mut Criterion) {
     // Build all example binaries
-    let _ = Command::new("cargo")
-        .args(["build", "--examples"])
-        .output();
+    let _ = Command::new("cargo").args(["build", "--examples"]).output();
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 
@@ -66,15 +64,19 @@ fn bench_analysis_scaling(c: &mut Criterion) {
         let binary_path = manifest_dir.parent().unwrap().join(rel_path);
         if binary_path.exists() {
             let binary_path_str = binary_path.to_string_lossy().to_string();
-            group.bench_with_input(BenchmarkId::new("binary", name), &binary_path_str, |b, path| {
-                b.iter(|| {
-                    let output = Command::new(env!("CARGO_BIN_EXE_jonesy"))
-                        .args(["--bin", path, "--quiet"])
-                        .output()
-                        .expect("Failed to run jonesy");
-                    black_box(output)
-                })
-            });
+            group.bench_with_input(
+                BenchmarkId::new("binary", name),
+                &binary_path_str,
+                |b, path| {
+                    b.iter(|| {
+                        let output = Command::new(env!("CARGO_BIN_EXE_jonesy"))
+                            .args(["--bin", path, "--quiet"])
+                            .output()
+                            .expect("Failed to run jonesy");
+                        black_box(output)
+                    })
+                },
+            );
         }
     }
 
