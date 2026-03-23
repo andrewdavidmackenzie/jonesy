@@ -22,7 +22,7 @@ use jonesy::analysis::{PANIC_SYMBOL_PATTERNS, analyze_macho};
 use jonesy::args::OutputFormat;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{
-    CallTreeNode, CodePointMap, build_call_tree_parallel, build_call_tree_parallel_filtered,
+    CallTreeNode, CodePointMap, build_call_tree_parallel_filtered,
     build_call_tree_sequential, build_shallow_callers, collect_crate_relationships,
     filter_allowed_causes,
 };
