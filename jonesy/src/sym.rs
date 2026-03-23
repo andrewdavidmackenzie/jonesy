@@ -413,9 +413,9 @@ impl FullLineTable {
             }
         }
 
-        // Sort by address for binary search (parallel sort for large datasets)
-        use rayon::prelude::*;
-        entries.par_sort_by_key(|e| e.address);
+        // Sort by address for binary search (stable sort preserves unit order for
+        // entries with same address, which get_source_location relies on)
+        entries.sort_by_key(|e| e.address);
 
         Ok(Self { entries, file_pool })
     }
@@ -531,12 +531,11 @@ impl FullLineTable {
             }
         }
 
-        // Sort both by address in parallel
-        use rayon::prelude::*;
-        rayon::join(
-            || crate_entries.par_sort_by_key(|e| e.address),
-            || full_entries.par_sort_by_key(|e| e.address),
-        );
+        // Sort by address for binary search
+        // crate_entries: par_sort is safe (get_line returns last entry, order doesn't matter)
+        // full_entries: stable sort needed (get_source_location returns first entry)
+        crate_entries.par_sort_by_key(|e| e.address);
+        full_entries.sort_by_key(|e| e.address);
 
         Ok((
             CrateLineTable {
