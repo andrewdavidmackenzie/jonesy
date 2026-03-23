@@ -953,23 +953,31 @@ pub struct SymbolIndex {
 impl SymbolIndex {
     /// Build a symbol index from a MachO binary. Call once, reuse for many lookups.
     /// Symbol names are demangled lazily on first access for better performance.
+    /// Uses parallel sorting for large symbol tables.
     pub fn new(macho: &MachO) -> Option<Self> {
+        use rayon::prelude::*;
+
         let symbols = macho.symbols.as_ref()?;
 
-        // Collect function symbols with their addresses (no demangling yet)
-        // Note: We allow n_value == 0 for symbols at the start of a section,
-        // but filter out undefined symbols using is_undefined()
-        let mut entries: Vec<SymbolEntry> = symbols
+        // First pass: collect raw symbol data (sequential - iterator not Send)
+        let raw_symbols: Vec<(u64, &str)> = symbols
             .iter()
             .filter_map(|s| s.ok())
             .filter(|(name, nlist)| !nlist.is_undefined() && !name.is_empty())
-            .map(|(name, nlist)| {
+            .map(|(name, nlist)| (nlist.n_value, name))
+            .collect();
+
+        // Second pass: process in parallel (strip prefix, create entries)
+        let mut entries: Vec<SymbolEntry> = raw_symbols
+            .par_iter()
+            .map(|(addr, name)| {
                 let stripped = name.strip_prefix("_").unwrap_or(name);
-                SymbolEntry::new(nlist.n_value, stripped.to_string())
+                SymbolEntry::new(*addr, stripped.to_string())
             })
             .collect();
 
-        entries.sort_by_key(|e| e.address);
+        // Parallel sort by address
+        entries.par_sort_by_key(|e| e.address);
         Some(Self { entries })
     }
 
