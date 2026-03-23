@@ -17,3 +17,9 @@ members = [
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Profiling build: release optimizations with debug symbols
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
