@@ -789,7 +789,7 @@ impl DebugInfo {
     }
 }
 
-pub(crate) fn read_symbols(buffer: &'_ [u8]) -> io::Result<SymbolTable<'_>> {
+pub fn read_symbols(buffer: &'_ [u8]) -> io::Result<SymbolTable<'_>> {
     // Use goblin's Object::parse to auto-detect the file type
     match Object::parse(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
         Object::Mach(mach) => Ok(SymbolTable::MachO(mach)),
@@ -907,7 +907,7 @@ fn find_segment<'a>(macho: &'a MachO, segment_name: &str) -> Option<&'a Segment<
 /// Precomputed sorted symbol index for efficient function lookups.
 /// Build once with `SymbolIndex::new()` and reuse for many lookups.
 #[derive(Debug)]
-pub(crate) struct SymbolIndex {
+pub struct SymbolIndex {
     /// Sorted by address: (func_addr, demangled_name)
     /// Owns the strings so CallGraph can borrow from it
     functions: Vec<(u64, String)>,

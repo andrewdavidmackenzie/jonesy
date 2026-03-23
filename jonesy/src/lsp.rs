@@ -1143,7 +1143,7 @@ fn analyze_single_target(
     use crate::args::OutputFormat;
     use crate::config::Config;
     use crate::sym::{SymbolTable, read_symbols};
-    use crate::{analyze_archive, analyze_macho};
+    use crate::analysis::{analyze_archive, analyze_macho};
     use goblin::mach::Mach::{Binary, Fat};
     use goblin::mach::SingleArch;
     use goblin::mach::constants::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
