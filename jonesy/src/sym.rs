@@ -721,7 +721,11 @@ impl FunctionIndex {
     /// Get the line number for a FunctionInfo (None if 0)
     #[inline]
     pub fn get_line(&self, func: &FunctionInfo) -> Option<u32> {
-        if func.line == 0 { None } else { Some(func.line) }
+        if func.line == 0 {
+            None
+        } else {
+            Some(func.line)
+        }
     }
 
     /// Get a reference to the string tables
@@ -768,7 +772,8 @@ impl FunctionIndex {
             return Some(self.strings.get_name(inlined.name_idx));
         }
         // Fall back to containing function
-        self.find_containing(addr).map(|f| self.strings.get_name(f.name_idx))
+        self.find_containing(addr)
+            .map(|f| self.strings.get_name(f.name_idx))
     }
 
     /// Find an inlined function containing the given address.
@@ -2695,12 +2700,13 @@ pub fn find_callers_with_debug_map(
             let file = strings.get_file(func.file_idx);
             if file.is_some() {
                 let name = strings.get_name(func.name_idx);
-                let line = if func.line == 0 { None } else { Some(func.line) };
+                let line = if func.line == 0 {
+                    None
+                } else {
+                    Some(func.line)
+                };
                 // Store by original name
-                func_source_map.insert(
-                    name.to_string(),
-                    (file.map(|s| s.to_string()), line),
-                );
+                func_source_map.insert(name.to_string(), (file.map(|s| s.to_string()), line));
 
                 // Also store by demangled name for matching
                 let stripped = name.strip_prefix("_").unwrap_or(name);
