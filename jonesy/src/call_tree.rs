@@ -39,44 +39,6 @@ impl CallTreeNode {
     }
 }
 
-/// Returns true if the node's source file matches the crate source path.
-/// For workspace mode (when crate_src_path contains "|"), checks against multiple paths.
-/// When valid_files is provided, validates against actual project files to exclude dependencies.
-pub fn is_in_crate(
-    node: &CallTreeNode,
-    crate_src_path: &str,
-    valid_files: Option<&ValidSourceFiles>,
-) -> bool {
-    node.file
-        .as_ref()
-        .is_some_and(|file| matches_crate_pattern_validated(file, crate_src_path, valid_files))
-}
-
-/// Prune branches that don't lead to a leaf node in the target crate's source.
-/// Note: Allowed cause filtering is done during code point collection, not here,
-/// to avoid incorrectly pruning shared subtrees that are reachable via denied causes.
-/// Returns true if this node should be kept.
-pub fn prune_call_tree(
-    node: &mut CallTreeNode,
-    crate_src_path: &str,
-    valid_files: Option<&ValidSourceFiles>,
-) -> bool {
-    // Recursively prune children first
-    node.callers
-        .retain_mut(|caller| prune_call_tree(caller, crate_src_path, valid_files));
-
-    // Keep this node if:
-    // 1. It's a leaf AND in the crate source, OR
-    // 2. It still has children after pruning (meaning it leads to crate code)
-    if node.callers.is_empty() {
-        // Leaf node: keep only if it's in the crate source
-        is_in_crate(node, crate_src_path, valid_files)
-    } else {
-        // Has children that lead to crate code, so keep it
-        true
-    }
-}
-
 /// Build a call tree by recursively finding callers of the target address.
 /// Uses a thread-safe visited set to avoid infinite recursion when there are cycles.
 /// Uses pre-computed CallGraph for O(1) lookups instead of re-scanning instructions.
