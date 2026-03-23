@@ -29,7 +29,22 @@ runs:
   steps:
     - name: Install jonesy
       shell: bash
-      run: cargo install jonesy
+      run: |
+        # Try cargo-binstall for faster installation (pre-built binary)
+        # Fall back to cargo install if binstall fails
+        if command -v cargo-binstall &> /dev/null || cargo install cargo-binstall 2>/dev/null; then
+          echo "Using cargo-binstall for faster installation..."
+          if cargo binstall jonesy --no-confirm --log-level info 2>&1; then
+            echo "::notice::Installed jonesy via cargo-binstall (pre-built binary)"
+            exit 0
+          fi
+          echo "::warning::cargo-binstall failed, falling back to cargo install"
+        fi
+
+        # Fallback: build from source
+        echo "Installing jonesy from source..."
+        cargo install jonesy
+        echo "::notice::Installed jonesy via cargo install (built from source)"
 
     - name: Register problem matcher
       shell: bash
