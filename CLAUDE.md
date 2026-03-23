@@ -1,5 +1,5 @@
 
-## General COnsideration.
+## General Consideration.
 
 1. Allow claude to say "I don't know" if it can't find information to confirm a 
 conclusion or answer, or can't quote sources for a statement when needed. I 
