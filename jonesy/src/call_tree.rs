@@ -86,6 +86,18 @@ pub fn build_call_tree_parallel(
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
 ) -> Vec<CallTreeNode> {
+    build_call_tree_parallel_filtered(call_graph, target_addr, visited, None, None)
+}
+
+/// Build a call tree with early filtering during construction.
+/// Nodes that would be pruned (not in crate and no crate children) are never created.
+pub fn build_call_tree_parallel_filtered(
+    call_graph: &CallGraph<'_>,
+    target_addr: u64,
+    visited: &Arc<DashSet<u64>>,
+    crate_src_path: Option<&str>,
+    valid_files: Option<&ValidSourceFiles>,
+) -> Vec<CallTreeNode> {
     // Use pre-computed call graph for O(1) lookup
     let callers = call_graph.get_callers(target_addr);
 
@@ -106,12 +118,30 @@ pub fn build_call_tree_parallel(
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
                 // Use sequential recursion within each branch to ensure deterministic behavior
-                build_call_tree_sequential(call_graph, caller_addr, visited)
+                build_call_tree_sequential_filtered(
+                    call_graph,
+                    caller_addr,
+                    visited,
+                    crate_src_path,
+                    valid_files,
+                )
             } else {
                 // Already visited - still get callers but don't recurse into them
                 // This ensures all paths through the call graph are represented
-                build_shallow_callers(call_graph, caller_addr)
+                build_shallow_callers_filtered(call_graph, caller_addr, crate_src_path, valid_files)
             };
+
+            // Early pruning: skip nodes with no children that aren't in crate
+            if let Some(crate_path) = crate_src_path {
+                if child_callers.is_empty() {
+                    let in_crate = file.as_ref().is_some_and(|f| {
+                        matches_crate_pattern_validated(f, crate_path, valid_files)
+                    });
+                    if !in_crate {
+                        return None;
+                    }
+                }
+            }
 
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
@@ -125,34 +155,67 @@ pub fn build_call_tree_parallel(
 }
 
 /// Sequential version for recursion within parallel branches.
+/// Filters during construction to avoid creating nodes that would be pruned.
 pub fn build_call_tree_sequential(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
 ) -> Vec<CallTreeNode> {
+    build_call_tree_sequential_filtered(call_graph, target_addr, visited, None, None)
+}
+
+/// Sequential version with optional early filtering during construction.
+/// When crate_src_path is provided, nodes are filtered as they're built,
+/// avoiding creation of nodes that would be pruned later.
+pub fn build_call_tree_sequential_filtered(
+    call_graph: &CallGraph<'_>,
+    target_addr: u64,
+    visited: &Arc<DashSet<u64>>,
+    crate_src_path: Option<&str>,
+    valid_files: Option<&ValidSourceFiles>,
+) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
     callers
         .iter()
-        .map(|caller_info| {
+        .filter_map(|caller_info| {
             let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
 
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
-                build_call_tree_sequential(call_graph, caller_addr, visited)
+                build_call_tree_sequential_filtered(
+                    call_graph,
+                    caller_addr,
+                    visited,
+                    crate_src_path,
+                    valid_files,
+                )
             } else {
                 // Already visited - still get callers but don't recurse into them
-                build_shallow_callers(call_graph, caller_addr)
+                build_shallow_callers_filtered(call_graph, caller_addr, crate_src_path, valid_files)
             };
 
-            CallTreeNode {
+            // Early pruning: skip nodes with no children that aren't in crate
+            if let Some(crate_path) = crate_src_path {
+                if child_callers.is_empty() {
+                    // Leaf node: only keep if in crate
+                    let in_crate = file.as_ref().is_some_and(|f| {
+                        matches_crate_pattern_validated(f, crate_path, valid_files)
+                    });
+                    if !in_crate {
+                        return None;
+                    }
+                }
+            }
+
+            Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
                 callers: child_callers,
-            }
+            })
         })
         .collect()
 }
@@ -161,18 +224,40 @@ pub fn build_call_tree_sequential(
 /// Used when a function was already visited through another path.
 /// This ensures we still capture caller relationships even for visited functions.
 pub fn build_shallow_callers(call_graph: &CallGraph<'_>, target_addr: u64) -> Vec<CallTreeNode> {
+    build_shallow_callers_filtered(call_graph, target_addr, None, None)
+}
+
+/// Build shallow caller nodes with optional filtering.
+/// Only creates nodes that are in the crate (leaves are filtered).
+fn build_shallow_callers_filtered(
+    call_graph: &CallGraph<'_>,
+    target_addr: u64,
+    crate_src_path: Option<&str>,
+    valid_files: Option<&ValidSourceFiles>,
+) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
         .iter()
-        .map(|caller_info| {
+        .filter_map(|caller_info| {
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
-            CallTreeNode {
+
+            // Early pruning: shallow callers are leaves, only keep if in crate
+            if let Some(crate_path) = crate_src_path {
+                let in_crate = file
+                    .as_ref()
+                    .is_some_and(|f| matches_crate_pattern_validated(f, crate_path, valid_files));
+                if !in_crate {
+                    return None;
+                }
+            }
+
+            Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
                 callers: vec![], // No deeper recursion to prevent infinite loops
-            }
+            })
         })
         .collect()
 }
