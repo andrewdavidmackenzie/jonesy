@@ -125,7 +125,7 @@ pub fn build_call_tree_parallel(
 }
 
 /// Sequential version for recursion within parallel branches.
-fn build_call_tree_sequential(
+pub fn build_call_tree_sequential(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
@@ -160,7 +160,7 @@ fn build_call_tree_sequential(
 /// Build shallow caller nodes without recursion.
 /// Used when a function was already visited through another path.
 /// This ensures we still capture caller relationships even for visited functions.
-fn build_shallow_callers(call_graph: &CallGraph<'_>, target_addr: u64) -> Vec<CallTreeNode> {
+pub fn build_shallow_callers(call_graph: &CallGraph<'_>, target_addr: u64) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
         .iter()
@@ -198,10 +198,10 @@ pub struct CrateCodePoint {
 }
 
 /// Key for identifying a code point: (file, line)
-type CodePointKey = (String, u32);
+pub type CodePointKey = (String, u32);
 
 /// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic, called_function)
-type CodePointInfo = (
+pub type CodePointInfo = (
     String,
     Option<u32>,
     HashSet<PanicCause>,
@@ -211,7 +211,7 @@ type CodePointInfo = (
 );
 
 /// Map of code points: key -> info
-type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
+pub type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
 
 /// Check if a function name represents a panic-triggering function.
 /// These are functions that directly cause a panic (unwrap, expect, panic!, etc.)
@@ -386,7 +386,7 @@ pub fn collect_crate_code_points_hierarchical(
 /// Also detects panic causes from function names in the call path.
 /// Tracks `immediate_callee` to determine if panic is direct (calling unwrap/expect directly)
 /// or indirect (calling a function that eventually panics).
-fn collect_crate_relationships(
+pub fn collect_crate_relationships(
     node: &CallTreeNode,
     crate_src_path: &str,
     points: &mut CodePointMap,
@@ -521,7 +521,7 @@ fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
 /// A point is kept if ANY of its causes is denied.
 /// Also removes allowed causes from the causes set so only denied causes are displayed.
 /// If a point has no causes, it's kept (conservative - assume denied).
-fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
+pub fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
     use crate::inline_allows::check_inline_allow;
 
     points.retain_mut(|point| {
