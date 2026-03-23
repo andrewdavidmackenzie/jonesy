@@ -5,8 +5,8 @@
 
 use crate::args::OutputFormat;
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel,
-    collect_crate_code_points, prune_call_tree,
+    AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
+    collect_crate_code_points,
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
@@ -261,28 +261,28 @@ pub fn analyze_macho(
     let visited = Arc::new(DashSet::new());
     visited.insert(target_addr);
 
-    // Build the call tree in parallel
+    // Build the call tree in parallel with early filtering
+    // When crate_src_path is provided, nodes are filtered during construction
+    // to avoid creating nodes that would be pruned (eliminating separate prune step)
     let spinner = create_spinner(show_progress, "Building call tree...");
     let step_start = Instant::now();
-    root.callers = build_call_tree_parallel(&call_graph, target_addr, &visited);
+    root.callers = build_call_tree_parallel_filtered(
+        &call_graph,
+        target_addr,
+        &visited,
+        crate_src_path,
+        valid_files.as_ref(),
+    );
     let nodes_visited = visited.len();
     finish_spinner(
         spinner,
         &format!("Built call tree ({} nodes)", nodes_visited),
     );
     if show_timings {
-        eprintln!("  [timing] Build call tree: {:?}", step_start.elapsed());
-    }
-
-    // Prune to only show paths leading to user code
-    let spinner = create_spinner(show_progress, "Pruning to crate code...");
-    let step_start = Instant::now();
-    if let Some(crate_path) = crate_src_path {
-        prune_call_tree(&mut root, crate_path, valid_files.as_ref());
-    }
-    finish_spinner(spinner, "Pruning complete");
-    if show_timings {
-        eprintln!("  [timing] Prune call tree: {:?}", step_start.elapsed());
+        eprintln!(
+            "  [timing] Build call tree (with pruning): {:?}",
+            step_start.elapsed()
+        );
     }
 
     // Always collect code points for unified output handling in main
