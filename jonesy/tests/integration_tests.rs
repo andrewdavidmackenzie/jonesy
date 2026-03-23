@@ -1089,3 +1089,4 @@ fn test_indirect_panic_shows_called_function() {
          Expected suggestion containing: 'This calls `func_name`...'"
     );
 }
+

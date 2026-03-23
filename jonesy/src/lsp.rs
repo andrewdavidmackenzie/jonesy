@@ -1078,11 +1078,6 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     let mut member_src_paths = Vec::new();
     let mut targets = Vec::new();
 
-    let workspace_root_name = workspace_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-
     // Get workspace members
     if let Some(workspace) = &manifest.workspace {
         for member in &workspace.members {
@@ -1106,11 +1101,9 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
         }
     } else if let Some(pkg) = &manifest.package {
         // Single crate, not a workspace
-        if workspace_root_name.is_empty() {
-            member_src_paths.push("src/".to_string());
-        } else {
-            member_src_paths.push(format!("{}/src/", workspace_root_name));
-        }
+        // Use "src/" without crate name prefix - DWARF debug info contains relative
+        // paths like "src/main.rs", not "crate_name/src/main.rs"
+        member_src_paths.push("src/".to_string());
         members.push(pkg.name.clone());
     }
 
