@@ -1,5 +1,12 @@
+// macOS-only imports for Mach-O binary analysis
+#[cfg(target_os = "macos")]
 use goblin::mach::Mach::{Binary, Fat};
+#[cfg(target_os = "macos")]
 use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_macho};
+#[cfg(target_os = "macos")]
+use jonesy::sym::{SymbolTable, read_symbols};
+
+// Cross-platform imports
 use jonesy::args::{Args, VERSION, WorkspaceMember, parse_args};
 use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use jonesy::cargo::{
@@ -11,7 +18,6 @@ use jonesy::json_output::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
 use jonesy::lsp;
-use jonesy::sym::{SymbolTable, read_symbols};
 use jonesy::text_output::generate_text_output;
 use rayon::prelude::*;
 use std::error::Error;

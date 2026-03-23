@@ -840,7 +840,7 @@ pub(crate) fn has_dwarf_info(macho: &MachO) -> bool {
 /// Returns the first symbol found whose name matches the given regex pattern.
 /// The pattern is matched against the demangled symbol name.
 /// Example: "rust_panic$" matches symbols ending in "rust_panic"
-pub(crate) fn find_symbol_containing(
+pub fn find_symbol_containing(
     macho: &MachO,
     pattern: &str,
 ) -> Result<Option<(String, String)>, regex::Error> {
@@ -862,7 +862,7 @@ pub(crate) fn find_symbol_containing(
 // TODO Restrict this to text segments?
 /// Returns the address of the first defined symbol found whose name matches `name` exactly.
 /// Skips undefined/import symbols which have n_value == 0.
-pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
+pub fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
     let symbols = macho.symbols.as_ref()?;
     for symbol in symbols.iter() {
         if let Ok((sym_name, nlist)) = symbol
