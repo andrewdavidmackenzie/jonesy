@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'jonesy/Cargo.toml'
+
+jobs:
+  release:
+    runs-on: macos-14  # ARM64 runner (M1)
+    permissions:
+      contents: write  # Required for creating releases
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version' jonesy/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Check if release exists
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release v${{ steps.version.outputs.version }} already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Release v${{ steps.version.outputs.version }} does not exist, will create"
+          fi
+
+      - name: Install Rust
+        if: steps.check_release.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        if: steps.check_release.outputs.exists == 'false'
+        run: cargo build --release -p jonesy
+
+      - name: Package binary for cargo-binstall
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          # cargo-binstall expects: {name}-{target}.tar.gz
+          TARGET="aarch64-apple-darwin"
+          mkdir -p dist
+          cp target/release/jonesy dist/
+          cd dist
+          tar -czvf "jonesy-${TARGET}.tar.gz" jonesy
+          # Also create a simple binary for direct download
+          cp jonesy "jonesy-macos-arm64"
+
+      - name: Create release
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            dist/jonesy-aarch64-apple-darwin.tar.gz \
+            dist/jonesy-macos-arm64
+
+      - name: Release summary
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          echo "::notice::Created release v${{ steps.version.outputs.version }}"
+          echo ""
+          echo "Install with cargo-binstall:"
+          echo "  cargo binstall jonesy"
+          echo ""
+          echo "Or download directly:"
+          echo "  curl -LO https://github.com/andrewdavidmackenzie/jonesy/releases/download/v${{ steps.version.outputs.version }}/jonesy-macos-arm64"
+          echo "  chmod +x jonesy-macos-arm64"

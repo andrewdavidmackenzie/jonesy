@@ -11,9 +11,39 @@ cross-platform and multi-architecture in the future, but will probably need help
 
 ## Installation
 
+### Via cargo-binstall (recommended, fastest)
+
 ```bash
+cargo binstall jonesy
+```
+
+This downloads a pre-built binary from GitHub releases.
+
+### Via cargo install (from crates.io)
+
+```bash
+cargo install jonesy
+```
+
+### From source
+
+```bash
+git clone https://github.com/andrewdavidmackenzie/jonesy
+cd jonesy
 cargo install --path jonesy
 ```
+
+### Direct download
+
+Download the latest release from [GitHub Releases](https://github.com/andrewdavidmackenzie/jonesy/releases):
+
+```bash
+curl -LO https://github.com/andrewdavidmackenzie/jonesy/releases/latest/download/jonesy-macos-arm64
+chmod +x jonesy-macos-arm64
+mv jonesy-macos-arm64 /usr/local/bin/jonesy
+```
+
+> **Note:** Currently only macOS ARM64 (Apple Silicon) is supported.
 
 ## Usage
 
