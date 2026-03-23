@@ -354,7 +354,7 @@ impl FullLineTable {
     pub fn build<R: Reader>(dwarf: &Dwarf<R>) -> Result<Self, gimli::Error> {
         let mut entries = Vec::new();
         let mut file_pool = Vec::new();
-        let mut file_to_id: HashMap<String, u32> = HashMap::new();
+        let mut file_to_id: ahash::AHashMap<String, u32> = ahash::AHashMap::new();
 
         let mut units = dwarf.units();
         while let Some(header) = units.next()? {
@@ -413,8 +413,9 @@ impl FullLineTable {
             }
         }
 
-        // Sort by address for binary search (stable sort preserves unit order)
-        entries.sort_by_key(|e| e.address);
+        // Sort by address for binary search (parallel sort for large datasets)
+        use rayon::prelude::*;
+        entries.par_sort_by_key(|e| e.address);
 
         Ok(Self { entries, file_pool })
     }
@@ -461,7 +462,7 @@ impl FullLineTable {
         let mut crate_entries = Vec::new();
         let mut full_entries = Vec::new();
         let mut file_pool = Vec::new();
-        let mut file_to_id: HashMap<String, u32> = HashMap::new();
+        let mut file_to_id: ahash::AHashMap<String, u32> = ahash::AHashMap::new();
 
         let mut units = dwarf.units();
         while let Some(header) = units.next()? {
@@ -530,9 +531,12 @@ impl FullLineTable {
             }
         }
 
-        // Sort both by address
-        crate_entries.sort_by_key(|e| e.address);
-        full_entries.sort_by_key(|e| e.address);
+        // Sort both by address in parallel
+        use rayon::prelude::*;
+        rayon::join(
+            || crate_entries.par_sort_by_key(|e| e.address),
+            || full_entries.par_sort_by_key(|e| e.address),
+        );
 
         Ok((
             CrateLineTable {
