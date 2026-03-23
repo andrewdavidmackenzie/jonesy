@@ -1852,18 +1852,23 @@ fn process_instruction_data_with_crate_table<'a>(
         // Get source location using O(log n) binary search on pre-built table
         let func_file = function_index.get_file(func).map(|s| s.to_string());
         let func_line = function_index.get_line(func);
-        let (file, mut line, mut column) = if func_file.is_some() && func_line.is_some() {
-            // Fast path: use DWARF function info directly
-            (func_file.clone(), func_line, None)
-        } else {
-            // Fast path: use pre-built full line table for O(log n) lookup
-            let (line_file, line_line, line_column) =
-                full_line_table.get_source_location(func.start_address);
-            (
-                func_file.clone().or(line_file),
-                func_line.or(line_line),
-                line_column,
-            )
+        // Clone once for caller_file, then move func_file into match
+        let caller_file = func_file.clone();
+        let (file, mut line, mut column) = match (func_file, func_line) {
+            (Some(f), Some(l)) => {
+                // Fast path: use DWARF function info directly
+                (Some(f), Some(l), None)
+            }
+            (func_file, func_line) => {
+                // Use pre-built full line table for O(log n) lookup
+                let (line_file, line_line, line_column) =
+                    full_line_table.get_source_location(func.start_address);
+                (
+                    func_file.or(line_file),
+                    func_line.or(line_line),
+                    line_column,
+                )
+            }
         };
 
         // For functions in the crate source, find actual call line using pre-built table
@@ -1909,7 +1914,7 @@ fn process_instruction_data_with_crate_table<'a>(
             CallerInfo {
                 caller_name: display_name,
                 caller_start_address: func.start_address,
-                caller_file: func_file.clone(),
+                caller_file,
                 call_site_addr: data.address,
                 file,
                 line,
