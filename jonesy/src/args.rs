@@ -131,7 +131,7 @@ impl OutputFormat {
 
 /// Represents a workspace member crate with its binaries
 #[derive(Debug)]
-pub(crate) struct WorkspaceMember {
+pub struct WorkspaceMember {
     /// Name of the member crate
     pub name: String,
     /// Path to the member crate directory
@@ -141,7 +141,7 @@ pub(crate) struct WorkspaceMember {
 }
 
 /// Parsed command line arguments
-pub(crate) struct Args {
+pub struct Args {
     /// Paths to binaries to analyze (for non-workspace mode)
     pub binaries: Vec<PathBuf>,
     /// Workspace members to analyze (for workspace mode)
@@ -178,7 +178,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// --max-threads N  Maximum threads for parallel analysis (default: number of CPUs)
 /// --config <path>  Path to a TOML config file for allow/deny rules
 /// --version        Print version and exit
-pub(crate) fn parse_args(args: &[String]) -> Result<Args, String> {
+pub fn parse_args(args: &[String]) -> Result<Args, String> {
     // Handle --version flag early
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("jonesy {}", VERSION);

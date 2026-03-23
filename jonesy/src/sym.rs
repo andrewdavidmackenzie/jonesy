@@ -789,7 +789,7 @@ impl DebugInfo {
     }
 }
 
-pub(crate) fn read_symbols(buffer: &'_ [u8]) -> io::Result<SymbolTable<'_>> {
+pub fn read_symbols(buffer: &'_ [u8]) -> io::Result<SymbolTable<'_>> {
     // Use goblin's Object::parse to auto-detect the file type
     match Object::parse(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
         Object::Mach(mach) => Ok(SymbolTable::MachO(mach)),
@@ -840,7 +840,7 @@ pub(crate) fn has_dwarf_info(macho: &MachO) -> bool {
 /// Returns the first symbol found whose name matches the given regex pattern.
 /// The pattern is matched against the demangled symbol name.
 /// Example: "rust_panic$" matches symbols ending in "rust_panic"
-pub(crate) fn find_symbol_containing(
+pub fn find_symbol_containing(
     macho: &MachO,
     pattern: &str,
 ) -> Result<Option<(String, String)>, regex::Error> {
@@ -862,7 +862,7 @@ pub(crate) fn find_symbol_containing(
 // TODO Restrict this to text segments?
 /// Returns the address of the first defined symbol found whose name matches `name` exactly.
 /// Skips undefined/import symbols which have n_value == 0.
-pub(crate) fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
+pub fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
     let symbols = macho.symbols.as_ref()?;
     for symbol in symbols.iter() {
         if let Ok((sym_name, nlist)) = symbol
@@ -904,46 +904,92 @@ fn find_segment<'a>(macho: &'a MachO, segment_name: &str) -> Option<&'a Segment<
     None
 }
 
+/// Entry in the symbol index with lazy demangling.
+/// Stores mangled name and caches demangled result on first access.
+/// Uses OnceLock for thread-safe lazy initialization (required for rayon).
+struct SymbolEntry {
+    address: u64,
+    /// Mangled symbol name (without leading underscore)
+    mangled: String,
+    /// Lazily computed demangled name (thread-safe)
+    demangled: std::sync::OnceLock<String>,
+}
+
+impl SymbolEntry {
+    fn new(address: u64, mangled: String) -> Self {
+        Self {
+            address,
+            mangled,
+            demangled: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Get the demangled name, computing it lazily on first access.
+    fn demangled(&self) -> &str {
+        self.demangled
+            .get_or_init(|| format!("{:#}", demangle(&self.mangled)))
+    }
+}
+
+impl std::fmt::Debug for SymbolEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SymbolEntry")
+            .field("address", &self.address)
+            .field("mangled", &self.mangled)
+            .field("demangled", &self.demangled.get())
+            .finish()
+    }
+}
+
 /// Precomputed sorted symbol index for efficient function lookups.
 /// Build once with `SymbolIndex::new()` and reuse for many lookups.
+/// Uses lazy demangling to avoid upfront cost of demangling all symbols.
 #[derive(Debug)]
-pub(crate) struct SymbolIndex {
-    /// Sorted by address: (func_addr, demangled_name)
-    /// Owns the strings so CallGraph can borrow from it
-    functions: Vec<(u64, String)>,
+pub struct SymbolIndex {
+    /// Sorted by address, with lazy demangling
+    entries: Vec<SymbolEntry>,
 }
 
 impl SymbolIndex {
     /// Build a symbol index from a MachO binary. Call once, reuse for many lookups.
+    /// Symbol names are demangled lazily on first access for better performance.
+    /// Uses parallel sorting for large symbol tables.
     pub fn new(macho: &MachO) -> Option<Self> {
+        use rayon::prelude::*;
+
         let symbols = macho.symbols.as_ref()?;
 
-        // Collect and sort function symbols with their addresses
-        // Note: We allow n_value == 0 for symbols at the start of a section,
-        // but filter out undefined symbols using is_undefined()
-        let mut functions: Vec<(u64, String)> = symbols
+        // First pass: collect raw symbol data (sequential - iterator not Send)
+        let raw_symbols: Vec<(u64, &str)> = symbols
             .iter()
             .filter_map(|s| s.ok())
             .filter(|(name, nlist)| !nlist.is_undefined() && !name.is_empty())
-            .map(|(name, nlist)| {
+            .map(|(name, nlist)| (nlist.n_value, name))
+            .collect();
+
+        // Second pass: process in parallel (strip prefix, create entries)
+        let mut entries: Vec<SymbolEntry> = raw_symbols
+            .par_iter()
+            .map(|(addr, name)| {
                 let stripped = name.strip_prefix("_").unwrap_or(name);
-                let demangled = format!("{:#}", demangle(stripped));
-                (nlist.n_value, demangled)
+                SymbolEntry::new(*addr, stripped.to_string())
             })
             .collect();
 
-        functions.sort_by_key(|(a, _)| *a);
-        Some(Self { functions })
+        // Parallel sort by address
+        entries.par_sort_by_key(|e| e.address);
+        Some(Self { entries })
     }
 
     /// Find the function containing `addr` using binary search.
     /// Returns a borrowed reference to the name (caller must ensure SymbolIndex outlives usage).
+    /// Demangling is performed lazily on first access to each symbol.
     pub fn find_containing(&self, addr: u64) -> Option<(u64, &str)> {
         // Binary search for the largest address <= addr
-        match self.functions.binary_search_by_key(&addr, |(a, _)| *a) {
-            Ok(i) => Some((self.functions[i].0, &self.functions[i].1)),
+        match self.entries.binary_search_by_key(&addr, |e| e.address) {
+            Ok(i) => Some((self.entries[i].address, self.entries[i].demangled())),
             Err(0) => None, // addr is before all functions
-            Err(i) => Some((self.functions[i - 1].0, &self.functions[i - 1].1)),
+            Err(i) => Some((self.entries[i - 1].address, self.entries[i - 1].demangled())),
         }
     }
 }
