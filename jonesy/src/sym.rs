@@ -619,7 +619,7 @@ impl StringTables {
 
 /// Function info extracted from DWARF of the calling function.
 /// Uses indices into StringTables for compact memory layout (32 bytes).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct FunctionInfo {
     /// Start address of the function
     pub start_address: u64,
