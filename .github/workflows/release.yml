@@ -9,6 +9,8 @@ on:
 jobs:
   release:
     runs-on: macos-14  # ARM64 runner (M1)
+    permissions:
+      contents: write  # Required for creating releases
     steps:
       - uses: actions/checkout@v4
 
