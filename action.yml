@@ -56,23 +56,32 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       run: |
         set +e
+        # Capture output to parse panic count (exit codes are limited to 0-255)
         if [ -n "${{ inputs.binary }}" ]; then
-          jonesy --no-hyperlinks ${{ inputs.extra-args }} "${{ inputs.binary }}"
+          output=$(jonesy --no-hyperlinks ${{ inputs.extra-args }} "${{ inputs.binary }}" 2>&1)
         else
-          jonesy --no-hyperlinks ${{ inputs.extra-args }}
+          output=$(jonesy --no-hyperlinks ${{ inputs.extra-args }} 2>&1)
         fi
         exit_code=$?
-        echo "panic-count=$exit_code" >> $GITHUB_OUTPUT
+        echo "$output"
+
+        # Parse panic count from output: "Panic points: X in Y file(s)"
+        # This handles counts > 255 which would wrap in exit codes
+        panic_count=$(echo "$output" | grep -oE "Panic points: [0-9]+" | grep -oE "[0-9]+" | tail -1)
+        if [ -z "$panic_count" ]; then
+          panic_count=$exit_code  # Fallback to exit code if parsing fails
+        fi
+        echo "panic-count=$panic_count" >> $GITHUB_OUTPUT
 
         # Show summary in job output
-        if [ $exit_code -eq 0 ]; then
+        if [ "$panic_count" -eq 0 ] 2>/dev/null; then
           echo "::notice::✅ No panic points found"
         else
-          echo "::warning::Found $exit_code panic point(s). See annotations above for details."
+          echo "::warning::Found $panic_count panic point(s). See annotations above for details."
         fi
 
-        if [ "${{ inputs.fail-on-panic }}" = "true" ] && [ $exit_code -gt 0 ]; then
-          echo "::error::Build failed: Found $exit_code panic point(s)"
+        if [ "${{ inputs.fail-on-panic }}" = "true" ] && [ "$panic_count" -gt 0 ] 2>/dev/null; then
+          echo "::error::Build failed: Found $panic_count panic point(s)"
           exit 1
         fi
         exit 0
