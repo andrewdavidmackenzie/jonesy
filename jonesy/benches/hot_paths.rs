@@ -22,8 +22,9 @@ use jonesy::analysis::{PANIC_SYMBOL_PATTERNS, analyze_macho};
 use jonesy::args::OutputFormat;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{
-    CallTreeNode, CodePointMap, build_call_tree_parallel, build_call_tree_sequential,
-    build_shallow_callers, collect_crate_relationships, filter_allowed_causes, prune_call_tree,
+    CallTreeNode, CodePointMap, build_call_tree_parallel, build_call_tree_parallel_filtered,
+    build_call_tree_sequential, build_shallow_callers, collect_crate_relationships,
+    filter_allowed_causes,
 };
 #[cfg(target_os = "macos")]
 use jonesy::config::Config;
@@ -137,14 +138,14 @@ fn bench_find_function_name(c: &mut Criterion) {
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         // Build function index from DWARF
-        let (functions, inlined) = match get_functions_from_dwarf(macho, &buffer) {
+        let (functions, inlined, strings) = match get_functions_from_dwarf(macho, &buffer) {
             Ok(result) => result,
             Err(_) => {
                 eprintln!("Skipping find_function_name benchmark: no DWARF info");
                 return;
             }
         };
-        let func_index = FunctionIndex::new_with_inlined(functions, inlined);
+        let func_index = FunctionIndex::new_with_inlined(functions, inlined, strings);
 
         // Get some sample addresses to look up
         let sample_addrs: Vec<u64> = macho
@@ -176,65 +177,12 @@ fn bench_find_function_name(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Hot Function #2: prune_call_tree (97 samples)
+// Hot Function #2: prune_call_tree - REMOVED (replaced by filtered tree building in PR #152)
 // ============================================================================
 #[cfg(target_os = "macos")]
-fn bench_prune_call_tree(c: &mut Criterion) {
-    ensure_jonesy_debug_built();
-
-    let root = workspace_root();
-    let binary_path = root.join("target/debug/jonesy");
-
-    if !binary_path.exists() {
-        eprintln!("Skipping prune_call_tree benchmark: jonesy binary not found");
-        return;
-    }
-
-    let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
-
-    if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let mut panic_addr = 0u64;
-        let mut panic_name = "rust_panic".to_string();
-        for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
-            {
-                panic_addr = addr;
-                panic_name = sym;
-                break;
-            }
-        }
-
-        if panic_addr == 0 {
-            eprintln!("Skipping prune_call_tree benchmark: no panic symbol found");
-            return;
-        }
-
-        let symbol_index = SymbolIndex::new(macho);
-        let call_graph = CallGraph::build_with_debug_info(
-            macho,
-            &buffer,
-            macho,
-            &buffer,
-            Some("jonesy/src/"),
-            false,
-            symbol_index.as_ref(),
-        )
-        .expect("Failed to build call graph");
-
-        let visited = Arc::new(DashSet::new());
-
-        c.bench_function("prune_call_tree_jonesy", |b| {
-            b.iter(|| {
-                let mut root_node = CallTreeNode::new_root(panic_name.clone());
-                visited.clear();
-                root_node.callers = build_call_tree_parallel(&call_graph, panic_addr, &visited);
-                prune_call_tree(&mut root_node, "jonesy/src/", None);
-                black_box(root_node)
-            })
-        });
-    }
+fn bench_prune_call_tree(_c: &mut Criterion) {
+    // prune_call_tree was removed in PR #152 - replaced by build_call_tree_parallel_filtered
+    // which filters during construction instead of pruning after
 }
 
 // ============================================================================
@@ -378,12 +326,17 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
         )
         .expect("Failed to build call graph");
 
+        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
         let visited = Arc::new(DashSet::new());
         let mut root_node = CallTreeNode::new_root(panic_name);
-        root_node.callers = build_call_tree_parallel(&call_graph, panic_addr, &visited);
-        prune_call_tree(&mut root_node, "jonesy/src/", None);
-
-        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+        // Use filtered tree building instead of separate prune step
+        root_node.callers = build_call_tree_parallel_filtered(
+            &call_graph,
+            panic_addr,
+            &visited,
+            Some("jonesy/src/"),
+            Some(&valid_files),
+        );
 
         c.bench_function("collect_crate_relationships_jonesy", |b| {
             b.iter(|| {
@@ -768,7 +721,7 @@ criterion_group!(
     bench_e2e_analysis,
     // Top 20 hot functions (using jonesy 33MB binary)
     bench_find_function_name,              // #1: 106 samples
-    bench_prune_call_tree,                 // #2: 97 samples
+    bench_prune_call_tree,                 // #2: REMOVED (PR #152)
     bench_build_call_tree_sequential,      // #3: 92 samples
     bench_matches_crate_pattern_validated, // #4: 76 samples
     bench_collect_crate_relationships,     // #5: 69 samples
