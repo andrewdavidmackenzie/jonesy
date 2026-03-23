@@ -134,13 +134,17 @@ runs:
             if .panic_points then .panic_points[]
             elif .workspace then .workspace.members[].panic_points[]
             else empty end
-            | {file: .file, line: .line, column: (.column // 1), cause: (.causes[0].description // "unknown"), code: (.causes[0].code // "-")}
+            | {file: .file, line: .line, column: (.column // 1), cause: (.causes[0].description // "unknown"), code: (.causes[0].code // "-"), docs_url: (.causes[0].docs_url // "")}
           ' "$json_file" 2>/dev/null > /tmp/panic_points.json
+
+          # Get repo info for source links
+          repo="${{ github.repository }}"
+          sha="${{ github.event.pull_request.head.sha }}"
 
           # Group by file and generate sections
           files=$(jq -rs '[.[].file] | unique | .[]' /tmp/panic_points.json 2>/dev/null)
           for file in $files; do
-            # Make path relative if it starts with workspace
+            # Make path relative for display and links
             display_file=$(echo "$file" | sed 's|.*/\(src/.*\)|\1|' | sed 's|^/[^/]*/[^/]*/[^/]*/[^/]*/||')
             count=$(jq -rs --arg f "$file" '[.[] | select(.file == $f)] | length' /tmp/panic_points.json)
             comment+="<details>\n"
@@ -148,10 +152,11 @@ runs:
             comment+="| Line | Cause | Code |\n"
             comment+="|------|-------|------|\n"
 
-            # Get panic points for this file (limit to 50)
-            rows=$(jq -rs --arg f "$file" '
+            # Get panic points for this file (limit to 50) with links
+            rows=$(jq -rs --arg f "$file" --arg repo "$repo" --arg sha "$sha" --arg display "$display_file" '
               [.[] | select(.file == $f)][:50]
-              | .[] | "| \(.line):\(.column) | \(.cause) | \(.code) |"
+              | .[]
+              | "| [\(.line):\(.column)](https://github.com/\($repo)/blob/\($sha)/\($display)#L\(.line)) | \(.cause) | \(if .docs_url != "" then "[\(.code)](\(.docs_url))" else .code end) |"
             ' /tmp/panic_points.json 2>/dev/null)
             comment+="$rows\n"
             comment+="\n</details>\n\n"
