@@ -113,8 +113,9 @@ runs:
         fi
 
         # Parse JSON and generate markdown
-        panic_count=$(jq -r '.summary.panic_points // 0' "$json_file")
-        file_count=$(jq -r '.summary.files_affected // 0' "$json_file")
+        # Handle both single-project (.panic_points) and workspace (.workspace.members[].panic_points) formats
+        panic_count=$(jq -r '.summary.panic_points // .summary.total_panic_points // 0' "$json_file")
+        file_count=$(jq -r '.summary.files_affected // .summary.total_files_affected // 0' "$json_file")
         version=$(jq -r '.jonesy_version // "unknown"' "$json_file")
 
         # Build comment body
@@ -126,25 +127,36 @@ runs:
         else
           comment+="Found **$panic_count panic point(s)** in **$file_count file(s)**\n\n"
 
-          # Group by file with expandable sections
-          files=$(jq -r '.code_points | group_by(.file) | .[] | .[0].file' "$json_file" 2>/dev/null | sort -u)
+          # Extract panic points - handle both formats
+          # Single project: .panic_points[]
+          # Workspace: .workspace.members[].panic_points[]
+          jq -r '
+            if .panic_points then .panic_points[]
+            elif .workspace then .workspace.members[].panic_points[]
+            else empty end
+            | {file: .file, line: .line, column: (.column // 1), cause: (.causes[0].description // "unknown"), code: (.causes[0].code // "-")}
+          ' "$json_file" 2>/dev/null > /tmp/panic_points.json
+
+          # Group by file and generate sections
+          files=$(jq -rs '[.[].file] | unique | .[]' /tmp/panic_points.json 2>/dev/null)
           for file in $files; do
-            # Count panics in this file
-            count=$(jq -r --arg f "$file" '[.code_points[] | select(.file == $f)] | length' "$json_file")
+            # Make path relative if it starts with workspace
+            display_file=$(echo "$file" | sed 's|.*/\(src/.*\)|\1|' | sed 's|^/[^/]*/[^/]*/[^/]*/[^/]*/||')
+            count=$(jq -rs --arg f "$file" '[.[] | select(.file == $f)] | length' /tmp/panic_points.json)
             comment+="<details>\n"
-            comment+="<summary><code>$file</code> ($count panic points)</summary>\n\n"
+            comment+="<summary><code>$display_file</code> ($count panic points)</summary>\n\n"
             comment+="| Line | Cause | Code |\n"
             comment+="|------|-------|------|\n"
 
-            # Get panic points for this file
-            jq -r --arg f "$file" '.code_points[] | select(.file == $f) | "| \(.line):\(.column // 1) | \(.causes[0].cause // "unknown") | \(.causes[0].code // "-") |"' "$json_file" 2>/dev/null | head -50 >> /tmp/comment_rows.txt
-            cat /tmp/comment_rows.txt >> /tmp/comment_body.txt
-            rm -f /tmp/comment_rows.txt
-
-            comment+=$(cat /tmp/comment_body.txt 2>/dev/null || echo "")
-            rm -f /tmp/comment_body.txt
+            # Get panic points for this file (limit to 50)
+            rows=$(jq -rs --arg f "$file" '
+              [.[] | select(.file == $f)][:50]
+              | .[] | "| \(.line):\(.column) | \(.cause) | \(.code) |"
+            ' /tmp/panic_points.json 2>/dev/null)
+            comment+="$rows\n"
             comment+="\n</details>\n\n"
           done
+          rm -f /tmp/panic_points.json
         fi
 
         comment+="\n---\n"
