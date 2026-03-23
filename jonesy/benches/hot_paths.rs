@@ -13,9 +13,11 @@ use std::process::Command;
 
 // macOS-only imports for micro-benchmarks
 #[cfg(target_os = "macos")]
-use std::fs;
+use dashmap::DashSet;
 #[cfg(target_os = "macos")]
-use jonesy::analysis::{analyze_macho, PANIC_SYMBOL_PATTERNS};
+use goblin::mach::Mach::Binary;
+#[cfg(target_os = "macos")]
+use jonesy::analysis::{PANIC_SYMBOL_PATTERNS, analyze_macho};
 #[cfg(target_os = "macos")]
 use jonesy::args::OutputFormat;
 #[cfg(target_os = "macos")]
@@ -23,11 +25,11 @@ use jonesy::call_tree::{CallTreeNode, build_call_tree_parallel, prune_call_tree}
 #[cfg(target_os = "macos")]
 use jonesy::config::Config;
 #[cfg(target_os = "macos")]
-use jonesy::sym::{CallGraph, SymbolIndex, SymbolTable, find_symbol_address, find_symbol_containing, read_symbols};
+use jonesy::sym::{
+    CallGraph, SymbolIndex, SymbolTable, find_symbol_address, find_symbol_containing, read_symbols,
+};
 #[cfg(target_os = "macos")]
-use dashmap::DashSet;
-#[cfg(target_os = "macos")]
-use goblin::mach::Mach::Binary;
+use std::fs;
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
 
