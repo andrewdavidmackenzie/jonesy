@@ -577,6 +577,21 @@ jobs:
 | `working-directory` | Directory to run analysis in | `.` |
 | `binary` | Specific binary to analyze | auto-detect |
 | `extra-args` | Additional arguments to pass to jonesy | |
+| `comment-on-pr` | Post a summary comment on pull requests | `true` |
+
+### Permissions
+
+To post PR comments, your workflow needs `pull-requests: write` permission:
+
+```yaml
+jobs:
+  analyze:
+    runs-on: macos-latest
+    permissions:
+      pull-requests: write
+    steps:
+      # ...
+```
 
 ### Action Outputs
 
