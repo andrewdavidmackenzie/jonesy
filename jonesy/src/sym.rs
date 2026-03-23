@@ -564,20 +564,33 @@ pub struct FunctionInfo {
     pub line: Option<u32>,
 }
 
+/// Bucket size for spatial partitioning of inlined functions.
+/// Using 64 bytes provides fine-grained partitioning with low per-bucket counts.
+const INLINED_BUCKET_SHIFT: u32 = 6; // 2^6 = 64 bytes
+const INLINED_BUCKET_SIZE: u64 = 1 << INLINED_BUCKET_SHIFT;
+
 /// Index for O(log n) function lookup by address.
 /// Functions are sorted by start_address for binary search.
-/// Note: This assumes function ranges are non-overlapping. Overlapping ranges
-/// from DWARF debug info may cause incorrect lookups.
+/// Inlined functions use bucketed lookup for faster searches.
 #[derive(Debug)]
 pub struct FunctionIndex {
     /// Functions sorted by start_address (non-inlined subprograms)
     functions: Vec<FunctionInfo>,
-    /// Inlined functions sorted by start_address.
-    /// These have smaller address ranges within their containing functions.
+    /// Inlined functions (stored for ownership)
     inlined: Vec<FunctionInfo>,
+    /// Bucketed index for fast inlined function lookup.
+    /// Maps bucket_id -> indices into `inlined` vec.
+    /// Each function appears in all buckets its address range spans.
+    inlined_buckets: HashMap<u64, Vec<usize>>,
 }
 
 impl FunctionIndex {
+    /// Compute bucket ID for an address
+    #[inline]
+    fn bucket_id(addr: u64) -> u64 {
+        addr >> INLINED_BUCKET_SHIFT
+    }
+
     /// Build a function index from a list of functions.
     /// Sorts the functions by start_address for binary search.
     pub fn new(mut functions: Vec<FunctionInfo>) -> Self {
@@ -588,23 +601,38 @@ impl FunctionIndex {
         Self {
             functions,
             inlined: Vec::new(),
+            inlined_buckets: HashMap::new(),
         }
     }
 
     /// Build a function index with separate inlined function tracking.
-    pub fn new_with_inlined(
-        mut functions: Vec<FunctionInfo>,
-        mut inlined: Vec<FunctionInfo>,
-    ) -> Self {
+    /// Uses bucketed spatial partitioning for fast inlined function lookup.
+    pub fn new_with_inlined(mut functions: Vec<FunctionInfo>, inlined: Vec<FunctionInfo>) -> Self {
         functions.sort_by_key(|f| f.start_address);
-        inlined.sort_by_key(|f| f.start_address);
-        Self { functions, inlined }
+
+        // Build bucket index for inlined functions
+        // Each function is added to all buckets its address range spans
+        let mut inlined_buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (idx, func) in inlined.iter().enumerate() {
+            let start_bucket = Self::bucket_id(func.start_address);
+            let end_bucket = Self::bucket_id(func.end_address.saturating_sub(1));
+            for bucket in start_bucket..=end_bucket {
+                inlined_buckets.entry(bucket).or_default().push(idx);
+            }
+        }
+
+        Self {
+            functions,
+            inlined,
+            inlined_buckets,
+        }
     }
 
     /// Find the function containing the given address using binary search.
     /// Returns a reference to the function if found.
     /// Note: This returns the containing function, not inlined functions.
     /// Use `find_function_name` to get the most specific function name.
+    #[inline]
     pub fn find_containing(&self, addr: u64) -> Option<&FunctionInfo> {
         if self.functions.is_empty() {
             return None;
@@ -632,6 +660,7 @@ impl FunctionIndex {
     /// Find the most specific function name for an address.
     /// This checks inlined functions first (more specific), then falls back
     /// to the containing function. Use this when displaying function names.
+    #[inline]
     pub fn find_function_name(&self, addr: u64) -> Option<&str> {
         // First check inlined functions (more specific)
         if let Some(inlined) = self.find_in_inlined(addr) {
@@ -642,61 +671,20 @@ impl FunctionIndex {
     }
 
     /// Find an inlined function containing the given address.
+    /// Uses bucketed lookup for O(k) where k is functions in the bucket,
+    /// instead of O(n) scanning all inlined functions.
+    #[inline]
     fn find_in_inlined(&self, addr: u64) -> Option<&FunctionInfo> {
-        if self.inlined.is_empty() {
-            return None;
-        }
+        // Look up the bucket for this address
+        let bucket = Self::bucket_id(addr);
+        let indices = self.inlined_buckets.get(&bucket)?;
 
-        // Binary search for the largest start_address <= addr
-        let idx = match self
-            .inlined
-            .binary_search_by_key(&addr, |f| f.start_address)
-        {
-            Ok(i) => i,
-            Err(0) => return None,
-            Err(i) => i - 1,
-        };
-
-        // Check all entries that could contain addr - we want the smallest range
-        // (deepest inline frame). Since list is sorted by start_address only,
-        // we must check both backward and forward from idx.
+        // Search only functions in this bucket for the smallest containing range
         let mut best: Option<&FunctionInfo> = None;
         let mut best_size: u64 = u64::MAX;
 
-        // Check backward from idx (entries with start_address <= addr)
-        // Early termination: once start_address + best_size <= addr, no function
-        // starting there or earlier can be smaller than our best AND contain addr.
-        for i in (0..=idx).rev() {
-            let func = &self.inlined[i];
-
-            // Early termination: if we have a match and this function starts too early
-            // to possibly be smaller while still containing addr, stop searching
-            if best.is_some() && func.start_address.saturating_add(best_size) <= addr {
-                break;
-            }
-
-            // Skip functions that can't contain addr
-            if func.end_address <= addr {
-                continue;
-            }
-
-            if addr >= func.start_address {
-                let size = func.end_address - func.start_address;
-                if size < best_size {
-                    best = Some(func);
-                    best_size = size;
-                }
-            }
-        }
-
-        // Check forward for entries with same start_address as idx
-        // (siblings that binary search may have landed before)
-        let start_addr_at_idx = self.inlined[idx].start_address;
-        for i in (idx + 1)..self.inlined.len() {
-            let func = &self.inlined[i];
-            if func.start_address != start_addr_at_idx {
-                break; // Past entries with same start_address
-            }
+        for &idx in indices {
+            let func = &self.inlined[idx];
             if addr >= func.start_address && addr < func.end_address {
                 let size = func.end_address - func.start_address;
                 if size < best_size {
