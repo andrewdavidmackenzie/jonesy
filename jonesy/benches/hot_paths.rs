@@ -716,20 +716,17 @@ fn bench_analyze_macho(c: &mut Criterion) {
     c.bench_function("analyze_macho_jonesy", |b| {
         b.iter(|| {
             let symbols = read_symbols(&buffer).expect("Failed to read symbols");
-            match symbols {
-                SymbolTable::MachO(Binary(ref macho)) => {
-                    let result = analyze_macho(
-                        macho,
-                        &buffer,
-                        &binary_path,
-                        Some("jonesy/src/"),
-                        false,
-                        &config,
-                        &output,
-                    );
-                    black_box(result);
-                }
-                _ => {}
+            if let SymbolTable::MachO(Binary(ref macho)) = symbols {
+                let result = analyze_macho(
+                    macho,
+                    &buffer,
+                    &binary_path,
+                    Some("jonesy/src/"),
+                    false,
+                    &config,
+                    &output,
+                );
+                black_box(result);
             }
         })
     });
