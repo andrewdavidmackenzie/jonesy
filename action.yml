@@ -49,8 +49,15 @@ runs:
         exit_code=$?
         echo "panic-count=$exit_code" >> $GITHUB_OUTPUT
 
+        # Show summary in job output
+        if [ $exit_code -eq 0 ]; then
+          echo "::notice::✅ No panic points found"
+        else
+          echo "::warning::Found $exit_code panic point(s). See annotations above for details."
+        fi
+
         if [ "${{ inputs.fail-on-panic }}" = "true" ] && [ $exit_code -gt 0 ]; then
-          echo "::error::Found $exit_code panic point(s)"
+          echo "::error::Build failed: Found $exit_code panic point(s)"
           exit 1
         fi
         exit 0

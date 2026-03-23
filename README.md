@@ -527,10 +527,10 @@ on: [pull_request, push]
 
 jobs:
   analyze:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest  # jonesy currently requires macOS
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-action@stable
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Build project
         run: cargo build
