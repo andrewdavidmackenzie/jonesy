@@ -549,19 +549,88 @@ impl FullLineTable {
     }
 }
 
-/// Function info extracted from DWARF of the calling function
-#[derive(Debug, Clone, Default)]
+/// Interned string tables for function names and file paths.
+/// Reduces memory by deduplicating strings and enables compact FunctionInfo.
+#[derive(Debug, Default)]
+pub struct StringTables {
+    /// Deduplicated function names
+    names: Vec<String>,
+    /// Map for O(1) name lookup during interning
+    name_map: HashMap<String, u32>,
+    /// Deduplicated file paths
+    files: Vec<String>,
+    /// Map for O(1) file lookup during interning
+    file_map: HashMap<String, u32>,
+}
+
+impl StringTables {
+    /// Create empty string tables
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Intern a function name, returning its index.
+    /// If the name already exists, returns the existing index.
+    pub fn intern_name(&mut self, name: String) -> u32 {
+        if let Some(&idx) = self.name_map.get(&name) {
+            idx
+        } else {
+            let idx = self.names.len() as u32;
+            self.name_map.insert(name.clone(), idx);
+            self.names.push(name);
+            idx
+        }
+    }
+
+    /// Intern a file path, returning its index + 1.
+    /// Returns 0 for None. Index is offset by 1 to use 0 as sentinel.
+    pub fn intern_file(&mut self, file: Option<String>) -> u32 {
+        match file {
+            None => 0,
+            Some(f) => {
+                if let Some(&idx) = self.file_map.get(&f) {
+                    idx + 1 // Offset by 1 (0 = None)
+                } else {
+                    let idx = self.files.len() as u32;
+                    self.file_map.insert(f.clone(), idx);
+                    self.files.push(f);
+                    idx + 1 // Offset by 1 (0 = None)
+                }
+            }
+        }
+    }
+
+    /// Get a name by index
+    #[inline]
+    pub fn get_name(&self, idx: u32) -> &str {
+        &self.names[idx as usize]
+    }
+
+    /// Get a file by index (0 = None)
+    #[inline]
+    pub fn get_file(&self, idx: u32) -> Option<&str> {
+        if idx == 0 {
+            None
+        } else {
+            Some(&self.files[(idx - 1) as usize])
+        }
+    }
+}
+
+/// Function info extracted from DWARF of the calling function.
+/// Uses indices into StringTables for compact memory layout (32 bytes).
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FunctionInfo {
-    /// Demangled name of the calling function
-    pub name: String,
-    /// Start address of the calling function
+    /// Start address of the function
     pub start_address: u64,
-    /// End address of the calling function
+    /// End address of the function
     pub end_address: u64,
-    /// Source location of the calling function
-    pub file: Option<String>,
-    /// Line number of the calling function
-    pub line: Option<u32>,
+    /// Index into StringTables.names
+    pub name_idx: u32,
+    /// Index into StringTables.files (0 = None, otherwise idx + 1)
+    pub file_idx: u32,
+    /// Line number (0 = None)
+    pub line: u32,
 }
 
 /// Bucket size for spatial partitioning of inlined functions.
@@ -572,6 +641,7 @@ const INLINED_BUCKET_SIZE: u64 = 1 << INLINED_BUCKET_SHIFT;
 /// Index for O(log n) function lookup by address.
 /// Functions are sorted by start_address for binary search.
 /// Inlined functions use bucketed lookup for faster searches.
+/// Owns the StringTables for name/file lookups.
 #[derive(Debug)]
 pub struct FunctionIndex {
     /// Functions sorted by start_address (non-inlined subprograms)
@@ -582,6 +652,8 @@ pub struct FunctionIndex {
     /// Maps bucket_id -> indices into `inlined` vec.
     /// Each function appears in all buckets its address range spans.
     inlined_buckets: HashMap<u64, Vec<usize>>,
+    /// Interned strings for function names and file paths
+    strings: StringTables,
 }
 
 impl FunctionIndex {
@@ -593,7 +665,7 @@ impl FunctionIndex {
 
     /// Build a function index from a list of functions.
     /// Sorts the functions by start_address for binary search.
-    pub fn new(mut functions: Vec<FunctionInfo>) -> Self {
+    pub fn new(mut functions: Vec<FunctionInfo>, strings: StringTables) -> Self {
         functions.sort_by_key(|f| f.start_address);
         // Note: DWARF may have overlapping function ranges (e.g., from inlining).
         // We don't assert non-overlapping here because it's common in real binaries.
@@ -602,12 +674,17 @@ impl FunctionIndex {
             functions,
             inlined: Vec::new(),
             inlined_buckets: HashMap::new(),
+            strings,
         }
     }
 
     /// Build a function index with separate inlined function tracking.
     /// Uses bucketed spatial partitioning for fast inlined function lookup.
-    pub fn new_with_inlined(mut functions: Vec<FunctionInfo>, inlined: Vec<FunctionInfo>) -> Self {
+    pub fn new_with_inlined(
+        mut functions: Vec<FunctionInfo>,
+        inlined: Vec<FunctionInfo>,
+        strings: StringTables,
+    ) -> Self {
         functions.sort_by_key(|f| f.start_address);
 
         // Build bucket index for inlined functions
@@ -625,7 +702,31 @@ impl FunctionIndex {
             functions,
             inlined,
             inlined_buckets,
+            strings,
         }
+    }
+
+    /// Get the function name for a FunctionInfo
+    #[inline]
+    pub fn get_name(&self, func: &FunctionInfo) -> &str {
+        self.strings.get_name(func.name_idx)
+    }
+
+    /// Get the file path for a FunctionInfo (None if not available)
+    #[inline]
+    pub fn get_file(&self, func: &FunctionInfo) -> Option<&str> {
+        self.strings.get_file(func.file_idx)
+    }
+
+    /// Get the line number for a FunctionInfo (None if 0)
+    #[inline]
+    pub fn get_line(&self, func: &FunctionInfo) -> Option<u32> {
+        if func.line == 0 { None } else { Some(func.line) }
+    }
+
+    /// Get a reference to the string tables
+    pub fn strings(&self) -> &StringTables {
+        &self.strings
     }
 
     /// Find the function containing the given address using binary search.
@@ -664,10 +765,10 @@ impl FunctionIndex {
     pub fn find_function_name(&self, addr: u64) -> Option<&str> {
         // First check inlined functions (more specific)
         if let Some(inlined) = self.find_in_inlined(addr) {
-            return Some(&inlined.name);
+            return Some(self.strings.get_name(inlined.name_idx));
         }
         // Fall back to containing function
-        self.find_containing(addr).map(|f| f.name.as_str())
+        self.find_containing(addr).map(|f| self.strings.get_name(f.name_idx))
     }
 
     /// Find an inlined function containing the given address.
@@ -1248,11 +1349,11 @@ impl<'a> CallGraph<'a> {
 
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
-        let (functions, inlined) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
         let num_functions = functions.len();
         let num_inlined = inlined.len();
         // Build function index for O(log n) lookups instead of O(n) linear search
-        let function_index = FunctionIndex::new_with_inlined(functions, inlined);
+        let function_index = FunctionIndex::new_with_inlined(functions, inlined, strings);
         if show_timings {
             eprintln!(
                 "    [cg timing] get_functions_from_dwarf: {:?} ({} functions, {} inlined)",
@@ -1741,17 +1842,19 @@ fn process_instruction_data_with_crate_table<'a>(
     if let Some(func) = function_index.find_containing(data.address) {
         // Found in DWARF - use full debug info
         // Get source location using O(log n) binary search on pre-built table
-        let (file, mut line, mut column) = if func.file.is_some() && func.line.is_some() {
+        let func_file = function_index.get_file(func).map(|s| s.to_string());
+        let func_line = function_index.get_line(func);
+        let (file, mut line, mut column) = if func_file.is_some() && func_line.is_some() {
             // Fast path: use DWARF function info directly
-            (func.file.clone(), func.line, None)
+            (func_file.clone(), func_line, None)
         } else {
             // Fast path: use pre-built full line table for O(log n) lookup
-            let (func_file, func_line, func_column) =
+            let (line_file, line_line, line_column) =
                 full_line_table.get_source_location(func.start_address);
             (
-                func.file.clone().or(func_file),
-                func.line.or(func_line),
-                func_column,
+                func_file.clone().or(line_file),
+                func_line.or(line_line),
+                line_column,
             )
         };
 
@@ -1772,6 +1875,7 @@ fn process_instruction_data_with_crate_table<'a>(
 
         // Get function name - only do expensive inlined lookup for crate source functions
         // For non-crate functions, use the containing function's name (fast path)
+        let func_name = function_index.get_name(func);
         let display_name: Cow<'a, str> = if file_in_crate {
             // Crate function: get the most specific name (checks inlined functions)
             Cow::Owned(
@@ -1781,11 +1885,11 @@ fn process_instruction_data_with_crate_table<'a>(
                         let stripped = s.strip_prefix('_').unwrap_or(s);
                         format!("{:#}", demangle(stripped))
                     })
-                    .unwrap_or_else(|| func.name.clone()),
+                    .unwrap_or_else(|| func_name.to_string()),
             )
         } else {
             // Non-crate function: use containing function name directly (skip inlined search)
-            Cow::Owned(func.name.clone())
+            Cow::Owned(func_name.to_string())
         };
 
         // Note: We intentionally use the inlined function's name but keep the
@@ -1797,7 +1901,7 @@ fn process_instruction_data_with_crate_table<'a>(
             CallerInfo {
                 caller_name: display_name,
                 caller_start_address: func.start_address,
-                caller_file: func.file.clone(),
+                caller_file: func_file.clone(),
                 call_site_addr: data.address,
                 file,
                 line,
@@ -1927,12 +2031,21 @@ fn load_dwarf_sections<'a>(
     Dwarf::load(&load_section)
 }
 
+/// Intermediate struct for parsing - uses owned strings before interning
+struct ParsedFunctionInfo {
+    name: String,
+    start_address: u64,
+    end_address: u64,
+    file: Option<String>,
+    line: Option<u32>,
+}
+
 /// Extract all functions from DWARF debug info.
-/// Returns a tuple of (regular functions, inlined functions).
+/// Returns functions, inlined functions, and the shared string tables.
 pub fn get_functions_from_dwarf<'a>(
     macho: &'a MachO,
     buffer: &'a [u8],
-) -> Result<(Vec<FunctionInfo>, Vec<FunctionInfo>), Box<dyn std::error::Error>> {
+) -> Result<(Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables), Box<dyn std::error::Error>> {
     let dwarf = load_dwarf_sections(macho, buffer)?;
 
     // Collect all unit headers first (fast)
@@ -1942,7 +2055,7 @@ pub fn get_functions_from_dwarf<'a>(
         headers.push(header);
     }
 
-    // Process compilation units in parallel
+    // Process compilation units in parallel - collect with owned strings
     let results: Vec<_> = headers
         .into_par_iter()
         .filter_map(|header| {
@@ -1970,23 +2083,41 @@ pub fn get_functions_from_dwarf<'a>(
         })
         .collect();
 
-    // Combine results
+    // Combine results and intern strings
+    let mut strings = StringTables::new();
     let mut functions = Vec::new();
     let mut inlined = Vec::new();
+
     for (funcs, inl) in results {
-        functions.extend(funcs);
-        inlined.extend(inl);
+        for parsed in funcs {
+            functions.push(FunctionInfo {
+                start_address: parsed.start_address,
+                end_address: parsed.end_address,
+                name_idx: strings.intern_name(parsed.name),
+                file_idx: strings.intern_file(parsed.file),
+                line: parsed.line.unwrap_or(0),
+            });
+        }
+        for parsed in inl {
+            inlined.push(FunctionInfo {
+                start_address: parsed.start_address,
+                end_address: parsed.end_address,
+                name_idx: strings.intern_name(parsed.name),
+                file_idx: strings.intern_file(parsed.file),
+                line: parsed.line.unwrap_or(0),
+            });
+        }
     }
 
-    Ok((functions, inlined))
+    Ok((functions, inlined, strings))
 }
 
-/// Parse a DW_TAG_subprogram DIE into FunctionInfo
+/// Parse a DW_TAG_subprogram DIE into ParsedFunctionInfo
 fn parse_function_die<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     entry: &DebuggingInformationEntry<R>,
-) -> Result<Option<FunctionInfo>, gimli::Error> {
+) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
     let mut name: Option<String> = None;
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
@@ -2055,7 +2186,7 @@ fn parse_function_die<R: Reader>(
     };
 
     match (name, low_pc, high_pc) {
-        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(FunctionInfo {
+        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(ParsedFunctionInfo {
             name,
             start_address: low_pc,
             end_address: high_pc,
@@ -2066,14 +2197,14 @@ fn parse_function_die<R: Reader>(
     }
 }
 
-/// Parse a DW_TAG_inlined_subroutine DIE into FunctionInfo.
+/// Parse a DW_TAG_inlined_subroutine DIE into ParsedFunctionInfo.
 /// Inlined subroutines use DW_AT_abstract_origin to reference the original function.
 /// Handles both DW_AT_low_pc/DW_AT_high_pc and DW_AT_ranges (DWARF 5).
 fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     entry: &DebuggingInformationEntry<R>,
-) -> Result<Option<FunctionInfo>, gimli::Error> {
+) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
     let mut abstract_origin: Option<gimli::UnitOffset<usize>> = None;
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
@@ -2145,7 +2276,7 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     };
 
     match (name, final_low_pc, final_high_pc) {
-        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(FunctionInfo {
+        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(ParsedFunctionInfo {
             name,
             start_address: low_pc,
             end_address: high_pc,
@@ -2206,9 +2337,9 @@ pub fn find_callers_with_debug_info(
     crate_src_path: Option<&str>,
 ) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
-    let (functions, inlined) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+    let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
     // Build function index for O(log n) lookups
-    let function_index = FunctionIndex::new_with_inlined(functions, inlined);
+    let function_index = FunctionIndex::new_with_inlined(functions, inlined, strings);
     let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
     let mut callers = Vec::new();
 
@@ -2243,13 +2374,15 @@ pub fn find_callers_with_debug_info(
                 // Uses O(log n) binary search instead of O(n) linear search
                 if let Some(func) = function_index.find_containing(instruction.address()) {
                     // Found in DWARF - use full debug info
-                    let (func_file, func_line, func_column) =
+                    let (line_file, line_line, line_column) =
                         get_source_location(&dwarf, func.start_address)?;
 
                     // Prefer function's declaration file/line if available, then function start's line info
-                    let file = func.file.clone().or(func_file);
-                    let mut line = func.line.or(func_line);
-                    let mut column = func_column;
+                    let decl_file = function_index.get_file(func).map(|s| s.to_string());
+                    let decl_line = function_index.get_line(func);
+                    let file = decl_file.clone().or(line_file);
+                    let mut line = decl_line.or(line_line);
+                    let mut column = line_column;
 
                     // For functions in the crate source, find the actual line where the call originates
                     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
@@ -2267,20 +2400,21 @@ pub fn find_callers_with_debug_info(
 
                     // Get the most specific function name (checks inlined functions first)
                     // Demangle if it's a mangled Rust name
+                    let func_name = function_index.get_name(func);
                     let display_name = function_index
                         .find_function_name(instruction.address())
                         .map(|s| {
                             let stripped = s.strip_prefix('_').unwrap_or(s);
                             format!("{:#}", demangle(stripped))
                         })
-                        .unwrap_or_else(|| func.name.clone());
+                        .unwrap_or_else(|| func_name.to_string());
 
                     // Note: See comment in process_instruction_data_with_crate_table
                     // for why we use inlined name but containing function's address range
                     callers.push(CallerInfo {
                         caller_name: Cow::Owned(display_name),
                         caller_start_address: func.start_address,
-                        caller_file: func.file.clone(),
+                        caller_file: decl_file,
                         call_site_addr: instruction.address(),
                         file,
                         line,
@@ -2550,22 +2684,29 @@ pub fn find_callers_with_debug_map(
         // Using inlined functions here would require mapping object file addresses
         // to binary addresses, which is complex. The main path (dSYM/embedded DWARF)
         // handles inlined functions correctly via FunctionIndex.find_function_name().
-        let Ok((functions, _inlined)) = get_functions_from_dwarf(&obj_macho, &obj_info.buffer)
+        let Ok((functions, _inlined, strings)) =
+            get_functions_from_dwarf(&obj_macho, &obj_info.buffer)
         else {
             continue;
         };
 
         // Store source info by function name (both mangled and demangled)
         for func in functions {
-            if func.file.is_some() {
+            let file = strings.get_file(func.file_idx);
+            if file.is_some() {
+                let name = strings.get_name(func.name_idx);
+                let line = if func.line == 0 { None } else { Some(func.line) };
                 // Store by original name
-                func_source_map.insert(func.name.clone(), (func.file.clone(), func.line));
+                func_source_map.insert(
+                    name.to_string(),
+                    (file.map(|s| s.to_string()), line),
+                );
 
                 // Also store by demangled name for matching
-                let stripped = func.name.strip_prefix("_").unwrap_or(&func.name);
+                let stripped = name.strip_prefix("_").unwrap_or(name);
                 let demangled = format!("{:#}", demangle(stripped));
-                if demangled != func.name {
-                    func_source_map.insert(demangled, (func.file.clone(), func.line));
+                if demangled != name {
+                    func_source_map.insert(demangled, (file.map(|s| s.to_string()), line));
                 }
             }
         }
