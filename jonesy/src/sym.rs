@@ -32,6 +32,9 @@ type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 /// Source location tuple: (file, line, column)
 type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
 
+/// Result type for get_functions_from_dwarf: (functions, inlined, string_tables)
+type DwarfFunctionResult = (Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables);
+
 /// Check if a file path matches a crate source pattern.
 /// Supports multi-pattern format with "|" separator for workspace mode.
 /// Check if a file path matches the crate source pattern.
@@ -2050,7 +2053,7 @@ struct ParsedFunctionInfo {
 pub fn get_functions_from_dwarf<'a>(
     macho: &'a MachO,
     buffer: &'a [u8],
-) -> Result<(Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables), Box<dyn std::error::Error>> {
+) -> Result<DwarfFunctionResult, Box<dyn std::error::Error>> {
     let dwarf = load_dwarf_sections(macho, buffer)?;
 
     // Collect all unit headers first (fast)
