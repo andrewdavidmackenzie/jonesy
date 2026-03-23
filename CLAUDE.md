@@ -8,4 +8,4 @@ prefer no answer that one that may mislead us on work.
 2. Verify with Citations. Make sure you can explain conclusions you have reached
 by being able to cite the source information and then explain the logic used.
 
-3. Use direct quotes for factural grounding.
+3. Use direct quotes for factual grounding.
