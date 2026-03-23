@@ -2346,6 +2346,8 @@ pub fn find_callers_with_debug_info(
     // Build function index for O(log n) lookups
     let function_index = FunctionIndex::new_with_inlined(functions, inlined, strings);
     let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+    // Build line table for consistent source location lookups (first entry semantics)
+    let full_line_table = FullLineTable::build(&dwarf)?;
     let mut callers = Vec::new();
 
     // Get __text section from the binary (not dSYM)
@@ -2378,9 +2380,9 @@ pub fn find_callers_with_debug_info(
                 // Find the function containing this call - try DWARF first, fall back to symbol table
                 // Uses O(log n) binary search instead of O(n) linear search
                 if let Some(func) = function_index.find_containing(instruction.address()) {
-                    // Found in DWARF - use full debug info
+                    // Found in DWARF - use full debug info with first-entry semantics
                     let (line_file, line_line, line_column) =
-                        get_source_location(&dwarf, func.start_address)?;
+                        full_line_table.get_source_location(func.start_address);
 
                     // Prefer function's declaration file/line if available, then function start's line info
                     let decl_file = function_index.get_file(func).map(|s| s.to_string());
@@ -2430,8 +2432,7 @@ pub fn find_callers_with_debug_info(
                     .and_then(|idx| idx.find_containing(instruction.address()))
                 {
                     // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
-                    let (file, line, column) =
-                        get_source_location(&dwarf, func_addr).unwrap_or((None, None, None));
+                    let (file, line, column) = full_line_table.get_source_location(func_addr);
 
                     callers.push(CallerInfo {
                         caller_name: Cow::Owned(func_name.to_string()),
@@ -2448,66 +2449,6 @@ pub fn find_callers_with_debug_info(
     }
 
     Ok(callers)
-}
-
-/// Get source file, line, and column for an address using DWARF line info
-fn get_source_location<R: Reader>(
-    dwarf: &Dwarf<R>,
-    addr: u64,
-) -> Result<SourceLocation, gimli::Error> {
-    let mut units = dwarf.units();
-
-    while let Some(header) = units.next()? {
-        let unit = dwarf.unit(header)?;
-
-        if let Some(program) = &unit.line_program {
-            let mut rows = program.clone().rows();
-            let mut prev_row: Option<(String, u32, Option<u32>)> = None;
-
-            while let Some((header, row)) = rows.next_row()? {
-                if row.address() > addr {
-                    // The previous row covers this address
-                    if let Some((file, line, column)) = prev_row {
-                        return Ok((Some(file), Some(line), column));
-                    }
-                }
-
-                if let Some(file_entry) = row.file(header) {
-                    // Get the directory and filename to build the full path
-                    let file_name = dwarf
-                        .attr_string(&unit, file_entry.path_name())?
-                        .to_string_lossy()?
-                        .into_owned();
-
-                    let full_path = if let Some(dir) = file_entry.directory(header) {
-                        let dir_str = dwarf
-                            .attr_string(&unit, dir)?
-                            .to_string_lossy()?
-                            .into_owned();
-                        if dir_str.is_empty() {
-                            file_name
-                        } else {
-                            format!("{}/{}", dir_str, file_name)
-                        }
-                    } else {
-                        file_name
-                    };
-
-                    let column = match row.column() {
-                        ColumnType::LeftEdge => None,
-                        ColumnType::Column(c) => Some(c.get() as u32),
-                    };
-                    prev_row = Some((
-                        full_path,
-                        row.line().map(|l| l.get() as u32).unwrap_or(0),
-                        column,
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok((None, None, None))
 }
 
 /// Find the user code line and column closest to a specific address within a function.
