@@ -13,7 +13,7 @@ use std::process::Command;
 // Import library functions for micro-benchmarks
 use jonesy::analysis::analyze_macho;
 use jonesy::args::OutputFormat;
-use jonesy::call_tree::{CallTreeNode, prune_call_tree, build_call_tree_parallel};
+use jonesy::call_tree::{CallTreeNode, build_call_tree_parallel, prune_call_tree};
 use jonesy::config::Config;
 use jonesy::sym::{CallGraph, SymbolIndex, SymbolTable, read_symbols};
 
@@ -180,7 +180,8 @@ fn bench_prune_call_tree(c: &mut Criterion) {
             Some("examples/panic/src/"),
             false,
             symbol_index.as_ref(),
-        ).expect("Failed to build call graph");
+        )
+        .expect("Failed to build call graph");
 
         // Build an initial call tree to prune
         let visited = Arc::new(DashSet::new());

@@ -3,16 +3,16 @@
 //! This module provides the core analysis functions for finding panic paths
 //! in Mach-O binaries and library archives.
 
+use crate::args::OutputFormat;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel,
     collect_crate_code_points, prune_call_tree,
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
-use crate::args::OutputFormat;
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
-    find_symbol_address, find_symbol_containing, load_debug_info, matches_crate_pattern_validated,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles, find_symbol_address,
+    find_symbol_containing, load_debug_info, matches_crate_pattern_validated,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::Binary;

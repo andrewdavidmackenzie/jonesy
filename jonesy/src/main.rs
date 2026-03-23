@@ -1,16 +1,18 @@
-use jonesy::analysis::{analyze_archive, analyze_macho, BinaryAnalysisResult};
+use goblin::mach::Mach::{Binary, Fat};
+use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_macho};
 use jonesy::args::{Args, VERSION, WorkspaceMember, parse_args};
 use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
-use jonesy::cargo::{derive_crate_src_path, detect_library_type, find_project_root, get_project_name};
+use jonesy::cargo::{
+    derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
+};
 use jonesy::config::Config;
 use jonesy::html_output::{generate_html_output, generate_workspace_html_output};
 use jonesy::json_output::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
+use jonesy::lsp;
 use jonesy::sym::{SymbolTable, read_symbols};
 use jonesy::text_output::generate_text_output;
-use jonesy::lsp;
-use goblin::mach::Mach::{Binary, Fat};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fs;
