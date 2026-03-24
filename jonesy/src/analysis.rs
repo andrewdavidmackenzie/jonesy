@@ -288,8 +288,13 @@ pub fn analyze_macho(
     // Always collect code points for unified output handling in main
     let step_start = Instant::now();
     let result = if let Some(crate_path) = crate_src_path {
-        let (code_points, summary) =
-            collect_crate_code_points(&root, crate_path, config, valid_files.as_ref());
+        let (code_points, summary) = collect_crate_code_points(
+            &root,
+            crate_path,
+            config,
+            valid_files.as_ref(),
+            project_root.as_deref(),
+        );
         BinaryAnalysisResult {
             summary,
             code_points,
