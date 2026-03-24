@@ -149,11 +149,7 @@ pub fn start_watching(config: WatcherConfig) -> Result<WatcherHandle, String> {
 }
 
 /// Categorize a changed path into a WatchEvent.
-fn categorize_path(
-    path: &Path,
-    target_dir: &Path,
-    config_files: &[PathBuf],
-) -> Option<WatchEvent> {
+fn categorize_path(path: &Path, target_dir: &Path, config_files: &[PathBuf]) -> Option<WatchEvent> {
     // Check if it's a config file
     for config_file in config_files {
         if path == config_file {
@@ -433,11 +429,7 @@ mod tests {
         );
 
         // Workspace Cargo.toml
-        let evt = categorize_path(
-            Path::new("/project/Cargo.toml"),
-            &target_dir,
-            &config_files,
-        );
+        let evt = categorize_path(Path::new("/project/Cargo.toml"), &target_dir, &config_files);
         assert!(
             matches!(evt, Some(WatchEvent::ConfigChanged(_))),
             "Workspace Cargo.toml should trigger ConfigChanged"
@@ -486,10 +478,7 @@ mod tests {
             &target_dir,
             &config_files,
         );
-        assert!(
-            evt.is_none(),
-            "Non-jonesy config files should be ignored"
-        );
+        assert!(evt.is_none(), "Non-jonesy config files should be ignored");
 
         // Files in target that aren't binaries
         let evt = categorize_path(

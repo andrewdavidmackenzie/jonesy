@@ -90,8 +90,7 @@ impl AnalysisCache {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize cache: {}", e))?;
 
-        fs::write(&cache_path, content)
-            .map_err(|e| format!("Failed to write cache: {}", e))?;
+        fs::write(&cache_path, content).map_err(|e| format!("Failed to write cache: {}", e))?;
 
         Ok(())
     }
@@ -143,10 +142,7 @@ impl AnalysisCache {
     }
 
     /// Check what kind of workspace changes occurred.
-    pub fn detect_workspace_changes(
-        &self,
-        current: &WorkspaceState,
-    ) -> WorkspaceChanges {
+    pub fn detect_workspace_changes(&self, current: &WorkspaceState) -> WorkspaceChanges {
         let mut changes = WorkspaceChanges::default();
 
         // Check for added/removed members
@@ -165,9 +161,7 @@ impl AnalysisCache {
         for (name, path) in &current.binaries {
             match self.workspace.binaries.get(name) {
                 None => changes.added_binaries.push(name.clone()),
-                Some(old_path) if old_path != path => {
-                    changes.changed_binaries.push(name.clone())
-                }
+                Some(old_path) if old_path != path => changes.changed_binaries.push(name.clone()),
                 _ => {}
             }
         }
@@ -181,9 +175,7 @@ impl AnalysisCache {
         for (name, path) in &current.libraries {
             match self.workspace.libraries.get(name) {
                 None => changes.added_libraries.push(name.clone()),
-                Some(old_path) if old_path != path => {
-                    changes.changed_libraries.push(name.clone())
-                }
+                Some(old_path) if old_path != path => changes.changed_libraries.push(name.clone()),
                 _ => {}
             }
         }

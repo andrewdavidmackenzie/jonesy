@@ -330,19 +330,13 @@ impl JonesyLspServer {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!(
-                    "Native file watcher started for {}",
-                    target_dir.display()
-                ),
+                format!("Native file watcher started for {}", target_dir.display()),
             )
             .await;
 
         // Create debounced event stream
-        let debounced = file_watcher::debounced_events(
-            watcher_handle.events,
-            Duration::from_millis(500),
-        )
-        .await;
+        let debounced =
+            file_watcher::debounced_events(watcher_handle.events, Duration::from_millis(500)).await;
 
         // Clone what we need for the spawned task
         let client = self.client.clone();
@@ -1199,9 +1193,7 @@ async fn run_analysis_task(
                 + workspace_changes.removed_libraries.len()
                 + workspace_changes.changed_libraries.len(),
         );
-        client
-            .log_message(MessageType::INFO, change_summary)
-            .await;
+        client.log_message(MessageType::INFO, change_summary).await;
     }
 
     // Discover workspace structure
