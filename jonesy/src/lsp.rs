@@ -879,8 +879,10 @@ impl JonesyLspServer {
             Some(("**/benches/**", "benches"))
         } else if path.contains("/examples/") {
             Some(("**/examples/**", "examples"))
-        } else if path.ends_with("_test.rs") || path.ends_with("_tests.rs") {
+        } else if path.ends_with("_test.rs") {
             Some(("**/*_test.rs", "test files"))
+        } else if path.ends_with("_tests.rs") {
+            Some(("**/*_tests.rs", "test files"))
         } else {
             None
         }
@@ -989,63 +991,74 @@ impl JonesyLspServer {
         // Build the new allow line
         let new_allow = format!("allow = [\"{}\"]", cause);
 
-        // Determine the edit based on existing content
-        let (edit_range, new_text) = if existing_content.contains("allow = [") {
-            // Find and update existing allow line
-            if let Some(start_idx) = existing_content.find("allow = [") {
-                let prefix = &existing_content[..start_idx];
-                let line_num = prefix.lines().count() as u32;
-                let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                let char_offset = (start_idx - line_start) as u32;
-
-                // Find the end of the allow array
-                if let Some(end_bracket) = existing_content[start_idx..].find(']') {
-                    let end_pos = start_idx + end_bracket + 1;
-                    let old_allow = &existing_content[start_idx..end_pos];
-
-                    // Parse existing causes and add new one if not present
-                    let mut causes: Vec<String> = old_allow
-                        .trim_start_matches("allow = [")
-                        .trim_end_matches(']')
-                        .split(',')
-                        .map(|s| s.trim().trim_matches('"').to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-
-                    if causes.contains(&cause.to_string()) {
-                        return None; // Already allowed
-                    }
-                    causes.push(cause.to_string());
-
-                    let new_allow_line = format!(
-                        "allow = [{}]",
-                        causes
-                            .iter()
-                            .map(|c| format!("\"{}\"", c))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-
-                    let end_line = existing_content[..end_pos].lines().count() as u32 - 1;
-                    let end_char =
-                        (end_pos - existing_content[..end_pos].rfind('\n').unwrap_or(0)) as u32;
-
-                    (
-                        Range {
-                            start: Position {
-                                line: line_num.saturating_sub(1),
-                                character: char_offset,
-                            },
-                            end: Position {
-                                line: end_line,
-                                character: end_char,
-                            },
-                        },
-                        new_allow_line,
-                    )
+        // Find where sections start (root-level keys must appear before any [section])
+        let first_section_pos = existing_content
+            .find("\n[")
+            .or_else(|| {
+                if existing_content.starts_with('[') {
+                    Some(0)
                 } else {
-                    return None;
+                    None
                 }
+            })
+            .unwrap_or(existing_content.len());
+
+        // Only look for root-level allow (before any section headers)
+        let root_content = &existing_content[..first_section_pos];
+
+        // Determine the edit based on existing content
+        let (edit_range, new_text) = if let Some(start_idx) = root_content.find("allow = [") {
+            // Update existing root-level allow line
+            let prefix = &existing_content[..start_idx];
+            let line_num = prefix.lines().count() as u32;
+            let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let char_offset = (start_idx - line_start) as u32;
+
+            // Find the end of the allow array
+            if let Some(end_bracket) = existing_content[start_idx..].find(']') {
+                let end_pos = start_idx + end_bracket + 1;
+                let old_allow = &existing_content[start_idx..end_pos];
+
+                // Parse existing causes and add new one if not present
+                let mut causes: Vec<String> = old_allow
+                    .trim_start_matches("allow = [")
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if causes.contains(&cause.to_string()) {
+                    return None; // Already allowed
+                }
+                causes.push(cause.to_string());
+
+                let new_allow_line = format!(
+                    "allow = [{}]",
+                    causes
+                        .iter()
+                        .map(|c| format!("\"{}\"", c))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+
+                let end_line = existing_content[..end_pos].lines().count() as u32 - 1;
+                let end_char =
+                    (end_pos - existing_content[..end_pos].rfind('\n').unwrap_or(0)) as u32;
+
+                (
+                    Range {
+                        start: Position {
+                            line: line_num.saturating_sub(1),
+                            character: char_offset,
+                        },
+                        end: Position {
+                            line: end_line,
+                            character: end_char,
+                        },
+                    },
+                    new_allow_line,
+                )
             } else {
                 return None;
             }
