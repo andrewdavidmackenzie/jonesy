@@ -900,7 +900,10 @@ mod tests {
     fn test_filter_phantom_async_filters_qualified() {
         let mut points = vec![make_qualified_phantom_async_point()];
         filter_phantom_async_panics(&mut points);
-        assert!(points.is_empty(), "Qualified phantom async point should be filtered");
+        assert!(
+            points.is_empty(),
+            "Qualified phantom async point should be filtered"
+        );
     }
 
     #[test]
@@ -914,7 +917,11 @@ mod tests {
     fn test_filter_phantom_async_keeps_with_children() {
         let mut points = vec![make_async_with_children()];
         filter_phantom_async_panics(&mut points);
-        assert_eq!(points.len(), 1, "Async with children should not be filtered");
+        assert_eq!(
+            points.len(),
+            1,
+            "Async with children should not be filtered"
+        );
     }
 
     #[test]
@@ -926,6 +933,10 @@ mod tests {
             make_async_with_children(),
         ];
         filter_phantom_async_panics(&mut points);
-        assert_eq!(points.len(), 2, "Should keep only real panics and those with children");
+        assert_eq!(
+            points.len(),
+            2,
+            "Should keep only real panics and those with children"
+        );
     }
 }
