@@ -365,7 +365,7 @@ fn collect_targets_from_manifest(
         return;
     };
 
-    // Collect binaries
+    // Collect explicit binaries first (they take precedence)
     for bin in &manifest.bin {
         let name = bin.name.as_deref().unwrap_or(&pkg.name);
         let path = bin
@@ -376,31 +376,32 @@ fn collect_targets_from_manifest(
         state.binaries.insert(name.to_string(), path);
     }
 
-    // If no explicit bins, check for implicit binaries
-    if manifest.bin.is_empty() {
-        // src/main.rs -> binary named after package
-        if crate_root.join("src/main.rs").exists() {
-            state
-                .binaries
-                .insert(pkg.name.clone(), crate_root.join("src/main.rs"));
-        }
+    // Always check for implicit/auto-discovered binaries (Rust 2024 merges them with explicit)
+    // Use entry().or_insert() to avoid overwriting explicit [[bin]] entries
 
-        // src/bin/*.rs -> binary named after file stem
-        // src/bin/*/main.rs -> binary named after directory
-        let bin_dir = crate_root.join("src/bin");
-        if let Ok(entries) = fs::read_dir(&bin_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
-                    if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
-                        state.binaries.insert(name.to_string(), path);
-                    }
-                } else if path.is_dir() {
-                    let main_rs = path.join("main.rs");
-                    if main_rs.exists() {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            state.binaries.insert(name.to_string(), main_rs);
-                        }
+    // src/main.rs -> binary named after package
+    if crate_root.join("src/main.rs").exists() {
+        state
+            .binaries
+            .entry(pkg.name.clone())
+            .or_insert_with(|| crate_root.join("src/main.rs"));
+    }
+
+    // src/bin/*.rs -> binary named after file stem
+    // src/bin/*/main.rs -> binary named after directory
+    let bin_dir = crate_root.join("src/bin");
+    if let Ok(entries) = fs::read_dir(&bin_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+                if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+                    state.binaries.entry(name.to_string()).or_insert(path);
+                }
+            } else if path.is_dir() {
+                let main_rs = path.join("main.rs");
+                if main_rs.exists() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        state.binaries.entry(name.to_string()).or_insert(main_rs);
                     }
                 }
             }
