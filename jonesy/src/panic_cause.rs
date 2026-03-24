@@ -85,12 +85,23 @@ pub enum PanicCause {
 impl PanicCause {
     /// Get the configuration identifier for this panic cause.
     /// Used in allow/deny configuration files.
+    ///
+    /// More specific IDs are available for division/remainder operations:
+    /// - `div_overflow` / `rem_overflow` for ArithmeticOverflow division/remainder
+    /// - `shift_overflow` for ShiftOverflow
+    ///
+    /// The generic `overflow` ID matches all arithmetic overflow types.
     pub fn id(&self) -> &'static str {
         match self {
             PanicCause::ExplicitPanic => "panic",
             PanicCause::BoundsCheck => "bounds",
-            PanicCause::ArithmeticOverflow(_) => "overflow",
-            PanicCause::ShiftOverflow(_) => "overflow",
+            // Use specific IDs for division/remainder to allow targeted suppression
+            PanicCause::ArithmeticOverflow(op) => match op.as_str() {
+                "division" => "div_overflow",
+                "remainder" => "rem_overflow",
+                _ => "overflow",
+            },
+            PanicCause::ShiftOverflow(_) => "shift_overflow",
             PanicCause::DivisionByZero => "div_zero",
             PanicCause::UnwrapNone => "unwrap",
             PanicCause::UnwrapErr => "unwrap",
@@ -113,12 +124,25 @@ impl PanicCause {
         }
     }
 
+    /// Get the parent/generic configuration identifier, if any.
+    /// This allows "overflow" to match specific types like "div_overflow".
+    pub fn parent_id(&self) -> Option<&'static str> {
+        match self {
+            PanicCause::ArithmeticOverflow(_) => Some("overflow"),
+            PanicCause::ShiftOverflow(_) => Some("overflow"),
+            _ => None,
+        }
+    }
+
     /// Get all valid configuration identifiers
     pub fn all_ids() -> &'static [&'static str] {
         &[
             "panic",
             "bounds",
-            "overflow",
+            "overflow",       // matches all arithmetic overflow
+            "div_overflow",   // division overflow specifically
+            "rem_overflow",   // remainder overflow specifically
+            "shift_overflow", // shift overflow specifically
             "div_zero",
             "unwrap",
             "expect",

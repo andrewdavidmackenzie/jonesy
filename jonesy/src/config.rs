@@ -250,24 +250,43 @@ impl Config {
         // Sort by specificity first, then by declaration order (later wins)
         matching_rules.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
 
+        // Get the parent ID (e.g., "overflow" for "div_overflow")
+        let parent_id = cause.parent_id();
+
         // Check scoped rules in order of specificity
         for (_, _, rule) in matching_rules {
+            // Check specific ID first, then parent ID
             if let Some(allowed) = rule.check_cause(id) {
                 return !allowed;
+            }
+            if let Some(parent) = parent_id {
+                if let Some(allowed) = rule.check_cause(parent) {
+                    return !allowed;
+                }
             }
         }
 
         // Fall back to global rules
         // Check explicit entries first, then wildcards (same priority as scoped rules)
 
-        // Explicit deny takes precedence
+        // Explicit deny takes precedence (check specific first, then parent)
         if self.denied.contains(id) {
             return true;
         }
+        if let Some(parent) = parent_id {
+            if self.denied.contains(parent) {
+                return true;
+            }
+        }
 
-        // An explicit "allow" means not denied
+        // An explicit "allow" means not denied (check specific first, then parent)
         if self.allowed.contains(id) {
             return false;
+        }
+        if let Some(parent) = parent_id {
+            if self.allowed.contains(parent) {
+                return false;
+            }
         }
 
         // Then check global wildcards
@@ -738,5 +757,102 @@ mod tests {
         };
         config.apply_toml_config(&toml_config);
         assert!(config.filter_phantom_async()); // Default is true
+    }
+
+    #[test]
+    fn test_overflow_parent_id_allows_all_overflow() {
+        // allow = ["overflow"] should match div_overflow, rem_overflow, shift_overflow
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec!["overflow".to_string()],
+            deny: vec![],
+            rules: vec![],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // Division overflow should be allowed via parent "overflow"
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("division".to_string())));
+        // Remainder overflow should be allowed via parent "overflow"
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("remainder".to_string())));
+        // Shift overflow should be allowed via parent "overflow"
+        assert!(!config.is_denied(&PanicCause::ShiftOverflow("left".to_string())));
+        // Generic overflow (add/sub/mul) should be allowed directly
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("addition".to_string())));
+    }
+
+    #[test]
+    fn test_specific_div_overflow_id() {
+        // allow = ["div_overflow"] should only match division overflow, not others
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec!["div_overflow".to_string()],
+            deny: vec![],
+            rules: vec![],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // Division overflow should be allowed
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("division".to_string())));
+        // Remainder overflow should NOT be allowed (different specific ID)
+        assert!(config.is_denied(&PanicCause::ArithmeticOverflow("remainder".to_string())));
+        // Shift overflow should NOT be allowed
+        assert!(config.is_denied(&PanicCause::ShiftOverflow("left".to_string())));
+        // Generic overflow should NOT be allowed
+        assert!(config.is_denied(&PanicCause::ArithmeticOverflow("addition".to_string())));
+    }
+
+    #[test]
+    fn test_div_zero_independent_of_overflow() {
+        // div_zero is separate from overflow
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec!["overflow".to_string()],
+            deny: vec![],
+            rules: vec![],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // Division by zero should NOT be allowed (separate cause)
+        assert!(config.is_denied(&PanicCause::DivisionByZero));
+    }
+
+    #[test]
+    fn test_scoped_rule_with_overflow_parent() {
+        // Scoped rules should also respect parent IDs
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                path: Some("src/math/**".to_string()),
+                function: None,
+                allow: vec!["overflow".to_string()],
+                deny: vec![],
+            }],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // In math module, all overflow types should be allowed
+        assert!(!config.is_denied_at(
+            &PanicCause::ArithmeticOverflow("division".to_string()),
+            Some("src/math/ops.rs"),
+            None
+        ));
+        assert!(!config.is_denied_at(
+            &PanicCause::ShiftOverflow("right".to_string()),
+            Some("src/math/bits.rs"),
+            None
+        ));
+
+        // Outside math module, overflow should still be denied
+        assert!(config.is_denied_at(
+            &PanicCause::ArithmeticOverflow("division".to_string()),
+            Some("src/main.rs"),
+            None
+        ));
     }
 }
