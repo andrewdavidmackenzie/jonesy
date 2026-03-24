@@ -725,7 +725,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jonesy"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "ahash",
  "capstone",
