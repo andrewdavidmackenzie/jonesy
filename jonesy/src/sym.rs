@@ -959,6 +959,36 @@ pub fn find_symbol_containing(
     Ok(None)
 }
 
+/// Returns all symbols whose demangled names match any of the given patterns.
+/// Returns a vector of (mangled_name, demangled_name) tuples.
+pub fn find_all_symbols_matching(
+    macho: &MachO,
+    patterns: &[&str],
+) -> Result<Vec<(String, String)>, regex::Error> {
+    let regexes: Vec<Regex> = patterns
+        .iter()
+        .map(|p| Regex::new(p))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut results = Vec::new();
+    let symbols = match macho.symbols.as_ref() {
+        Some(s) => s,
+        None => return Ok(results),
+    };
+
+    for (sym_name, _) in symbols.iter().flatten() {
+        let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+        let demangled = format!("{:#}", demangle(stripped));
+        for regex in &regexes {
+            if regex.is_match(&demangled) {
+                results.push((sym_name.to_string(), demangled.clone()));
+                break; // Only add once even if multiple patterns match
+            }
+        }
+    }
+    Ok(results)
+}
+
 // TODO Restrict this to text segments?
 /// Returns the address of the first defined symbol found whose name matches `name` exactly.
 /// Skips undefined/import symbols which have n_value == 0.

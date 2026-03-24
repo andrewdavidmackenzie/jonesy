@@ -11,8 +11,9 @@ use crate::call_tree::{
 use crate::cargo::find_project_root;
 use crate::config::Config;
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles, find_symbol_address,
-    find_symbol_containing, load_debug_info, matches_crate_pattern_validated,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
+    find_all_symbols_matching, find_symbol_address, find_symbol_containing, load_debug_info,
+    matches_crate_pattern_validated,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::Binary;
@@ -33,6 +34,12 @@ pub const PANIC_SYMBOL_PATTERNS: &[&str] = &[
     "panic_display",      // Panic display helper
     "slice_index_fail",   // Slice indexing panics (vec[i] where i >= len)
     "str_index_overflow", // String slice boundary panics
+];
+
+/// Abort symbol patterns to search for.
+/// Some error paths (like OOM) go through abort() instead of panic.
+pub const ABORT_SYMBOL_PATTERNS: &[&str] = &[
+    "std::process::abort", // Main abort function (demangled name)
 ];
 
 /// Panic symbol name patterns to search for in library call graphs.
@@ -99,6 +106,44 @@ impl BinaryAnalysisResult {
             code_points: Vec::new(),
         }
     }
+
+    /// Merge another result into this one, combining code points.
+    /// Code points at the same location have their causes merged.
+    pub fn merge(&mut self, other: BinaryAnalysisResult) {
+        use std::collections::HashMap;
+
+        // Build a map of existing code points by (file, line)
+        let mut points_map: HashMap<(String, u32), CrateCodePoint> = self
+            .code_points
+            .drain(..)
+            .map(|cp| ((cp.file.clone(), cp.line), cp))
+            .collect();
+
+        // Merge other's code points
+        for cp in other.code_points {
+            let key = (cp.file.clone(), cp.line);
+            if let Some(existing) = points_map.get_mut(&key) {
+                // Merge causes (HashSet handles dedup)
+                existing.causes.extend(cp.causes);
+            } else {
+                points_map.insert(key, cp);
+            }
+        }
+
+        // Collect back to vec and sort
+        self.code_points = points_map.into_values().collect();
+        self.code_points
+            .sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+
+        // Recalculate summary from merged code points
+        let points: HashSet<_> = self
+            .code_points
+            .iter()
+            .map(|cp| (cp.file.clone(), cp.line))
+            .collect();
+        let files: HashSet<_> = self.code_points.iter().map(|cp| cp.file.clone()).collect();
+        self.summary = AnalysisSummary::from_points(points, files);
+    }
 }
 
 /// Represents a panic caller location for library analysis.
@@ -151,33 +196,52 @@ pub fn analyze_macho(
         .as_ref()
         .map(|root| ValidSourceFiles::from_project_root(root));
 
-    // Try each panic symbol pattern until we find one
+    // Find all entry points: panic symbols + abort symbols
     if show_progress {
-        eprintln!("  Finding panic entry point...");
+        eprintln!("  Finding entry points...");
     }
     let step_start = Instant::now();
-    let mut panic_symbol = None;
-    let mut demangled = String::new();
-    let mut target_addr = 0u64;
 
+    // Collect all entry points with their addresses
+    let mut entry_points: Vec<(String, String, u64)> = Vec::new(); // (mangled, demangled, addr)
+
+    // Find panic entry points (first match from PANIC_SYMBOL_PATTERNS)
     for pattern in PANIC_SYMBOL_PATTERNS {
         if let Ok(Some((sym, dem))) = find_symbol_containing(macho, pattern)
             && let Some(addr) = find_symbol_address(macho, &sym)
         {
-            panic_symbol = Some(sym);
-            demangled = dem;
-            target_addr = addr;
-            break;
+            entry_points.push((sym, dem, addr));
+            break; // Only need one panic entry point
         }
     }
-    if show_timings {
-        eprintln!("  [timing] Find panic symbol: {:?}", step_start.elapsed());
+
+    // Find abort entry points
+    if let Ok(abort_symbols) = find_all_symbols_matching(macho, ABORT_SYMBOL_PATTERNS) {
+        for (sym, dem) in abort_symbols {
+            if let Some(addr) = find_symbol_address(macho, &sym) {
+                // Avoid duplicates
+                if !entry_points.iter().any(|(_, _, a)| *a == addr) {
+                    entry_points.push((sym, dem, addr));
+                }
+            }
+        }
     }
 
-    let Some(_) = panic_symbol else {
-        // No panic symbols found in this object
+    if show_timings {
+        eprintln!("  [timing] Find entry points: {:?}", step_start.elapsed());
+    }
+
+    if entry_points.is_empty() {
+        // No entry points found in this object
         return BinaryAnalysisResult::empty();
-    };
+    }
+
+    if show_progress && entry_points.len() > 1 {
+        eprintln!(
+            "  Found {} entry points (panic + abort)",
+            entry_points.len()
+        );
+    }
 
     if show_progress {
         eprintln!("  Loading debug information...");
@@ -254,60 +318,68 @@ pub fn analyze_macho(
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
-    // Create the root node for the call tree
-    let mut root = CallTreeNode::new_root(demangled);
+    // Build call trees for all entry points and merge results
+    let mut final_result = BinaryAnalysisResult::empty();
 
-    // Track visited addresses to avoid infinite recursion (thread-safe)
+    // Track visited addresses across all entry points to avoid redundant work
     let visited = Arc::new(DashSet::new());
-    visited.insert(target_addr);
 
-    // Build the call tree in parallel with early filtering
-    // When crate_src_path is provided, nodes are filtered during construction
-    // to avoid creating nodes that would be pruned (eliminating separate prune step)
-    let spinner = create_spinner(show_progress, "Building call tree...");
+    let spinner = create_spinner(show_progress, "Building call trees...");
     let step_start = Instant::now();
-    root.callers = build_call_tree_parallel_filtered(
-        &call_graph,
-        target_addr,
-        &visited,
-        crate_src_path,
-        valid_files.as_ref(),
-    );
-    let nodes_visited = visited.len();
+
+    for (_mangled, demangled, target_addr) in &entry_points {
+        // Skip if we've already visited this address from another entry point
+        if !visited.insert(*target_addr) {
+            continue;
+        }
+
+        // Create root node for this entry point
+        let mut root = CallTreeNode::new_root(demangled.clone());
+
+        // Build the call tree for this entry point
+        root.callers = build_call_tree_parallel_filtered(
+            &call_graph,
+            *target_addr,
+            &visited,
+            crate_src_path,
+            valid_files.as_ref(),
+        );
+
+        // Collect code points from this tree
+        if let Some(crate_path) = crate_src_path {
+            let (code_points, _summary) = collect_crate_code_points(
+                &root,
+                crate_path,
+                config,
+                valid_files.as_ref(),
+                project_root.as_deref(),
+            );
+            let entry_result = BinaryAnalysisResult {
+                summary: AnalysisSummary::default(),
+                code_points,
+            };
+            final_result.merge(entry_result);
+        }
+    }
+
+    let total_nodes = visited.len();
     finish_spinner(
         spinner,
-        &format!("Built call tree ({} nodes)", nodes_visited),
+        &format!(
+            "Built call trees ({} nodes from {} entry points)",
+            total_nodes,
+            entry_points.len()
+        ),
     );
     if show_timings {
         eprintln!(
-            "  [timing] Build call tree (with pruning): {:?}",
+            "  [timing] Build call trees (with pruning): {:?}",
             step_start.elapsed()
         );
-    }
-
-    // Always collect code points for unified output handling in main
-    let step_start = Instant::now();
-    let result = if let Some(crate_path) = crate_src_path {
-        let (code_points, summary) = collect_crate_code_points(
-            &root,
-            crate_path,
-            config,
-            valid_files.as_ref(),
-            project_root.as_deref(),
-        );
-        BinaryAnalysisResult {
-            summary,
-            code_points,
-        }
-    } else {
-        // No crate path - can't collect code points
-        BinaryAnalysisResult::empty()
-    };
-    if show_timings {
-        eprintln!("  [timing] Collect/output: {:?}", step_start.elapsed());
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
-    result
+
+    final_result
 }
 
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
