@@ -19,8 +19,47 @@ The LSP server communicates via stdin/stdout and works with any LSP-compatible e
 
 - **Inline diagnostics** - See panic points as warnings in your code
 - **Quick fixes** - Add `// jonesy:allow` comments or config rules directly from the IDE
-- **Auto-refresh** - Re-analyzes on file save
+- **Auto-refresh** - Re-analyzes when binaries or config change
 - **Workspace support** - Analyzes all binaries and libraries in Cargo workspaces
+
+## Automatic Re-Analysis
+
+The LSP server automatically re-analyzes when relevant files change. This uses native file watching for reliability.
+
+### Binary/Library Changes (in `target/debug/`)
+
+| File Type | Pattern | Trigger Reason |
+|-----------|---------|----------------|
+| Binary executable | `target/debug/<name>` | Main crate binary rebuilt |
+| Rust library | `target/debug/lib<name>.rlib` | Library crate rebuilt |
+| Dynamic library | `target/debug/lib<name>.dylib` (macOS) | cdylib/dylib rebuilt |
+| Dynamic library | `target/debug/lib<name>.so` (Linux) | cdylib/dylib rebuilt |
+| Static library | `target/debug/lib<name>.a` | staticlib rebuilt |
+
+### Config File Changes
+
+| File | Location | Trigger Reason |
+|------|----------|----------------|
+| `jonesy.toml` | Workspace root | Allow/deny rules changed |
+| `Cargo.toml` | Workspace root | Workspace members changed |
+| `Cargo.toml` | Each member crate | Dependencies or features changed |
+
+### Manual Refresh
+
+You can also trigger analysis manually:
+- **VS Code**: Command Palette → "Run Jonesy Panic Analysis"
+- **RustRover**: Actions → search "jonesy"
+- **Neovim**: `:lua vim.lsp.buf.execute_command({command = "jonesy.analyze"})`
+
+### Incremental Analysis Cache
+
+The LSP caches analysis results in `target/jonesy/cache.json` to avoid re-analyzing unchanged targets:
+
+- **Binary mtime tracking** - Skips targets whose modification time hasn't changed
+- **Workspace state** - Detects member/target additions, removals, and path changes
+- **Smart invalidation** - Only re-analyzes affected targets when `Cargo.toml` changes
+
+For large workspaces, this can significantly reduce re-analysis time after incremental builds.
 
 ![Jonesy LSP showing panic diagnostics with quick fix options](./assets/images/lsp-quickfix.png)
 

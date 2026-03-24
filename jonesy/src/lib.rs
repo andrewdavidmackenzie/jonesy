@@ -5,10 +5,12 @@
 
 #[cfg(target_os = "macos")]
 pub mod analysis;
+pub mod analysis_cache;
 pub mod args;
 pub mod call_tree;
 pub mod cargo;
 pub mod config;
+pub mod file_watcher;
 pub mod html_output;
 pub mod inline_allows;
 pub mod json_output;

@@ -3,11 +3,15 @@
 //! This module implements a Language Server Protocol server that publishes
 //! panic point diagnostics to IDEs and code editors. It runs alongside
 //! rust-analyzer, publishing its own diagnostics.
+//!
+//! File watching is implemented natively using the `notify` crate for reliable
+//! detection of binary changes, rather than relying on LSP client file watchers.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress;
@@ -17,6 +21,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::call_tree::CrateCodePoint;
 use crate::cargo::{find_binary, find_library};
+use crate::file_watcher::{self, WatcherConfig};
 
 /// Counter for generating unique progress tokens
 static PROGRESS_TOKEN_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -283,6 +288,80 @@ impl JonesyLspServer {
                     .await;
             }
         }
+    }
+
+    /// Start native file watching using the `notify` crate.
+    ///
+    /// This provides reliable detection of binary changes, unlike LSP file watchers
+    /// which many IDEs don't implement for paths outside source directories.
+    async fn start_native_file_watcher(&self) {
+        let workspace_root = {
+            let state = self.state.read().await;
+            state.workspace_root.clone()
+        };
+
+        let Some(workspace_root) = workspace_root else {
+            return;
+        };
+
+        let target_dir = workspace_root.join("target/debug");
+        let config_files = find_config_files(&workspace_root);
+
+        let config = WatcherConfig {
+            target_dir: target_dir.clone(),
+            config_files: config_files.clone(),
+            debounce: Duration::from_millis(500),
+        };
+
+        // Start the file watcher
+        let watcher_handle = match file_watcher::start_watching(config) {
+            Ok(handle) => handle,
+            Err(e) => {
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Failed to start native file watcher: {}", e),
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "Native file watcher started for {}",
+                    target_dir.display()
+                ),
+            )
+            .await;
+
+        // Create debounced event stream
+        let debounced = file_watcher::debounced_events(
+            watcher_handle.events,
+            Duration::from_millis(500),
+        )
+        .await;
+
+        // Clone what we need for the spawned task
+        let client = self.client.clone();
+        let state = self.state.clone();
+        let analysis_lock = self.analysis_lock.clone();
+
+        // Spawn task to listen for file changes and trigger analysis
+        tokio::spawn(async move {
+            let mut debounced = debounced;
+
+            while debounced.recv().await.is_some() {
+                client
+                    .log_message(MessageType::INFO, "Binary change detected, re-analyzing...")
+                    .await;
+
+                // Run analysis (using the same logic as analyze_and_publish)
+                run_analysis_task(&client, &state, &analysis_lock).await;
+            }
+        });
     }
 
     /// Analyze the workspace and publish diagnostics
@@ -829,9 +908,11 @@ impl LanguageServer for JonesyLspServer {
             .log_message(MessageType::INFO, "Jonesy LSP server initialized")
             .await;
 
-        // Register file watchers for binaries and config files
-        // Re-analyze when binaries change or config is modified
+        // Register LSP file watchers as fallback (some clients support this)
         self.register_file_watchers().await;
+
+        // Start native file watcher for reliable binary change detection
+        self.start_native_file_watcher().await;
 
         // Run initial analysis
         self.analyze_and_publish().await;
@@ -1058,6 +1139,229 @@ impl LanguageServer for JonesyLspServer {
             Ok(None)
         }
     }
+}
+
+/// Run analysis from a spawned task (file watcher callback).
+///
+/// This is a standalone function that can be called from background tasks
+/// without needing a reference to the full JonesyLspServer.
+///
+/// Uses caching in `target/jonesy/` to avoid re-analyzing unchanged targets.
+async fn run_analysis_task(
+    client: &Client,
+    state: &Arc<RwLock<ServerState>>,
+    analysis_lock: &Arc<Mutex<()>>,
+) {
+    use crate::analysis_cache::{AnalysisCache, build_workspace_state};
+
+    // Serialize analysis runs
+    let _guard = analysis_lock.lock().await;
+
+    // Get workspace root
+    let workspace_root = {
+        let state = state.read().await;
+        state.workspace_root.clone()
+    };
+
+    let Some(workspace_root) = workspace_root else {
+        return;
+    };
+
+    let target_dir = workspace_root.join("target").to_string_lossy().to_string();
+
+    // Load analysis cache
+    let mut cache = {
+        let root = workspace_root.clone();
+        tokio::task::spawn_blocking(move || AnalysisCache::load(&root))
+            .await
+            .unwrap_or_default()
+    };
+
+    // Build current workspace state and detect changes
+    let current_workspace_state = {
+        let root = workspace_root.clone();
+        tokio::task::spawn_blocking(move || build_workspace_state(&root))
+            .await
+            .unwrap_or_default()
+    };
+
+    let workspace_changes = cache.detect_workspace_changes(&current_workspace_state);
+    let force_full_analysis = workspace_changes.needs_full_reanalysis();
+
+    if workspace_changes.has_changes() {
+        let change_summary = format!(
+            "Workspace changes: {} members, {} binaries, {} libraries affected",
+            workspace_changes.added_members.len() + workspace_changes.removed_members.len(),
+            workspace_changes.added_binaries.len()
+                + workspace_changes.removed_binaries.len()
+                + workspace_changes.changed_binaries.len(),
+            workspace_changes.added_libraries.len()
+                + workspace_changes.removed_libraries.len()
+                + workspace_changes.changed_libraries.len(),
+        );
+        client
+            .log_message(MessageType::INFO, change_summary)
+            .await;
+    }
+
+    // Discover workspace structure
+    let workspace_info = {
+        let root = workspace_root.clone();
+        tokio::task::spawn_blocking(move || discover_workspace(&root))
+            .await
+            .ok()
+            .flatten()
+    };
+
+    // Get targets
+    let targets = {
+        let root = workspace_root.clone();
+        tokio::task::spawn_blocking(move || find_workspace_binaries(&root))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default()
+    };
+
+    if targets.is_empty() {
+        return;
+    }
+
+    // Get src_filter
+    let src_filter = workspace_info
+        .as_ref()
+        .map(|info| info.src_filter.clone())
+        .unwrap_or_else(|| "src/".to_string());
+
+    // Track diagnostics
+    let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
+    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut total_points = 0usize;
+    let mut analyzed_count = 0usize;
+    let mut skipped_count = 0usize;
+
+    // Analyze each target (skip unchanged ones unless force_full_analysis)
+    for target in &targets {
+        // Check if target needs re-analysis
+        let needs_analysis = force_full_analysis || cache.target_needs_analysis(target);
+
+        if !needs_analysis {
+            skipped_count += 1;
+            // Use cached panic count for logging
+            if let Some(cached) = cache.targets.get(target) {
+                total_points += cached.panic_count;
+            }
+            continue;
+        }
+
+        analyzed_count += 1;
+        let analysis_result = {
+            let target = target.clone();
+            let workspace_root = workspace_root.clone();
+            let src_filter = src_filter.clone();
+            tokio::task::spawn_blocking(move || {
+                analyze_single_target(&target, &workspace_root, &src_filter)
+            })
+            .await
+        };
+
+        if let Ok(Ok(points)) = analysis_result {
+            let point_count = points.len();
+            let new_points: Vec<_> = points
+                .into_iter()
+                .filter(|p| {
+                    let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+                    seen.insert(key)
+                })
+                .collect();
+
+            total_points += new_points.len();
+
+            // Update cache for this target
+            cache.update_target(target, point_count);
+
+            // Group by file
+            for point in new_points {
+                if point.file.starts_with(&target_dir) {
+                    continue;
+                }
+
+                let raw_path = PathBuf::from(&point.file);
+                let file_path = if raw_path.is_absolute() {
+                    raw_path
+                } else {
+                    workspace_root.join(raw_path)
+                };
+
+                if let Ok(uri) = Url::from_file_path(&file_path) {
+                    points_by_file.entry(uri).or_default().push(point);
+                }
+            }
+        }
+    }
+
+    // Update workspace state in cache and save
+    cache.update_workspace(current_workspace_state);
+    cache.prune_stale_targets();
+    let save_result = {
+        let root = workspace_root.clone();
+        tokio::task::spawn_blocking(move || cache.save(&root)).await
+    };
+    if let Ok(Err(e)) = save_result {
+        client
+            .log_message(MessageType::WARNING, format!("Failed to save cache: {}", e))
+            .await;
+    }
+
+    // Log analysis summary
+    if skipped_count > 0 {
+        client
+            .log_message(
+                MessageType::LOG,
+                format!(
+                    "Analyzed {} targets, skipped {} unchanged",
+                    analyzed_count, skipped_count
+                ),
+            )
+            .await;
+    }
+
+    // Update state and publish diagnostics
+    let old_files: HashSet<_>;
+    let new_files: HashSet<_> = points_by_file.keys().cloned().collect();
+
+    {
+        let mut state = state.write().await;
+        old_files = state.panic_points.keys().cloned().collect();
+        state.panic_points = points_by_file.clone();
+    }
+
+    // Publish diagnostics for files with panic points
+    for (uri, points) in &points_by_file {
+        let diagnostics: Vec<Diagnostic> = points
+            .iter()
+            .map(JonesyLspServer::code_point_to_diagnostic)
+            .collect();
+        client
+            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .await;
+    }
+
+    // Clear diagnostics for files that no longer have panic points
+    for uri in old_files.difference(&new_files) {
+        client.publish_diagnostics(uri.clone(), vec![], None).await;
+    }
+
+    client
+        .log_message(
+            MessageType::INFO,
+            format!(
+                "Analysis complete: {} panic points in {} files",
+                total_points,
+                new_files.len()
+            ),
+        )
+        .await;
 }
 
 /// Info about workspace structure (for logging before analysis)
