@@ -636,7 +636,10 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
     if func_name.contains("capacity_overflow") {
         return Some(PanicCause::CapacityOverflow);
     }
-    if func_name.contains("handle_alloc_error") {
+    if func_name.contains("handle_alloc_error")
+        || func_name.contains("alloc_error_handler")
+        || func_name.contains("alloc_error_hook")
+    {
         return Some(PanicCause::OutOfMemory);
     }
     if func_name.contains("raw_vec") && func_name.contains("grow") {
