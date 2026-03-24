@@ -8,7 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -243,18 +245,33 @@ impl WorkspaceChanges {
     /// Check if a specific target path is affected by workspace changes.
     ///
     /// This checks if the target's name (derived from its file path) matches
-    /// any added or changed binaries/libraries.
+    /// any added or changed binaries/libraries. Names are normalized to handle
+    /// Cargo's dash-to-underscore conversion in artifact filenames.
     pub fn affects_target(&self, target_path: &Path) -> bool {
         let target_name = target_path
             .file_stem()
             .and_then(|n| n.to_str())
             .map(|n| n.strip_prefix("lib").unwrap_or(n))
-            .unwrap_or("");
+            .map(|n| n.replace('-', "_"))
+            .unwrap_or_default();
 
-        self.added_binaries.iter().any(|n| n == target_name)
-            || self.changed_binaries.iter().any(|n| n == target_name)
-            || self.added_libraries.iter().any(|n| n == target_name)
-            || self.changed_libraries.iter().any(|n| n == target_name)
+        let normalize = |s: &String| s.replace('-', "_");
+
+        self.added_binaries
+            .iter()
+            .any(|n| normalize(n) == target_name)
+            || self
+                .changed_binaries
+                .iter()
+                .any(|n| normalize(n) == target_name)
+            || self
+                .added_libraries
+                .iter()
+                .any(|n| normalize(n) == target_name)
+            || self
+                .changed_libraries
+                .iter()
+                .any(|n| normalize(n) == target_name)
     }
 }
 
@@ -270,13 +287,9 @@ fn get_mtime(path: &Path) -> Option<u128> {
 /// Simple hash of file content for change detection.
 fn hash_file_content(path: &Path) -> Option<u64> {
     let content = fs::read(path).ok()?;
-    // Simple FNV-1a hash
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in content {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    Some(hash)
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 /// Build current workspace state from Cargo.toml files.
@@ -363,11 +376,35 @@ fn collect_targets_from_manifest(
         state.binaries.insert(name.to_string(), path);
     }
 
-    // If no explicit bins but has src/main.rs, add implicit bin
-    if manifest.bin.is_empty() && crate_root.join("src/main.rs").exists() {
-        state
-            .binaries
-            .insert(pkg.name.clone(), crate_root.join("src/main.rs"));
+    // If no explicit bins, check for implicit binaries
+    if manifest.bin.is_empty() {
+        // src/main.rs -> binary named after package
+        if crate_root.join("src/main.rs").exists() {
+            state
+                .binaries
+                .insert(pkg.name.clone(), crate_root.join("src/main.rs"));
+        }
+
+        // src/bin/*.rs -> binary named after file stem
+        // src/bin/*/main.rs -> binary named after directory
+        let bin_dir = crate_root.join("src/bin");
+        if let Ok(entries) = fs::read_dir(&bin_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+                    if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+                        state.binaries.insert(name.to_string(), path);
+                    }
+                } else if path.is_dir() {
+                    let main_rs = path.join("main.rs");
+                    if main_rs.exists() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            state.binaries.insert(name.to_string(), main_rs);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Collect library
