@@ -486,6 +486,24 @@ The comment applies to the line it's on. Due to DWARF debug info sometimes being
 
 Use `*` to allow all causes at that location.
 
+### Phantom Async Filtering
+
+By default, jonesy filters out "phantom" panic points from empty async functions. These are false positives caused by Rust's generated async state machine code having drop handlers with panic paths that can never actually be triggered by user code.
+
+For example, `async fn empty() {}` compiles to a state machine with `drop_in_place` handlers that technically have panic paths (like misaligned pointer dereference), but these cannot be reached from user code.
+
+**Criteria for filtering:**
+- Function name ends with `{async_fn#N}` (generated async state machine)
+- Only cause is Unknown (no specific panic identified)
+- No children (no real panic-inducing code in the call chain)
+
+To disable this filtering and see all potential panic points including phantoms:
+
+```toml
+# jonesy.toml
+filter_phantom_async = false
+```
+
 #### Configuring Linters and Code Review Tools
 
 Code review tools like CodeRabbit may flag `// jonesy:allow(...)` comments as "spurious" or "undocumented annotations" because they don't recognize jonesy directives. To prevent this, configure your tools to ignore these comments.

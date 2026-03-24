@@ -539,8 +539,11 @@ pub fn collect_crate_code_points(
     // Assign Unknown cause to leaf points without identified causes
     assign_unknown_causes(&mut roots);
 
-    // Filter out phantom async/closure panic points (false positives from generated code)
-    filter_phantom_async_panics(&mut roots);
+    // Filter out phantom async panic points (false positives from generated code)
+    // This is configurable via `filter_phantom_async = false` in jonesy.toml
+    if config.filter_phantom_async() {
+        filter_phantom_async_panics(&mut roots);
+    }
 
     // Filter out code points with allowed causes
     filter_allowed_causes(&mut roots, config, workspace_root);
@@ -788,4 +791,152 @@ fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
     }
 
     *points = result;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_phantom_async_point() -> CrateCodePoint {
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::Unknown);
+        CrateCodePoint {
+            name: "{async_fn#0}".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(1),
+            causes,
+            children: vec![],
+            is_direct_panic: false,
+            called_function: None,
+        }
+    }
+
+    fn make_qualified_phantom_async_point() -> CrateCodePoint {
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::Unknown);
+        CrateCodePoint {
+            name: "my_crate::module::{async_fn#0}".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 20,
+            column: Some(1),
+            causes,
+            children: vec![],
+            is_direct_panic: false,
+            called_function: None,
+        }
+    }
+
+    fn make_real_async_point() -> CrateCodePoint {
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapNone);
+        CrateCodePoint {
+            name: "{async_fn#0}".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 15,
+            column: Some(5),
+            causes,
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        }
+    }
+
+    fn make_async_with_children() -> CrateCodePoint {
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::Unknown);
+        let mut child_causes = HashSet::new();
+        child_causes.insert(PanicCause::UnwrapNone);
+        CrateCodePoint {
+            name: "{async_fn#0}".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 25,
+            column: Some(1),
+            causes,
+            children: vec![CrateCodePoint {
+                name: "inner_fn".to_string(),
+                file: "src/main.rs".to_string(),
+                line: 30,
+                column: Some(10),
+                causes: child_causes,
+                children: vec![],
+                is_direct_panic: true,
+                called_function: None,
+            }],
+            is_direct_panic: false,
+            called_function: None,
+        }
+    }
+
+    #[test]
+    fn test_is_phantom_async_function_simple() {
+        assert!(is_phantom_async_function("{async_fn#0}"));
+        assert!(is_phantom_async_function("{async_fn#42}"));
+    }
+
+    #[test]
+    fn test_is_phantom_async_function_qualified() {
+        assert!(is_phantom_async_function("my_crate::{async_fn#0}"));
+        assert!(is_phantom_async_function("my_crate::module::{async_fn#0}"));
+        assert!(is_phantom_async_function("crate::foo::bar::{async_fn#1}"));
+    }
+
+    #[test]
+    fn test_is_phantom_async_function_not_async() {
+        assert!(!is_phantom_async_function("main"));
+        assert!(!is_phantom_async_function("{closure#0}"));
+        assert!(!is_phantom_async_function("{async_block#0}"));
+        assert!(!is_phantom_async_function("my_crate::regular_fn"));
+    }
+
+    #[test]
+    fn test_filter_phantom_async_filters_simple() {
+        let mut points = vec![make_phantom_async_point()];
+        filter_phantom_async_panics(&mut points);
+        assert!(points.is_empty(), "Phantom async point should be filtered");
+    }
+
+    #[test]
+    fn test_filter_phantom_async_filters_qualified() {
+        let mut points = vec![make_qualified_phantom_async_point()];
+        filter_phantom_async_panics(&mut points);
+        assert!(
+            points.is_empty(),
+            "Qualified phantom async point should be filtered"
+        );
+    }
+
+    #[test]
+    fn test_filter_phantom_async_keeps_real_panics() {
+        let mut points = vec![make_real_async_point()];
+        filter_phantom_async_panics(&mut points);
+        assert_eq!(points.len(), 1, "Real async panic should not be filtered");
+    }
+
+    #[test]
+    fn test_filter_phantom_async_keeps_with_children() {
+        let mut points = vec![make_async_with_children()];
+        filter_phantom_async_panics(&mut points);
+        assert_eq!(
+            points.len(),
+            1,
+            "Async with children should not be filtered"
+        );
+    }
+
+    #[test]
+    fn test_filter_phantom_async_mixed() {
+        let mut points = vec![
+            make_phantom_async_point(),
+            make_real_async_point(),
+            make_qualified_phantom_async_point(),
+            make_async_with_children(),
+        ];
+        filter_phantom_async_panics(&mut points);
+        assert_eq!(
+            points.len(),
+            2,
+            "Should keep only real panics and those with children"
+        );
+    }
 }
