@@ -22,6 +22,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use crate::call_tree::CrateCodePoint;
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
+use notify::RecommendedWatcher;
 
 /// Counter for generating unique progress tokens
 static PROGRESS_TOKEN_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -52,6 +53,10 @@ pub struct JonesyLspServer {
     state: Arc<RwLock<ServerState>>,
     /// Lock to serialize analysis runs and prevent out-of-order diagnostics
     analysis_lock: Arc<Mutex<()>>,
+    /// Native file watcher - must be kept alive for watcher to function.
+    /// Stored separately from the events receiver which is consumed by the debounce task.
+    #[allow(dead_code)] // Kept alive to maintain file watching
+    watcher: Arc<RwLock<Option<RecommendedWatcher>>>,
 }
 
 impl JonesyLspServer {
@@ -60,6 +65,7 @@ impl JonesyLspServer {
             client,
             state: Arc::new(RwLock::new(ServerState::new())),
             analysis_lock: Arc::new(Mutex::new(())),
+            watcher: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -294,14 +300,17 @@ impl JonesyLspServer {
     ///
     /// This provides reliable detection of binary changes, unlike LSP file watchers
     /// which many IDEs don't implement for paths outside source directories.
-    async fn start_native_file_watcher(&self) {
+    ///
+    /// Returns true if native watching started successfully, false otherwise.
+    /// LSP file watchers should only be registered as fallback when this returns false.
+    async fn start_native_file_watcher(&self) -> bool {
         let workspace_root = {
             let state = self.state.read().await;
             state.workspace_root.clone()
         };
 
         let Some(workspace_root) = workspace_root else {
-            return;
+            return false;
         };
 
         let target_dir = workspace_root.join("target/debug");
@@ -323,7 +332,7 @@ impl JonesyLspServer {
                         format!("Failed to start native file watcher: {}", e),
                     )
                     .await;
-                return;
+                return false;
             }
         };
 
@@ -334,9 +343,14 @@ impl JonesyLspServer {
             )
             .await;
 
-        // Create debounced event stream
-        let debounced =
-            file_watcher::debounced_events(watcher_handle.events, Duration::from_millis(500)).await;
+        // Destructure handle to get events receiver and watcher separately
+        let file_watcher::WatcherHandle { events, watcher } = watcher_handle;
+
+        // Store watcher to keep it alive for the server's lifetime
+        *self.watcher.write().await = Some(watcher);
+
+        // Create debounced event stream from the events receiver
+        let debounced = file_watcher::debounced_events(events, Duration::from_millis(500)).await;
 
         // Clone what we need for the spawned task
         let client = self.client.clone();
@@ -356,6 +370,8 @@ impl JonesyLspServer {
                 run_analysis_task(&client, &state, &analysis_lock).await;
             }
         });
+
+        true
     }
 
     /// Analyze the workspace and publish diagnostics
@@ -902,11 +918,19 @@ impl LanguageServer for JonesyLspServer {
             .log_message(MessageType::INFO, "Jonesy LSP server initialized")
             .await;
 
-        // Register LSP file watchers as fallback (some clients support this)
-        self.register_file_watchers().await;
-
         // Start native file watcher for reliable binary change detection
-        self.start_native_file_watcher().await;
+        let native_watcher_started = self.start_native_file_watcher().await;
+
+        // Only register LSP file watchers as fallback if native watcher failed
+        if !native_watcher_started {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "Falling back to LSP file watchers (may not work for binary changes)",
+                )
+                .await;
+            self.register_file_watchers().await;
+        }
 
         // Run initial analysis
         self.analyze_and_publish().await;
@@ -1232,10 +1256,12 @@ async fn run_analysis_task(
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
-    // Analyze each target (skip unchanged ones unless force_full_analysis)
+    // Analyze each target (skip unchanged ones unless force_full_analysis or workspace changes affect it)
     for target in &targets {
         // Check if target needs re-analysis
-        let needs_analysis = force_full_analysis || cache.target_needs_analysis(target);
+        let needs_analysis = force_full_analysis
+            || cache.target_needs_analysis(target)
+            || workspace_changes.affects_target(target);
 
         if !needs_analysis {
             skipped_count += 1;
@@ -1319,13 +1345,23 @@ async fn run_analysis_task(
     }
 
     // Update state and publish diagnostics
+    // When some targets were skipped, merge with existing state to preserve their diagnostics
     let old_files: HashSet<_>;
     let new_files: HashSet<_> = points_by_file.keys().cloned().collect();
 
     {
         let mut state = state.write().await;
         old_files = state.panic_points.keys().cloned().collect();
-        state.panic_points = points_by_file.clone();
+
+        if skipped_count > 0 {
+            // Merge: update analyzed files, keep diagnostics from skipped targets
+            for (uri, points) in points_by_file.clone() {
+                state.panic_points.insert(uri, points);
+            }
+        } else {
+            // Full analysis: replace entirely
+            state.panic_points = points_by_file.clone();
+        }
     }
 
     // Publish diagnostics for files with panic points
@@ -1340,8 +1376,11 @@ async fn run_analysis_task(
     }
 
     // Clear diagnostics for files that no longer have panic points
-    for uri in old_files.difference(&new_files) {
-        client.publish_diagnostics(uri.clone(), vec![], None).await;
+    // Only do this when all targets were analyzed (no skipped targets)
+    if skipped_count == 0 {
+        for uri in old_files.difference(&new_files) {
+            client.publish_diagnostics(uri.clone(), vec![], None).await;
+        }
     }
 
     client

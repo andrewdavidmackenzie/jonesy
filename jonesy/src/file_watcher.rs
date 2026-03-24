@@ -70,11 +70,14 @@ impl Default for WatcherConfig {
 }
 
 /// A handle to control the file watcher.
+///
+/// IMPORTANT: This handle must be kept alive for the watcher to function.
+/// Dropping this handle stops file watching.
 pub struct WatcherHandle {
     /// Receiver for watch events.
     pub events: mpsc::Receiver<WatchEvent>,
     /// Keep the watcher alive - dropping this stops watching.
-    _watcher: RecommendedWatcher,
+    pub watcher: RecommendedWatcher,
 }
 
 /// Start watching for file changes.
@@ -113,29 +116,35 @@ pub fn start_watching(config: WatcherConfig) -> Result<WatcherHandle, String> {
                     let watch_event = categorize_path(&path, &target_dir, &config_files);
                     if let Some(evt) = watch_event {
                         // Non-blocking send - drop events if channel is full
-                        let _ = tx_clone.blocking_send(evt);
+                        let _ = tx_clone.try_send(evt);
                     }
                 }
             }
             Err(e) => {
-                let _ = tx_clone.blocking_send(WatchEvent::Error(e.to_string()));
+                let _ = tx_clone.try_send(WatchEvent::Error(e.to_string()));
             }
         }
     })
     .map_err(|e| format!("Failed to create file watcher: {}", e))?;
 
     // Watch target directory (non-recursive - we only care about direct children)
+    // If target/debug doesn't exist yet, watch target/ to catch when it's created
     if config.target_dir.exists() {
         watcher
             .watch(&config.target_dir, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch {}: {}", config.target_dir.display(), e))?;
+    } else if let Some(parent) = config.target_dir.parent() {
+        if parent.exists() {
+            // Watch parent (target/) to detect when target/debug is created
+            let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+        }
     }
 
-    // Watch config files
+    // Watch config files (or their parent directories if files don't exist yet)
     for config_file in &config.config_files {
-        if config_file.exists() {
-            // Watch the parent directory since the file might be deleted and recreated
-            if let Some(parent) = config_file.parent() {
+        // Watch the parent directory since the file might be deleted and recreated
+        if let Some(parent) = config_file.parent() {
+            if parent.exists() {
                 // Ignore errors for config files - they're optional
                 let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
             }
@@ -144,7 +153,7 @@ pub fn start_watching(config: WatcherConfig) -> Result<WatcherHandle, String> {
 
     Ok(WatcherHandle {
         events: rx,
-        _watcher: watcher,
+        watcher,
     })
 }
 
@@ -170,13 +179,18 @@ fn categorize_path(path: &Path, target_dir: &Path, config_files: &[PathBuf]) -> 
 
 /// Check if a path looks like a binary or library file.
 fn is_binary_or_library(path: &Path) -> bool {
-    let extension = path.extension().and_then(|e| e.to_str());
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
 
-    match extension {
+    match extension.as_deref() {
+        // Binary extensions (Windows)
+        Some("exe") => true,
         // Library extensions
         Some("rlib") | Some("dylib") | Some("so") | Some("dll") | Some("a") => true,
         // dSYM debug symbols on macOS
-        Some("dSYM") => false, // Skip dSYM directories
+        Some("dsym") => false, // Skip dSYM directories
         // No extension - likely a binary on Unix
         None => {
             // But skip common non-binary files

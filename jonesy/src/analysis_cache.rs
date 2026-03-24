@@ -20,8 +20,8 @@ const CACHE_FILE: &str = "jonesy/cache.json";
 pub struct TargetState {
     /// Path to the target file.
     pub path: PathBuf,
-    /// Last modification time (as seconds since epoch).
-    pub mtime: u64,
+    /// Last modification time (as milliseconds since epoch for subsecond precision).
+    pub mtime: u128,
     /// Number of panic points found in last analysis.
     pub panic_count: usize,
 }
@@ -239,15 +239,32 @@ impl WorkspaceChanges {
         targets.extend(self.changed_libraries.iter().cloned());
         targets
     }
+
+    /// Check if a specific target path is affected by workspace changes.
+    ///
+    /// This checks if the target's name (derived from its file path) matches
+    /// any added or changed binaries/libraries.
+    pub fn affects_target(&self, target_path: &Path) -> bool {
+        let target_name = target_path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .map(|n| n.strip_prefix("lib").unwrap_or(n))
+            .unwrap_or("");
+
+        self.added_binaries.iter().any(|n| n == target_name)
+            || self.changed_binaries.iter().any(|n| n == target_name)
+            || self.added_libraries.iter().any(|n| n == target_name)
+            || self.changed_libraries.iter().any(|n| n == target_name)
+    }
 }
 
-/// Get file modification time as seconds since epoch.
-fn get_mtime(path: &Path) -> Option<u64> {
+/// Get file modification time as milliseconds since epoch for subsecond precision.
+fn get_mtime(path: &Path) -> Option<u128> {
     fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
 }
 
 /// Simple hash of file content for change detection.
