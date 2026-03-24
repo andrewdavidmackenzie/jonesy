@@ -539,6 +539,9 @@ pub fn collect_crate_code_points(
     // Assign Unknown cause to leaf points without identified causes
     assign_unknown_causes(&mut roots);
 
+    // Filter out phantom async/closure panic points (false positives from generated code)
+    filter_phantom_async_panics(&mut roots);
+
     // Filter out code points with allowed causes
     filter_allowed_causes(&mut roots, config, workspace_root);
 
@@ -565,6 +568,52 @@ fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
             point.causes.insert(PanicCause::Unknown);
         }
     }
+}
+
+/// Filter out "phantom" async panic points.
+///
+/// These are false positives caused by Rust's generated async state machine code.
+/// An empty async function like `async fn empty() {}` gets compiled to a Future
+/// with drop handlers that technically have panic paths (e.g., misaligned pointer),
+/// but these can never actually be triggered by user code.
+///
+/// Criteria for filtering:
+/// 1. Function name matches async function/block patterns (not closures)
+/// 2. The only cause is Unknown (no specific panic identified)
+/// 3. Has no children (no real panic-inducing code in the call chain)
+///
+/// Why this works:
+/// - If the async function had real panic-inducing code, there would be children
+/// - If the panic cause could be identified from the call chain, it wouldn't be Unknown
+/// - The combination strongly indicates phantom panics from generated drop handlers
+///
+/// Note: We only filter `{async_fn#N}` patterns since these represent
+/// empty or trivial async functions. We keep `{async_block#N}` since those
+/// typically contain real async code that might legitimately panic.
+fn filter_phantom_async_panics(points: &mut Vec<CrateCodePoint>) {
+    points.retain_mut(|point| {
+        // Recursively filter children first
+        filter_phantom_async_panics(&mut point.children);
+
+        // Check if this is a phantom async panic point
+        let is_phantom = is_phantom_async_function(&point.name)
+            && point.causes.len() == 1
+            && point.causes.contains(&PanicCause::Unknown)
+            && point.children.is_empty();
+
+        // Keep if NOT a phantom
+        !is_phantom
+    });
+}
+
+/// Check if a function name represents a likely phantom async function.
+///
+/// We're conservative here - only filter `{async_fn#N}` which represents
+/// the entire async function as a state machine. This is most likely to be
+/// a phantom when it has no children and Unknown cause (indicates empty
+/// or very simple async function where only generated drop code can panic).
+fn is_phantom_async_function(name: &str) -> bool {
+    name.starts_with("{async_fn#")
 }
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config or inline comments.
