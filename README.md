@@ -348,7 +348,10 @@ Configuration is loaded in order of precedence (later overrides earlier):
 |-----------------|-------------------------------------------|-------------|-------------|
 | `panic`         | Explicit `panic!()` calls                 | denied      | `clippy::panic` |
 | `bounds`        | Array/slice index out of bounds           | denied      | `clippy::indexing_slicing` |
-| `overflow`      | Arithmetic overflow (add, sub, mul, etc.) | denied      | `clippy::arithmetic_side_effects` |
+| `overflow`      | All arithmetic/shift overflow (matches `div_overflow`, `rem_overflow`, `shift_overflow`) | denied | `clippy::arithmetic_side_effects` |
+| `div_overflow`  | Division overflow specifically            | denied      | `clippy::arithmetic_side_effects` |
+| `rem_overflow`  | Remainder overflow specifically           | denied      | `clippy::arithmetic_side_effects` |
+| `shift_overflow`| Shift overflow (shl/shr)                  | denied      | `clippy::arithmetic_side_effects` |
 | `div_zero`      | Division by zero                          | denied      | `clippy::arithmetic_side_effects` |
 | `unwrap`        | `unwrap()` on `None` or `Err`             | denied      | `clippy::unwrap_used` |
 | `expect`        | `expect()` on `None` or `Err`             | denied      | `clippy::expect_used` |
@@ -482,7 +485,9 @@ fn setup_config() {
 
 The comment applies to the line it's on. Due to DWARF debug info sometimes being slightly off, jonesy checks a small range around the reported line number (±2 lines).
 
-**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `format`, `capacity`, `oom`, `str_slice`, `invalid_enum`, `misaligned_ptr`, `drop`, `unwind`, `unknown`
+**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_overflow`, `rem_overflow`, `shift_overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `format`, `capacity`, `oom`, `str_slice`, `invalid_enum`, `misaligned_ptr`, `drop`, `unwind`, `unknown`
+
+> **Tip for constant divisors:** If you have divisions with compile-time constant non-zero divisors (e.g., `x / 60`), you can suppress false positive warnings with `allow = ["div_overflow", "div_zero"]` in a scoped rule.
 
 Use `*` to allow all causes at that location.
 
