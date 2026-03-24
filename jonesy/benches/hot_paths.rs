@@ -385,7 +385,7 @@ fn main() {
             // Check various lines
             for line in 1..12 {
                 for cause in &["unwrap", "expect", "panic", "index"] {
-                    black_box(check_inline_allow(test_file, line, cause));
+                    black_box(check_inline_allow(test_file, line, cause, None));
                 }
             }
         })
@@ -502,7 +502,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
     c.bench_function("filter_allowed_causes", |b| {
         b.iter(|| {
             let mut points = sample_points.clone();
-            filter_allowed_causes(&mut points, &config);
+            filter_allowed_causes(&mut points, &config, None);
             black_box(points)
         })
     });
