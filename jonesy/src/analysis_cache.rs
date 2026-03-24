@@ -248,30 +248,34 @@ impl WorkspaceChanges {
     /// any added or changed binaries/libraries. Names are normalized to handle
     /// Cargo's dash-to-underscore conversion in artifact filenames.
     pub fn affects_target(&self, target_path: &Path) -> bool {
-        let target_name = target_path
+        let stem = target_path
             .file_stem()
             .and_then(|n| n.to_str())
-            .map(|n| n.strip_prefix("lib").unwrap_or(n))
-            .map(|n| n.replace('-', "_"))
             .unwrap_or_default();
 
-        let normalize = |s: &String| s.replace('-', "_");
+        let normalize = |s: &str| s.replace('-', "_");
+
+        // For binaries: use the stem as-is (a binary named "libtool" stays "libtool")
+        let binary_name = normalize(stem);
+
+        // For libraries: strip "lib" prefix (libfoo.rlib -> foo)
+        let library_name = normalize(stem.strip_prefix("lib").unwrap_or(stem));
 
         self.added_binaries
             .iter()
-            .any(|n| normalize(n) == target_name)
+            .any(|n| normalize(n) == binary_name)
             || self
                 .changed_binaries
                 .iter()
-                .any(|n| normalize(n) == target_name)
+                .any(|n| normalize(n) == binary_name)
             || self
                 .added_libraries
                 .iter()
-                .any(|n| normalize(n) == target_name)
+                .any(|n| normalize(n) == library_name)
             || self
                 .changed_libraries
                 .iter()
-                .any(|n| normalize(n) == target_name)
+                .any(|n| normalize(n) == library_name)
     }
 }
 
@@ -304,16 +308,17 @@ pub fn build_workspace_state(workspace_root: &Path) -> WorkspaceState {
         return state;
     };
 
-    // Collect workspace members
+    // Collect workspace members (use relative paths for unique IDs)
     if let Some(workspace) = &manifest.workspace {
         for member in &workspace.members {
             if member.contains('*') {
-                // Expand glob
+                // Expand glob - use path relative to workspace root for uniqueness
                 if let Ok(paths) = glob::glob(&workspace_root.join(member).to_string_lossy()) {
                     for path in paths.flatten() {
                         if path.is_dir() && path.join("Cargo.toml").exists() {
-                            if let Some(name) = path.file_name() {
-                                state.members.push(name.to_string_lossy().to_string());
+                            // Use relative path to avoid collisions (crates/foo vs examples/foo)
+                            if let Ok(rel_path) = path.strip_prefix(workspace_root) {
+                                state.members.push(rel_path.to_string_lossy().to_string());
                             }
                         }
                     }
