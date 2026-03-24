@@ -794,13 +794,11 @@ impl JonesyLspServer {
         workspace_root: &Path,
         diagnostic: &Diagnostic,
     ) -> Option<CodeAction> {
-        // Extract just the function name (last segment)
-        let func_name = function.rsplit("::").next()?;
-
-        let title = format!("Allow '{}' in all functions named '{}'", cause, func_name);
+        // Use full function path for precise matching
+        let title = format!("Allow '{}' in this function", cause);
         let rule_text = format!(
             "\n[[rules]]\nfunction = \"*::{}\"\nallow = [\"{}\"]\n",
-            func_name, cause
+            function, cause
         );
 
         let jonesy_toml_path = workspace_root.join("jonesy.toml");
@@ -844,6 +842,249 @@ impl JonesyLspServer {
                 },
             },
             new_text: rule_text,
+        };
+
+        document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: jonesy_toml_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(edit)],
+        }));
+
+        Some(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: None,
+                document_changes: Some(DocumentChanges::Operations(document_changes)),
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: None,
+        })
+    }
+
+    /// Create a code action that adds a module-scoped rule to jonesy.toml.
+    /// Returns the path pattern (e.g., "**/tests/**") and whether it applies.
+    fn get_module_pattern(uri: &Url) -> Option<(&'static str, &'static str)> {
+        let path = uri.path();
+        // Check for common test directories/files
+        if path.contains("/tests/") {
+            Some(("**/tests/**", "tests"))
+        } else if path.contains("/benches/") {
+            Some(("**/benches/**", "benches"))
+        } else if path.contains("/examples/") {
+            Some(("**/examples/**", "examples"))
+        } else if path.ends_with("_test.rs") || path.ends_with("_tests.rs") {
+            Some(("**/*_test.rs", "test files"))
+        } else {
+            None
+        }
+    }
+
+    fn create_module_allow_action(
+        uri: &Url,
+        cause: &str,
+        workspace_root: &Path,
+        diagnostic: &Diagnostic,
+    ) -> Option<CodeAction> {
+        let (pattern, module_name) = Self::get_module_pattern(uri)?;
+
+        let title = format!("Allow '{}' in {}", cause, module_name);
+        let rule_text = format!(
+            "\n[[rules]]\npath = \"{}\"\nallow = [\"{}\"]\n",
+            pattern, cause
+        );
+
+        let jonesy_toml_path = workspace_root.join("jonesy.toml");
+        let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
+
+        // Check if jonesy.toml exists and get its length
+        let (file_exists, file_length) = if jonesy_toml_path.exists() {
+            let content = std::fs::read_to_string(&jonesy_toml_path).unwrap_or_default();
+            let lines = content.lines().count() as u32;
+            (true, lines)
+        } else {
+            (false, 0)
+        };
+
+        let mut document_changes = Vec::new();
+
+        // If file doesn't exist, create it first
+        if !file_exists {
+            document_changes.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                CreateFile {
+                    uri: jonesy_toml_uri.clone(),
+                    options: Some(CreateFileOptions {
+                        overwrite: Some(false),
+                        ignore_if_exists: Some(true),
+                    }),
+                    annotation_id: None,
+                },
+            )));
+        }
+
+        // Add the rule to the file
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: file_length,
+                    character: 0,
+                },
+                end: Position {
+                    line: file_length,
+                    character: 0,
+                },
+            },
+            new_text: rule_text,
+        };
+
+        document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: jonesy_toml_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(edit)],
+        }));
+
+        Some(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: None,
+                document_changes: Some(DocumentChanges::Operations(document_changes)),
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: None,
+        })
+    }
+
+    /// Create a code action that adds a crate-level allow rule to jonesy.toml.
+    fn create_crate_allow_action(
+        cause: &str,
+        workspace_root: &Path,
+        diagnostic: &Diagnostic,
+    ) -> Option<CodeAction> {
+        let title = format!("Allow '{}' in this crate", cause);
+
+        let jonesy_toml_path = workspace_root.join("jonesy.toml");
+        let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
+
+        // Read existing content to check if allow already exists
+        let (file_exists, existing_content) = if jonesy_toml_path.exists() {
+            let content = std::fs::read_to_string(&jonesy_toml_path).unwrap_or_default();
+            (true, content)
+        } else {
+            (false, String::new())
+        };
+
+        // Build the new allow line
+        let new_allow = format!("allow = [\"{}\"]", cause);
+
+        // Determine the edit based on existing content
+        let (edit_range, new_text) = if existing_content.contains("allow = [") {
+            // Find and update existing allow line
+            if let Some(start_idx) = existing_content.find("allow = [") {
+                let prefix = &existing_content[..start_idx];
+                let line_num = prefix.lines().count() as u32;
+                let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let char_offset = (start_idx - line_start) as u32;
+
+                // Find the end of the allow array
+                if let Some(end_bracket) = existing_content[start_idx..].find(']') {
+                    let end_pos = start_idx + end_bracket + 1;
+                    let old_allow = &existing_content[start_idx..end_pos];
+
+                    // Parse existing causes and add new one if not present
+                    let mut causes: Vec<String> = old_allow
+                        .trim_start_matches("allow = [")
+                        .trim_end_matches(']')
+                        .split(',')
+                        .map(|s| s.trim().trim_matches('"').to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+
+                    if causes.contains(&cause.to_string()) {
+                        return None; // Already allowed
+                    }
+                    causes.push(cause.to_string());
+
+                    let new_allow_line = format!(
+                        "allow = [{}]",
+                        causes
+                            .iter()
+                            .map(|c| format!("\"{}\"", c))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+
+                    let end_line = existing_content[..end_pos].lines().count() as u32 - 1;
+                    let end_char =
+                        (end_pos - existing_content[..end_pos].rfind('\n').unwrap_or(0)) as u32;
+
+                    (
+                        Range {
+                            start: Position {
+                                line: line_num.saturating_sub(1),
+                                character: char_offset,
+                            },
+                            end: Position {
+                                line: end_line,
+                                character: end_char,
+                            },
+                        },
+                        new_allow_line,
+                    )
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        } else {
+            // Add new allow line at the beginning of the file
+            (
+                Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                format!("{}\n", new_allow),
+            )
+        };
+
+        let mut document_changes = Vec::new();
+
+        // If file doesn't exist, create it first
+        if !file_exists {
+            document_changes.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                CreateFile {
+                    uri: jonesy_toml_uri.clone(),
+                    options: Some(CreateFileOptions {
+                        overwrite: Some(false),
+                        ignore_if_exists: Some(true),
+                    }),
+                    annotation_id: None,
+                },
+            )));
+        }
+
+        let edit = TextEdit {
+            range: edit_range,
+            new_text,
         };
 
         document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
@@ -1109,10 +1350,25 @@ impl LanguageServer for JonesyLspServer {
                                 actions.push(CodeActionOrCommand::CodeAction(action));
                             }
                         }
+
+                        // Action 4: Allow in module (tests, benches, examples)
+                        if let Some(action) = Self::create_module_allow_action(
+                            &params.text_document.uri,
+                            cause,
+                            root,
+                            diag,
+                        ) {
+                            actions.push(CodeActionOrCommand::CodeAction(action));
+                        }
+
+                        // Action 5: Allow in this crate (global allow)
+                        if let Some(action) = Self::create_crate_allow_action(cause, root, diag) {
+                            actions.push(CodeActionOrCommand::CodeAction(action));
+                        }
                     }
                 }
 
-                // Action 4: Allow all panics on this line (wildcard)
+                // Action 6: Allow all panics on this line (wildcard)
                 if causes.len() > 1 {
                     if let Some(action) = Self::create_inline_allow_action(
                         &params.text_document.uri,
@@ -2036,11 +2292,102 @@ mod tests {
         )
         .unwrap();
 
-        // Should extract just the function name, but clarify it matches all functions with that name
-        assert_eq!(
-            action.title,
-            "Allow 'unwrap' in all functions named 'parse_config'"
+        // Uses full function path for precise matching
+        assert_eq!(action.title, "Allow 'unwrap' in this function");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    }
+
+    #[test]
+    fn test_create_module_allow_action_tests() {
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+        let uri = Url::parse("file:///workspace/tests/integration.rs").unwrap();
+
+        let action = JonesyLspServer::create_module_allow_action(
+            &uri,
+            "unwrap",
+            &workspace_root,
+            &diagnostic,
+        )
+        .unwrap();
+
+        assert_eq!(action.title, "Allow 'unwrap' in tests");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    }
+
+    #[test]
+    fn test_create_module_allow_action_benches() {
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+        let uri = Url::parse("file:///workspace/benches/bench.rs").unwrap();
+
+        let action = JonesyLspServer::create_module_allow_action(
+            &uri,
+            "panic",
+            &workspace_root,
+            &diagnostic,
+        )
+        .unwrap();
+
+        assert_eq!(action.title, "Allow 'panic' in benches");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    }
+
+    #[test]
+    fn test_create_module_allow_action_none_for_src() {
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+        let uri = Url::parse("file:///workspace/src/main.rs").unwrap();
+
+        // Should return None for regular src files
+        let action = JonesyLspServer::create_module_allow_action(
+            &uri,
+            "unwrap",
+            &workspace_root,
+            &diagnostic,
         );
+
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_create_crate_allow_action() {
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+
+        let action =
+            JonesyLspServer::create_crate_allow_action("unwrap", &workspace_root, &diagnostic)
+                .unwrap();
+
+        assert_eq!(action.title, "Allow 'unwrap' in this crate");
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
     }
 
