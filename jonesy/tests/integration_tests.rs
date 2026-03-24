@@ -1089,3 +1089,29 @@ fn test_indirect_panic_shows_called_function() {
          Expected suggestion containing: 'This calls `func_name`...'"
     );
 }
+
+/// Test that OOM (out of memory) panics are detected via abort() path (issue #176).
+/// This verifies that jonesy traces from both rust_panic AND std::process::abort.
+#[test]
+fn test_oom_detection_via_abort() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+
+    // Run jonesy and get raw output
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks"]);
+
+    // Look for JP019 (out of memory) detection
+    // This should be detected via the abort() entry point
+    let oom_detected = stdout
+        .lines()
+        .any(|line| line.contains("JP019") || line.contains("out of memory"));
+
+    assert!(
+        oom_detected,
+        "Abort path should detect OOM (JP019) panics.\n\
+         Expected a panic point with JP019 or 'out of memory'.\n\
+         Output:\n{}",
+        stdout
+    );
+}
