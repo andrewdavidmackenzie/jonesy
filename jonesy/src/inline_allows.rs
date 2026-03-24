@@ -110,9 +110,17 @@ pub fn is_allowed_by_inline(
 ///
 /// Due to DWARF debug info sometimes being off by a line or two, we check
 /// a symmetric range around the reported line number (±2 lines).
-pub fn check_inline_allow(file_path: &str, line: u32, cause_id: &str) -> bool {
+///
+/// The `workspace_root` parameter is optional - if provided, it's used to resolve
+/// relative paths. If not provided, falls back to current directory.
+pub fn check_inline_allow(
+    file_path: &str,
+    line: u32,
+    cause_id: &str,
+    workspace_root: Option<&Path>,
+) -> bool {
     // Try to read the file - handle both absolute and relative paths
-    let content = read_source_file(file_path);
+    let content = read_source_file_with_root(file_path, workspace_root);
 
     let content = match content {
         Some(c) => c,
@@ -141,12 +149,23 @@ pub fn check_inline_allow(file_path: &str, line: u32, cause_id: &str) -> bool {
 
 /// Try to read a source file, handling both absolute and relative paths.
 /// DWARF often stores relative paths from the workspace root.
-fn read_source_file(file_path: &str) -> Option<String> {
+///
+/// If `workspace_root` is provided, uses it to resolve relative paths.
+/// Otherwise falls back to searching from current directory.
+fn read_source_file_with_root(file_path: &str, workspace_root: Option<&Path>) -> Option<String> {
     let path = Path::new(file_path);
 
     // Try the path as-is first (handles absolute paths)
     if path.exists() {
         return fs::read_to_string(path).ok();
+    }
+
+    // If workspace_root is provided, try resolving from there first
+    if let Some(root) = workspace_root {
+        let candidate = root.join(file_path);
+        if candidate.exists() {
+            return fs::read_to_string(&candidate).ok();
+        }
     }
 
     // For relative paths, try to find the workspace root by looking for Cargo.toml

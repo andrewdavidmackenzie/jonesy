@@ -525,11 +525,14 @@ pub fn collect_crate_relationships(
 
 /// Collect crate code points without printing.
 /// Returns the filtered, deduplicated, and sorted code points along with summary.
+///
+/// The `workspace_root` parameter is used to resolve relative file paths for inline allow checks.
 pub fn collect_crate_code_points(
     node: &CallTreeNode,
     crate_src_path: &str,
     config: &Config,
     valid_files: Option<&ValidSourceFiles>,
+    workspace_root: Option<&std::path::Path>,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
     let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path, valid_files);
 
@@ -537,7 +540,7 @@ pub fn collect_crate_code_points(
     assign_unknown_causes(&mut roots);
 
     // Filter out code points with allowed causes
-    filter_allowed_causes(&mut roots, config);
+    filter_allowed_causes(&mut roots, config, workspace_root);
 
     // Deduplicate roots by (file, line)
     dedupe_crate_points(&mut roots);
@@ -568,7 +571,13 @@ fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
 /// A point is kept if ANY of its causes is denied.
 /// Also removes allowed causes from the causes set so only denied causes are displayed.
 /// If a point has no causes, it's kept (conservative - assume denied).
-pub fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) {
+///
+/// The `workspace_root` parameter is used to resolve relative file paths for inline allow checks.
+pub fn filter_allowed_causes(
+    points: &mut Vec<CrateCodePoint>,
+    config: &Config,
+    workspace_root: Option<&std::path::Path>,
+) {
     use crate::inline_allows::check_inline_allow;
 
     points.retain_mut(|point| {
@@ -577,7 +586,7 @@ pub fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) 
 
         // For points with no causes, check if there's a wildcard inline allow
         // (points with no cause are otherwise kept conservatively)
-        if originally_empty && check_inline_allow(&point.file, point.line, "*") {
+        if originally_empty && check_inline_allow(&point.file, point.line, "*", workspace_root) {
             // Wildcard inline allow - filter out this point
             return false;
         }
@@ -588,7 +597,7 @@ pub fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) 
             let cause_id = cause.id();
 
             // First check inline comments - if allowed there, filter it out
-            if check_inline_allow(&point.file, point.line, cause_id) {
+            if check_inline_allow(&point.file, point.line, cause_id, workspace_root) {
                 return false; // Not denied (allowed by inline comment)
             }
 
@@ -601,7 +610,7 @@ pub fn filter_allowed_causes(points: &mut Vec<CrateCodePoint>, config: &Config) 
 
         if should_keep {
             // Recursively filter children
-            filter_allowed_causes(&mut point.children, config);
+            filter_allowed_causes(&mut point.children, config, workspace_root);
         }
 
         should_keep
