@@ -613,7 +613,11 @@ fn filter_phantom_async_panics(points: &mut Vec<CrateCodePoint>) {
 /// a phantom when it has no children and Unknown cause (indicates empty
 /// or very simple async function where only generated drop code can panic).
 fn is_phantom_async_function(name: &str) -> bool {
-    name.starts_with("{async_fn#")
+    // Handle both simple names like "{async_fn#0}" and
+    // fully qualified names like "crate::mod::foo::{async_fn#0}"
+    name.rsplit("::")
+        .next()
+        .is_some_and(|tail| tail.starts_with("{async_fn#"))
 }
 
 /// Filter out code points whose causes are ALL allowed (not denied) by config or inline comments.
