@@ -4,3 +4,5 @@
 modules.xml
 vcs.xml
 examples/workspace_test/target
+
+**/*.profraw
