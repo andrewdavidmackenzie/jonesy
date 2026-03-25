@@ -272,4 +272,98 @@ fn foo() {
         assert!(causes.contains("unwrap"));
         assert!(causes.contains("bounds"));
     }
+
+    #[test]
+    fn test_parse_line_allows_no_match() {
+        let line = "    let x = foo(); // regular comment";
+        assert!(parse_line_allows(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_line_allows_empty() {
+        let line = "    let x = foo(); // jonesy:allow()";
+        assert!(parse_line_allows(line).is_none());
+    }
+
+    #[test]
+    fn test_parse_file_allows_no_comments() {
+        let content = "fn foo() {\n    bar();\n}\n";
+        let allows = parse_file_allows(content);
+        assert!(allows.is_empty());
+    }
+
+    #[test]
+    fn test_parse_file_allows_multiple_lines() {
+        let content = r#"
+fn foo() {
+    bar(); // jonesy:allow(panic)
+    baz();
+    qux(); // jonesy:allow(unwrap)
+}
+"#;
+        let allows = parse_file_allows(content);
+        assert_eq!(allows.len(), 2);
+        assert!(allows.get(&3).unwrap().contains("panic"));
+        assert!(allows.get(&5).unwrap().contains("unwrap"));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_exact_match() {
+        let mut allows = InlineAllows::new();
+        let mut causes = HashSet::new();
+        causes.insert("unwrap".to_string());
+        allows.insert(("test.rs".to_string(), 10), causes);
+
+        assert!(is_allowed_by_inline(&allows, "test.rs", 10, "unwrap"));
+        assert!(!is_allowed_by_inline(&allows, "test.rs", 10, "panic"));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_wildcard() {
+        let mut allows = InlineAllows::new();
+        let mut causes = HashSet::new();
+        causes.insert("*".to_string());
+        allows.insert(("test.rs".to_string(), 10), causes);
+
+        assert!(is_allowed_by_inline(&allows, "test.rs", 10, "unwrap"));
+        assert!(is_allowed_by_inline(&allows, "test.rs", 10, "panic"));
+        assert!(is_allowed_by_inline(&allows, "test.rs", 10, "anything"));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_previous_line() {
+        let mut allows = InlineAllows::new();
+        let mut causes = HashSet::new();
+        causes.insert("unwrap".to_string());
+        // Comment on line 9
+        allows.insert(("test.rs".to_string(), 9), causes);
+
+        // Should match for line 10 (checks previous line)
+        assert!(is_allowed_by_inline(&allows, "test.rs", 10, "unwrap"));
+        // Should not match for line 11
+        assert!(!is_allowed_by_inline(&allows, "test.rs", 11, "unwrap"));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_no_match() {
+        let allows = InlineAllows::new();
+        assert!(!is_allowed_by_inline(&allows, "test.rs", 10, "unwrap"));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_line_one() {
+        let mut allows = InlineAllows::new();
+        let mut causes = HashSet::new();
+        causes.insert("unwrap".to_string());
+        allows.insert(("test.rs".to_string(), 1), causes);
+
+        // Line 1 should not try to check line 0 (which doesn't exist)
+        assert!(is_allowed_by_inline(&allows, "test.rs", 1, "unwrap"));
+    }
+
+    #[test]
+    fn test_scan_file_allows_nonexistent() {
+        let allows = scan_file_allows("/nonexistent/path/to/file.rs");
+        assert!(allows.is_empty());
+    }
 }
