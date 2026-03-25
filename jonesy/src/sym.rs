@@ -2377,6 +2377,7 @@ fn resolve_abstract_origin_name<R: Reader>(
 }
 
 /// Resolve file path from DW_AT_decl_file attribute value.
+/// Handles cases where directory may be absent or empty (basename-only entries).
 fn resolve_decl_file<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
@@ -2388,16 +2389,18 @@ fn resolve_decl_file<R: Reader>(
     let Some(file_entry) = line_program.header().file(file_idx) else {
         return Ok(None);
     };
-    let Some(dir) = file_entry.directory(line_program.header()) else {
-        return Ok(None);
-    };
-    let dir_str = dwarf.attr_string(unit, dir.clone())?;
     let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
-    Ok(Some(format!(
-        "{}/{}",
-        dir_str.to_string_lossy()?,
-        file_str.to_string_lossy()?
-    )))
+    let file_name = file_str.to_string_lossy()?.into_owned();
+
+    if let Some(dir) = file_entry.directory(line_program.header()) {
+        let dir_str = dwarf.attr_string(unit, dir.clone())?;
+        let dir_name = dir_str.to_string_lossy()?;
+        if !dir_name.is_empty() {
+            return Ok(Some(format!("{dir_name}/{file_name}")));
+        }
+    }
+
+    Ok(Some(file_name))
 }
 
 /// Resolve name, file, and line from a DW_AT_specification reference.
