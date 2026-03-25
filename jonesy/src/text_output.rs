@@ -1007,8 +1007,18 @@ mod tests {
         // Test tree format with multiple directories
         let points = vec![
             make_test_point("func1", "/test/src/a/file1.rs", 10, vec![PanicCause::Todo]),
-            make_test_point("func2", "/test/src/b/file2.rs", 20, vec![PanicCause::Unreachable]),
-            make_test_point("func3", "/test/src/a/file3.rs", 30, vec![PanicCause::Unimplemented]),
+            make_test_point(
+                "func2",
+                "/test/src/b/file2.rs",
+                20,
+                vec![PanicCause::Unreachable],
+            ),
+            make_test_point(
+                "func3",
+                "/test/src/a/file3.rs",
+                30,
+                vec![PanicCause::Unimplemented],
+            ),
         ];
         let mut output = Vec::new();
         write_directory_tree(

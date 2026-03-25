@@ -457,7 +457,12 @@ fn foo() {
 
     #[test]
     fn test_check_inline_allow_nonexistent_file() {
-        assert!(!check_inline_allow("/nonexistent/file.rs", 1, "unwrap", None));
+        assert!(!check_inline_allow(
+            "/nonexistent/file.rs",
+            1,
+            "unwrap",
+            None
+        ));
     }
 
     #[test]
