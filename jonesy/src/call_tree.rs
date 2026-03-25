@@ -337,23 +337,12 @@ pub fn collect_crate_code_points_hierarchical(
         valid_files,
     );
 
-    // Find roots: points that are not in any other point's children
-    let all_children: HashSet<(String, u32)> = points
-        .values()
-        .flat_map(|(_, _, _, children, _, _)| children.iter().cloned())
-        .collect();
-
-    let mut roots: Vec<CodePointKey> = points
-        .keys()
-        .filter(|k| !all_children.contains(*k))
-        .cloned()
-        .collect();
-
-    // Cyclic relationship fallback: still emit collected points
-    if roots.is_empty() && !points.is_empty() {
-        roots = points.keys().cloned().collect();
-        roots.sort();
-    }
+    // All crate code points should be reported as roots.
+    // Each point that can lead to a panic deserves its own entry,
+    // regardless of whether it's also called by another crate function.
+    // Children show what each function calls (toward the panic).
+    let mut roots: Vec<CodePointKey> = points.keys().cloned().collect();
+    roots.sort(); // Deterministic ordering
 
     // Build tree from roots with caching to avoid exponential rebuilding of shared subtrees
     // Cache: key -> built subtree (avoids rebuilding same subtree multiple times)

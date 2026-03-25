@@ -1180,3 +1180,69 @@ fn test_dwarf_specification_handling() {
         json_stdout
     );
 }
+
+/// Test that intermediate functions (functions in modules called from main) are reported
+/// as root-level panic points, not just as children of their callers.
+/// This is critical for LSP diagnostics - users should see warnings ON the function definition,
+/// not just at call sites.
+#[test]
+fn test_intermediate_functions_reported_as_roots() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+
+    // Run jonesy with text output
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks"]);
+
+    // Check that module/mod.rs entries appear as ROOT-level entries (starting with "-->")
+    // not just as children (starting with "└──")
+    let root_module_entries: Vec<&str> = stdout
+        .lines()
+        .filter(|line| {
+            line.trim_start().starts_with("--> ")
+                && line.contains("module/mod.rs")
+        })
+        .collect();
+
+    // Should have at least some root-level entries for module/mod.rs
+    // Functions like cause_an_unwrap, cause_expect_none, etc. should be reported at root level
+    assert!(
+        !root_module_entries.is_empty(),
+        "Module functions should be reported as root-level panic points.\n\
+         Functions in module/mod.rs contain direct panic calls (unwrap, expect, panic!)\n\
+         and should appear as root entries, not just as children of main.rs calls.\n\
+         Found {} root module entries.\n\
+         Output:\n{}",
+        root_module_entries.len(),
+        stdout
+    );
+
+    // Verify specific functions are reported at root level
+    let has_unwrap_root = root_module_entries
+        .iter()
+        .any(|line| line.contains(":9:") || line.contains(":10:")); // cause_an_unwrap lines
+    let has_expect_root = root_module_entries
+        .iter()
+        .any(|line| line.contains(":40:") || line.contains(":39:")); // cause_expect_none lines
+
+    assert!(
+        has_unwrap_root || has_expect_root,
+        "Expected at least one module function (like cause_an_unwrap or cause_expect_none)\n\
+         to appear as a root-level entry.\n\
+         Root module entries found: {:?}\n\
+         Full output:\n{}",
+        root_module_entries,
+        stdout
+    );
+
+    // Verify we have multiple root entries from module (not just one)
+    // This catches regressions where only some module functions are reported
+    assert!(
+        root_module_entries.len() >= 10,
+        "Expected at least 10 root-level module entries (for various panic functions).\n\
+         Found only {} entries: {:?}\n\
+         Each module function with a panic path should appear as a root entry.",
+        root_module_entries.len(),
+        root_module_entries
+    );
+}
