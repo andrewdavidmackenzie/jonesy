@@ -147,34 +147,45 @@ Last updated: 2026-03-25
 
 ## Coverage Gaps
 
-### High Priority (Core Features Missing Tests)
+### Critical: No Tests At All (Neither Integration Nor Unit)
 
-1. **HTML output format** — No integration test verifies HTML generation
-2. **`--summary-only` flag** — No integration test for summary-only output
-3. **LSP server** — No integration tests for LSP functionality
-4. **`filter_phantom_async` config** — No integration test (has unit tests)
-5. **Function-scoped rules** — No integration test (has unit tests)
+These features have zero test coverage:
 
-### Medium Priority (Edge Cases)
+| Feature                     | Description                              | Priority |
+|-----------------------------|------------------------------------------|----------|
+| LSP server                  | No tests for `jonesy lsp` functionality  | High     |
+| FAT binary handling         | No test for multi-arch binaries          | Medium   |
+| Stale dSYM detection        | No test for timestamp comparison         | Medium   |
+| Terminal hyperlink output   | OSC 8 escape sequences                   | Low      |
+| `--quiet` flag              | Suppresses progress output               | Low      |
+| `--max-threads`             | Thread pool configuration                | Low      |
+| dSYM auto-generation        | Automatic dsymutil invocation            | Low      |
+| GitHub Action               | PR annotations (tested in action repo)   | Low      |
+| Problem matcher             | Inline CI warnings                       | Low      |
+| Parallel workspace analysis | Concurrent crate processing              | Low      |
 
-6. **Division/remainder/shift overflow** — No integration test for JP003-JP005
-7. **`expect()` on Err** (JP009) — Only None variant integration-tested
-8. **`drop` panic** (JP015) — No integration test (has unit test)
-9. **`unwind` panic** (JP016) — No integration test (has unit test)
-10. **`format` panic** (JP017) — No integration test (has unit test)
-11. **`capacity` panic** (JP018) — No integration test (has unit test)
-12. **`str_slice` panic** (JP020) — No integration test (has unit tests)
-13. **`invalid_enum` panic** (JP021) — No integration test (has unit test)
-14. **`misaligned_ptr` panic** (JP022) — No integration test (has unit test)
-15. **FAT binary handling** — No test for multi-arch binaries
-16. **Stale dSYM detection** — No test for timestamp comparison
+### Has Unit Tests But No Integration Tests
 
-### Low Priority (Nice to Have)
+These features have unit test coverage but no end-to-end integration tests:
 
-17. **Terminal hyperlink output** — Hard to test OSC 8 sequences
-18. **`--quiet` flag** — Suppresses output, hard to verify
-19. **`--max-threads` performance** — Performance testing is complex
-20. **GitHub Action workflow** — Tested in separate action repo
+| Feature                            | Unit Tests Present                                              |
+|------------------------------------|-----------------------------------------------------------------|
+| HTML output format                 | `test_generate_html_output_*`                                   |
+| `--summary-only` flag              | `test_write_text_output_summary_only`, `test_generate_json_output_summary_only` |
+| `filter_phantom_async` config      | `test_filter_phantom_async_*`                                   |
+| Function-scoped rules              | `test_scoped_rule_function_matching`, `test_function_rule_more_specific_than_path` |
+| Division overflow (JP003)          | `test_detect_panic_cause_arithmetic_overflow`                   |
+| Remainder overflow (JP004)         | `test_detect_panic_cause_arithmetic_overflow`                   |
+| Shift overflow (JP005)             | `test_detect_panic_cause_shift_overflow`                        |
+| `expect()` on Err (JP009)          | `test_detect_panic_cause_result_expect`                         |
+| `drop` panic (JP015)               | `test_detect_panic_cause_panic_in_cleanup`                      |
+| `unwind` panic (JP016)             | `test_detect_panic_cause_panic_cannot_unwind`                   |
+| `format` panic (JP017)             | `test_detect_panic_cause_formatting`                            |
+| `capacity` panic (JP018)           | `test_detect_panic_cause_capacity_overflow`                     |
+| `str_slice` panic (JP020)          | `test_detect_panic_cause_string_slice_error`                    |
+| `invalid_enum` panic (JP021)       | `test_detect_panic_cause_invalid_enum`                          |
+| `misaligned_ptr` panic (JP022)     | `test_detect_panic_cause_misaligned_pointer`                    |
+| Inline allow comments              | `test_parse_single_cause`, `test_check_inline_allow_with_file`  |
 
 ---
 
