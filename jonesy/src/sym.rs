@@ -2167,6 +2167,7 @@ fn parse_function_die<R: Reader>(
     let mut high_pc_is_offset = false;
     let mut file: Option<String> = None;
     let mut line: Option<u32> = None;
+    let mut specification: Option<gimli::UnitOffset<R::Offset>> = None;
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
@@ -2217,7 +2218,30 @@ fn parse_function_die<R: Reader>(
                     line = Some(l as u32);
                 }
             }
+            gimli::DW_AT_specification => {
+                // Reference to the declaration DIE that has name/file/line
+                if let AttributeValue::UnitRef(offset) = attr.value() {
+                    specification = Some(offset);
+                }
+            }
             _ => {}
+        }
+    }
+
+    // If we have a specification reference but missing name/file/line, resolve from it
+    if let Some(spec_offset) = specification {
+        if name.is_none() || file.is_none() || line.is_none() {
+            let (spec_name, spec_file, spec_line) =
+                resolve_specification(dwarf, unit, spec_offset)?;
+            if name.is_none() {
+                name = spec_name;
+            }
+            if file.is_none() {
+                file = spec_file;
+            }
+            if line.is_none() {
+                line = spec_line;
+            }
         }
     }
 
@@ -2360,6 +2384,61 @@ fn resolve_abstract_origin_name<R: Reader>(
     }
 
     Ok(name)
+}
+
+/// Resolve name, file, and line from a DW_AT_specification reference.
+/// Used when a function definition references a separate declaration.
+fn resolve_specification<R: Reader>(
+    dwarf: &Dwarf<R>,
+    unit: &Unit<R>,
+    offset: gimli::UnitOffset<R::Offset>,
+) -> Result<(Option<String>, Option<String>, Option<u32>), gimli::Error> {
+    let entry = unit.entry(offset)?;
+    let mut name: Option<String> = None;
+    let mut file: Option<String> = None;
+    let mut line: Option<u32> = None;
+
+    let mut attrs = entry.attrs();
+    while let Some(attr) = attrs.next()? {
+        match attr.name() {
+            gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
+                // Prefer mangled name if available
+                if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
+                    name = Some(s.to_string_lossy()?.into_owned());
+                }
+            }
+            gimli::DW_AT_name => {
+                if name.is_none() {
+                    if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
+                        name = Some(s.to_string_lossy()?.into_owned());
+                    }
+                }
+            }
+            gimli::DW_AT_decl_file => {
+                if let AttributeValue::FileIndex(idx) = attr.value()
+                    && let Some(line_program) = &unit.line_program
+                    && let Some(file_entry) = line_program.header().file(idx)
+                    && let Some(dir) = file_entry.directory(line_program.header())
+                {
+                    let dir_str = dwarf.attr_string(unit, dir.clone())?;
+                    let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
+                    file = Some(format!(
+                        "{}/{}",
+                        dir_str.to_string_lossy()?,
+                        file_str.to_string_lossy()?
+                    ));
+                }
+            }
+            gimli::DW_AT_decl_line => {
+                if let AttributeValue::Udata(l) = attr.value() {
+                    line = Some(l as u32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((name, file, line))
 }
 
 /// Find all functions that call a target address, with source info

@@ -1115,3 +1115,68 @@ fn test_oom_detection_via_abort() {
         stdout
     );
 }
+
+/// Test that functions with DW_AT_specification are correctly included in analysis (issue #181).
+/// This verifies that method definitions that reference separate declarations are parsed.
+/// Without DW_AT_specification handling, TimeStamp::now would be missing from the tree.
+#[test]
+fn test_dwarf_specification_handling() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("unwrap_or_default");
+
+    // Run jonesy with JSON output to check tree structure
+    let json_stdout = run_jonesy_raw_output(&example_dir, &["--format", "json", "--tree"]);
+    let json: serde_json::Value =
+        serde_json::from_str(&json_stdout).expect("Failed to parse JSON output");
+
+    let panic_points = json["panic_points"]
+        .as_array()
+        .expect("Expected panic_points array");
+
+    // Find panic points that have TimeStamp::now in the tree
+    // This verifies that TimeStamp::now is correctly included via DW_AT_specification
+    let mut found_timestamp_now = false;
+    let mut timestamp_function_name = String::new();
+
+    for point in panic_points {
+        if let Some(children) = point["children"].as_array() {
+            for child in children {
+                // Check if child is TimeStamp::now
+                if let Some(func) = child["function"].as_str() {
+                    if func.contains("TimeStamp") && func.contains("now") {
+                        found_timestamp_now = true;
+                        timestamp_function_name = func.to_string();
+                    }
+                }
+                // Check nested children (TimeStamp::now is grandchild of main)
+                if let Some(grandchildren) = child["children"].as_array() {
+                    for grandchild in grandchildren {
+                        if let Some(func) = grandchild["function"].as_str() {
+                            if func.contains("TimeStamp") && func.contains("now") {
+                                found_timestamp_now = true;
+                                timestamp_function_name = func.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_timestamp_now,
+        "TimeStamp::now should appear in the call tree.\n\
+         This verifies DW_AT_specification handling works correctly.\n\
+         JSON output:\n{}",
+        json_stdout
+    );
+
+    assert!(
+        timestamp_function_name.contains("TimeStamp") && timestamp_function_name.contains("now"),
+        "Expected TimeStamp::now function, got: '{}'\n\
+         JSON output:\n{}",
+        timestamp_function_name,
+        json_stdout
+    );
+}
