@@ -331,14 +331,22 @@ fn extract_simple_function_name(full_name: &str) -> String {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.starts_with('h') && trimmed.len() > 1 && trimmed[1..].chars().all(|c| c.is_ascii_hexdigit()) {
+        if trimmed.starts_with('h')
+            && trimmed.len() > 1
+            && trimmed[1..].chars().all(|c| c.is_ascii_hexdigit())
+        {
             continue;
         }
         return trimmed.to_string();
     }
 
     // Fallback: return the last non-empty segment
-    cleaned.rsplit("::").find(|s| !s.is_empty()).unwrap_or(&cleaned).trim().to_string()
+    cleaned
+        .rsplit("::")
+        .find(|s| !s.is_empty())
+        .unwrap_or(&cleaned)
+        .trim()
+        .to_string()
 }
 
 /// Collect crate code points with hierarchy.
@@ -961,7 +969,10 @@ mod tests {
         // Real mangled Rust symbol for std::collections::hash::set::HashSet<T>::new
         let mangled = "_ZN3std11collections4hash3set16HashSet$LT$T$GT$3new17ha7a7fdf7dbcd659dE";
         let result = extract_simple_function_name(mangled);
-        assert_eq!(result, "new", "Should demangle and extract 'new' from HashSet::new");
+        assert_eq!(
+            result, "new",
+            "Should demangle and extract 'new' from HashSet::new"
+        );
     }
 
     #[test]
@@ -975,10 +986,7 @@ mod tests {
             extract_simple_function_name("HashMap<K, V>::insert"),
             "insert"
         );
-        assert_eq!(
-            extract_simple_function_name("Vec<Option<T>>::push"),
-            "push"
-        );
+        assert_eq!(extract_simple_function_name("Vec<Option<T>>::push"), "push");
     }
 
     #[test]
