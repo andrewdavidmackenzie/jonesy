@@ -1198,10 +1198,7 @@ fn test_intermediate_functions_reported_as_roots() {
     // not just as children (starting with "└──")
     let root_module_entries: Vec<&str> = stdout
         .lines()
-        .filter(|line| {
-            line.trim_start().starts_with("--> ")
-                && line.contains("module/mod.rs")
-        })
+        .filter(|line| line.trim_start().starts_with("--> ") && line.contains("module/mod.rs"))
         .collect();
 
     // Should have at least some root-level entries for module/mod.rs
