@@ -8,6 +8,7 @@ use crate::panic_cause::{PanicCause, detect_panic_cause};
 use crate::sym::{CallGraph, ValidSourceFiles, matches_crate_pattern_validated};
 use dashmap::DashSet;
 use rayon::prelude::*;
+use rustc_demangle::demangle;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -295,25 +296,49 @@ fn is_panic_triggering_function(func_name: &str) -> bool {
         || func_name.contains("Index::index")
 }
 
-/// Extract a simple, readable function name from a potentially complex DWARF name.
-/// E.g., "my_crate::module::init" -> "init"
+/// Extract a simple, readable function name from a potentially mangled or complex name.
+/// Demangles Rust symbols first, then extracts the simple name.
+/// E.g., "_ZN3std11collections4hash3set16HashSet$LT$T$GT$3new17h..." -> "new"
+///       "my_crate::module::init" -> "init"
 ///       "init<T>" -> "init"
 ///       "collect<std::env::Args>" -> "collect"
+///       "HashSet<T>::new" -> "new"
 fn extract_simple_function_name(full_name: &str) -> String {
-    // Remove generic parameters first (handles nested generics)
-    let name = if let Some(bracket_pos) = full_name.find('<') {
-        &full_name[..bracket_pos]
-    } else {
-        full_name
-    };
+    // Demangle the name first (handles Rust mangled symbols like _ZN...)
+    let demangled = demangle(full_name).to_string();
 
-    // Take the last segment after ::
-    let name = name.rsplit("::").next().unwrap_or(name);
+    // Remove all generic parameters while preserving the rest
+    // E.g., "HashSet<T>::new" -> "HashSet::new"
+    let mut cleaned = String::new();
+    let mut depth = 0;
+    for c in demangled.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            _ if depth == 0 => cleaned.push(c),
+            _ => {}
+        }
+    }
 
-    // Clean up any remaining special characters
-    let name = name.trim_end_matches('>').trim();
+    // Split by :: and work backwards to find a meaningful name
+    let segments: Vec<&str> = cleaned.split("::").collect();
 
-    name.to_string()
+    // Find the last segment that isn't a hash (hashes are like "h1234abcd...")
+    // Rust adds hash suffixes to prevent symbol collisions
+    for segment in segments.iter().rev() {
+        let trimmed = segment.trim();
+        // Skip empty segments and hash suffixes (start with 'h' followed by hex)
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('h') && trimmed.len() > 1 && trimmed[1..].chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        return trimmed.to_string();
+    }
+
+    // Fallback: return the last non-empty segment
+    cleaned.rsplit("::").find(|s| !s.is_empty()).unwrap_or(&cleaned).trim().to_string()
 }
 
 /// Collect crate code points with hierarchy.
@@ -928,5 +953,83 @@ mod tests {
             2,
             "Should keep only real panics and those with children"
         );
+    }
+
+    // Tests for extract_simple_function_name - ensures mangled names are demangled
+    #[test]
+    fn test_extract_simple_function_name_mangled_rust_symbol() {
+        // Real mangled Rust symbol for std::collections::hash::set::HashSet<T>::new
+        let mangled = "_ZN3std11collections4hash3set16HashSet$LT$T$GT$3new17ha7a7fdf7dbcd659dE";
+        let result = extract_simple_function_name(mangled);
+        assert_eq!(result, "new", "Should demangle and extract 'new' from HashSet::new");
+    }
+
+    #[test]
+    fn test_extract_simple_function_name_with_nested_generics() {
+        // Test handling of nested generics like HashSet<T>::new
+        assert_eq!(
+            extract_simple_function_name("std::collections::HashSet<T>::new"),
+            "new"
+        );
+        assert_eq!(
+            extract_simple_function_name("HashMap<K, V>::insert"),
+            "insert"
+        );
+        assert_eq!(
+            extract_simple_function_name("Vec<Option<T>>::push"),
+            "push"
+        );
+    }
+
+    #[test]
+    fn test_extract_simple_function_name_already_demangled() {
+        assert_eq!(
+            extract_simple_function_name("std::collections::HashSet::new"),
+            "new"
+        );
+        assert_eq!(
+            extract_simple_function_name("my_crate::module::init"),
+            "init"
+        );
+    }
+
+    #[test]
+    fn test_extract_simple_function_name_with_generics() {
+        assert_eq!(
+            extract_simple_function_name("collect<std::env::Args>"),
+            "collect"
+        );
+        assert_eq!(extract_simple_function_name("init<T>"), "init");
+    }
+
+    #[test]
+    fn test_extract_simple_function_name_simple() {
+        assert_eq!(extract_simple_function_name("unwrap"), "unwrap");
+        assert_eq!(extract_simple_function_name("clone"), "clone");
+    }
+
+    #[test]
+    fn test_extract_simple_function_name_no_mangled_output() {
+        // Ensure we NEVER return mangled-looking names (starting with _ZN)
+        let test_cases = [
+            "_ZN3std11collections4hash3set16HashSet$LT$T$GT$3new17ha7a7fdf7dbcd659dE",
+            "_ZN4core6option15Option$LT$T$GT$6unwrap17h1234567890abcdefE",
+            "_ZN4core6result19Result$LT$T$C$E$GT$6expect17h1234567890abcdefE",
+        ];
+        for mangled in test_cases {
+            let result = extract_simple_function_name(mangled);
+            assert!(
+                !result.starts_with("_ZN"),
+                "Should never return mangled name. Input: {}, Output: {}",
+                mangled,
+                result
+            );
+            assert!(
+                !result.contains("$LT$"),
+                "Should never contain mangled generic markers. Input: {}, Output: {}",
+                mangled,
+                result
+            );
+        }
     }
 }
