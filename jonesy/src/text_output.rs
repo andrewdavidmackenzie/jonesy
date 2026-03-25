@@ -467,3 +467,138 @@ fn get_display_path(file: &str, project_root: Option<&Path>, crate_root: Option<
         absolute_path
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panic_cause::PanicCause;
+    use std::collections::HashSet;
+
+    fn make_test_point(causes: Vec<PanicCause>) -> CrateCodePoint {
+        CrateCodePoint {
+            name: "test_func".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(5),
+            causes: causes.into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        }
+    }
+
+    #[test]
+    fn test_make_absolute_already_absolute() {
+        let path = make_absolute("/home/user/src/main.rs", None);
+        assert_eq!(path, "/home/user/src/main.rs");
+    }
+
+    #[test]
+    fn test_make_absolute_with_project_root() {
+        let root = Path::new("/home/user/project");
+        let path = make_absolute("src/main.rs", Some(root));
+        assert_eq!(path, "/home/user/project/src/main.rs");
+    }
+
+    #[test]
+    fn test_make_absolute_no_root() {
+        let path = make_absolute("src/main.rs", None);
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_get_relative_path_absolute() {
+        let root = Path::new("/home/user/project");
+        let path = get_relative_path("/home/user/project/src/main.rs", Some(root));
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_get_relative_path_already_relative() {
+        let root = Path::new("/home/user/project");
+        let path = get_relative_path("src/main.rs", Some(root));
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_get_relative_path_no_root() {
+        let path = get_relative_path("src/main.rs", None);
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_get_display_path_with_crate_root() {
+        let project_root = Path::new("/workspace");
+        let crate_root = Path::new("/workspace/crate_a");
+        let path = get_display_path(
+            "/workspace/crate_a/src/lib.rs",
+            Some(project_root),
+            Some(crate_root),
+        );
+        assert_eq!(path, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_get_display_path_project_root_only() {
+        let project_root = Path::new("/workspace");
+        let path = get_display_path("/workspace/src/main.rs", Some(project_root), None);
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_get_sorted_causes_empty() {
+        let causes: HashSet<PanicCause> = HashSet::new();
+        let sorted = get_sorted_causes(&causes);
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
+    fn test_get_sorted_causes_single() {
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapNone);
+        let sorted = get_sorted_causes(&causes);
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].error_code(), "JP006");
+    }
+
+    #[test]
+    fn test_get_sorted_causes_multiple() {
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapErr); // JP007
+        causes.insert(PanicCause::BoundsCheck); // JP002
+        causes.insert(PanicCause::ExplicitPanic); // JP001
+        let sorted = get_sorted_causes(&causes);
+        assert_eq!(sorted.len(), 3);
+        // Should be sorted by error code
+        assert_eq!(sorted[0].error_code(), "JP001");
+        assert_eq!(sorted[1].error_code(), "JP002");
+        assert_eq!(sorted[2].error_code(), "JP007");
+    }
+
+    #[test]
+    fn test_format_causes_empty() {
+        let causes: Vec<&PanicCause> = vec![];
+        let formatted = format_causes(&causes);
+        assert_eq!(formatted, "");
+    }
+
+    #[test]
+    fn test_format_causes_single() {
+        let cause = PanicCause::UnwrapNone;
+        let causes = vec![&cause];
+        let formatted = format_causes(&causes);
+        assert_eq!(formatted, "[JP006: unwrap() on None]");
+    }
+
+    #[test]
+    fn test_format_causes_multiple() {
+        let cause1 = PanicCause::ExplicitPanic;
+        let cause2 = PanicCause::BoundsCheck;
+        let causes = vec![&cause1, &cause2];
+        let formatted = format_causes(&causes);
+        assert_eq!(
+            formatted,
+            "[JP001: explicit panic!() call] [JP002: index out of bounds]"
+        );
+    }
+}

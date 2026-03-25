@@ -703,3 +703,745 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
     // specific match, leave cause as None (unknown) to avoid incorrect labeling.
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_panic_cause_id() {
+        assert_eq!(PanicCause::ExplicitPanic.id(), "panic");
+        assert_eq!(PanicCause::BoundsCheck.id(), "bounds");
+        assert_eq!(PanicCause::UnwrapNone.id(), "unwrap");
+        assert_eq!(PanicCause::UnwrapErr.id(), "unwrap");
+        assert_eq!(PanicCause::ExpectNone.id(), "expect");
+        assert_eq!(PanicCause::ExpectErr.id(), "expect");
+        assert_eq!(PanicCause::DivisionByZero.id(), "div_zero");
+        assert_eq!(
+            PanicCause::ArithmeticOverflow("addition".to_string()).id(),
+            "overflow"
+        );
+        assert_eq!(
+            PanicCause::ArithmeticOverflow("division".to_string()).id(),
+            "div_overflow"
+        );
+        assert_eq!(
+            PanicCause::ArithmeticOverflow("remainder".to_string()).id(),
+            "rem_overflow"
+        );
+        assert_eq!(
+            PanicCause::ShiftOverflow("left".to_string()).id(),
+            "shift_overflow"
+        );
+    }
+
+    #[test]
+    fn test_panic_cause_parent_id() {
+        assert_eq!(
+            PanicCause::ArithmeticOverflow("add".to_string()).parent_id(),
+            Some("overflow")
+        );
+        assert_eq!(
+            PanicCause::ShiftOverflow("left".to_string()).parent_id(),
+            Some("overflow")
+        );
+        assert_eq!(PanicCause::ExplicitPanic.parent_id(), None);
+        assert_eq!(PanicCause::BoundsCheck.parent_id(), None);
+    }
+
+    #[test]
+    fn test_panic_cause_description() {
+        assert_eq!(
+            PanicCause::ExplicitPanic.description(),
+            "explicit panic!() call"
+        );
+        assert_eq!(PanicCause::BoundsCheck.description(), "index out of bounds");
+        assert_eq!(PanicCause::UnwrapNone.description(), "unwrap() on None");
+        assert_eq!(PanicCause::UnwrapErr.description(), "unwrap() on Err");
+        assert_eq!(PanicCause::Todo.description(), "todo!() reached");
+        assert_eq!(
+            PanicCause::Unreachable.description(),
+            "unreachable!() reached"
+        );
+    }
+
+    #[test]
+    fn test_panic_cause_error_code() {
+        assert_eq!(PanicCause::ExplicitPanic.error_code(), "JP001");
+        assert_eq!(PanicCause::BoundsCheck.error_code(), "JP002");
+        assert_eq!(
+            PanicCause::ArithmeticOverflow("add".to_string()).error_code(),
+            "JP003"
+        );
+        assert_eq!(PanicCause::UnwrapNone.error_code(), "JP006");
+        assert_eq!(PanicCause::UnwrapErr.error_code(), "JP007");
+        assert_eq!(PanicCause::Unknown.error_code(), "JP000");
+    }
+
+    #[test]
+    fn test_panic_cause_docs_slug() {
+        assert_eq!(
+            PanicCause::ExplicitPanic.docs_slug(),
+            "JP001-explicit-panic"
+        );
+        assert_eq!(PanicCause::BoundsCheck.docs_slug(), "JP002-bounds-check");
+        assert_eq!(PanicCause::UnwrapNone.docs_slug(), "JP006-unwrap-none");
+        assert_eq!(PanicCause::Unknown.docs_slug(), "");
+    }
+
+    #[test]
+    fn test_panic_cause_docs_url() {
+        assert_eq!(
+            PanicCause::ExplicitPanic.docs_url(),
+            "https://jonesy.mackenzie-serres.net/panics/JP001-explicit-panic"
+        );
+        assert_eq!(
+            PanicCause::Unknown.docs_url(),
+            "https://jonesy.mackenzie-serres.net/panics/"
+        );
+    }
+
+    #[test]
+    fn test_panic_cause_is_debug_only() {
+        assert!(PanicCause::ArithmeticOverflow("add".to_string()).is_debug_only());
+        assert!(PanicCause::ShiftOverflow("left".to_string()).is_debug_only());
+        assert!(PanicCause::DebugAssertFailed.is_debug_only());
+        assert!(!PanicCause::BoundsCheck.is_debug_only());
+        assert!(!PanicCause::DivisionByZero.is_debug_only());
+        assert!(!PanicCause::UnwrapNone.is_debug_only());
+    }
+
+    #[test]
+    fn test_panic_cause_release_warning() {
+        assert!(
+            PanicCause::ArithmeticOverflow("add".to_string())
+                .release_warning()
+                .is_some()
+        );
+        assert!(
+            PanicCause::ShiftOverflow("left".to_string())
+                .release_warning()
+                .is_some()
+        );
+        assert!(PanicCause::DebugAssertFailed.release_warning().is_some());
+        assert!(PanicCause::BoundsCheck.release_warning().is_none());
+        assert!(PanicCause::UnwrapNone.release_warning().is_none());
+    }
+
+    #[test]
+    fn test_panic_cause_suggestion_direct() {
+        let suggestion = PanicCause::UnwrapNone.suggestion(true);
+        assert!(suggestion.contains("if let") || suggestion.contains("match"));
+    }
+
+    #[test]
+    fn test_panic_cause_suggestion_indirect() {
+        let suggestion = PanicCause::UnwrapNone.suggestion(false);
+        assert!(suggestion.contains("calls a function"));
+    }
+
+    #[test]
+    fn test_panic_cause_format_suggestion_with_function() {
+        let suggestion = PanicCause::UnwrapNone.format_suggestion(false, Some("parse_config"));
+        assert!(suggestion.contains("parse_config"));
+    }
+
+    #[test]
+    fn test_panic_cause_format_suggestion_direct() {
+        let suggestion = PanicCause::UnwrapNone.format_suggestion(true, Some("ignored"));
+        // Direct suggestions don't include function name
+        assert!(!suggestion.contains("ignored"));
+    }
+
+    #[test]
+    fn test_all_ids_contains_expected() {
+        let ids = PanicCause::all_ids();
+        assert!(ids.contains(&"panic"));
+        assert!(ids.contains(&"bounds"));
+        assert!(ids.contains(&"overflow"));
+        assert!(ids.contains(&"div_overflow"));
+        assert!(ids.contains(&"rem_overflow"));
+        assert!(ids.contains(&"unwrap"));
+        assert!(ids.contains(&"expect"));
+    }
+
+    #[test]
+    fn test_detect_panic_cause_bounds_check() {
+        assert_eq!(
+            detect_panic_cause("panic_bounds_check", None),
+            Some(PanicCause::BoundsCheck)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_arithmetic_overflow() {
+        assert_eq!(
+            detect_panic_cause("panic_const_add_overflow", None),
+            Some(PanicCause::ArithmeticOverflow("addition".to_string()))
+        );
+        assert_eq!(
+            detect_panic_cause("panic_const_sub_overflow", None),
+            Some(PanicCause::ArithmeticOverflow("subtraction".to_string()))
+        );
+        assert_eq!(
+            detect_panic_cause("panic_const_mul_overflow", None),
+            Some(PanicCause::ArithmeticOverflow("multiplication".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_shift_overflow() {
+        assert_eq!(
+            detect_panic_cause("panic_const_shl_overflow", None),
+            Some(PanicCause::ShiftOverflow("left".to_string()))
+        );
+        assert_eq!(
+            detect_panic_cause("panic_const_shr_overflow", None),
+            Some(PanicCause::ShiftOverflow("right".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_division_by_zero() {
+        assert_eq!(
+            detect_panic_cause("panic_const_div_by_zero", None),
+            Some(PanicCause::DivisionByZero)
+        );
+        assert_eq!(
+            detect_panic_cause("panic_const_rem_by_zero", None),
+            Some(PanicCause::DivisionByZero)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_unwrap_failed_option() {
+        // Option unwrap - detected via file path
+        assert_eq!(
+            detect_panic_cause("unwrap_failed", Some("option.rs")),
+            Some(PanicCause::UnwrapNone)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_unwrap_failed_result() {
+        // Result unwrap - detected via file path
+        assert_eq!(
+            detect_panic_cause("unwrap_failed", Some("result.rs")),
+            Some(PanicCause::UnwrapErr)
+        );
+        assert_eq!(
+            detect_panic_cause("unwrap_failed", Some("core/result/mod.rs")),
+            Some(PanicCause::UnwrapErr)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_expect_failed() {
+        assert_eq!(
+            detect_panic_cause("expect_failed", None),
+            Some(PanicCause::ExpectNone)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_result_expect() {
+        assert_eq!(
+            detect_panic_cause("Result::expect", None),
+            Some(PanicCause::ExpectErr)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_assert_failed() {
+        assert_eq!(
+            detect_panic_cause("assert_failed", None),
+            Some(PanicCause::AssertFailed)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_panic_display() {
+        assert_eq!(
+            detect_panic_cause("panic_display", None),
+            Some(PanicCause::ExplicitPanic)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_panic_in_cleanup() {
+        assert_eq!(
+            detect_panic_cause("panic_in_cleanup", None),
+            Some(PanicCause::PanicInDrop)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_panic_cannot_unwind() {
+        assert_eq!(
+            detect_panic_cause("panic_cannot_unwind", None),
+            Some(PanicCause::CannotUnwind)
+        );
+        assert_eq!(
+            detect_panic_cause("panic_nounwind", None),
+            Some(PanicCause::CannotUnwind)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_formatting() {
+        assert_eq!(
+            detect_panic_cause("core::fmt::write", None),
+            Some(PanicCause::FormattingError)
+        );
+        assert_eq!(
+            detect_panic_cause("write_fmt", None),
+            Some(PanicCause::FormattingError)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_capacity_overflow() {
+        assert_eq!(
+            detect_panic_cause("capacity_overflow", None),
+            Some(PanicCause::CapacityOverflow)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_out_of_memory() {
+        assert_eq!(
+            detect_panic_cause("handle_alloc_error", None),
+            Some(PanicCause::OutOfMemory)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_string_slice_error() {
+        assert_eq!(
+            detect_panic_cause("slice_error_fail", None),
+            Some(PanicCause::StringSliceError)
+        );
+        assert_eq!(
+            detect_panic_cause("str_index_overflow_fail", None),
+            Some(PanicCause::StringSliceError)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_index_bounds() {
+        assert_eq!(
+            detect_panic_cause("index<T, usize>", None),
+            Some(PanicCause::BoundsCheck)
+        );
+        assert_eq!(
+            detect_panic_cause("Index::index", None),
+            Some(PanicCause::BoundsCheck)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_index_string() {
+        // String index detected via file path
+        assert_eq!(
+            detect_panic_cause("index<Range>", Some("/library/core/src/str/mod.rs")),
+            Some(PanicCause::StringSliceError)
+        );
+        // Or via str:: in function name
+        assert_eq!(
+            detect_panic_cause("str::index<Range>", None),
+            Some(PanicCause::StringSliceError)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_invalid_enum() {
+        assert_eq!(
+            detect_panic_cause("panic_invalid_enum_construction", None),
+            Some(PanicCause::InvalidEnum)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_misaligned_pointer() {
+        assert_eq!(
+            detect_panic_cause("panic_misaligned_pointer_dereference", None),
+            Some(PanicCause::MisalignedPointer)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_unknown() {
+        // Generic panic function should return None (unknown)
+        assert_eq!(detect_panic_cause("some_random_function", None), None);
+    }
+
+    // Test all descriptions
+    #[test]
+    fn test_all_panic_cause_descriptions() {
+        // Ensure every variant has a non-empty description
+        let variants = vec![
+            PanicCause::ExplicitPanic,
+            PanicCause::BoundsCheck,
+            PanicCause::ArithmeticOverflow("add".to_string()),
+            PanicCause::ShiftOverflow("left".to_string()),
+            PanicCause::DivisionByZero,
+            PanicCause::UnwrapNone,
+            PanicCause::UnwrapErr,
+            PanicCause::ExpectNone,
+            PanicCause::ExpectErr,
+            PanicCause::AssertFailed,
+            PanicCause::DebugAssertFailed,
+            PanicCause::Unreachable,
+            PanicCause::Unimplemented,
+            PanicCause::Todo,
+            PanicCause::PanicInDrop,
+            PanicCause::CannotUnwind,
+            PanicCause::FormattingError,
+            PanicCause::CapacityOverflow,
+            PanicCause::OutOfMemory,
+            PanicCause::StringSliceError,
+            PanicCause::InvalidEnum,
+            PanicCause::MisalignedPointer,
+            PanicCause::Unknown,
+        ];
+
+        for variant in &variants {
+            assert!(
+                !variant.description().is_empty(),
+                "{:?} has empty description",
+                variant
+            );
+            assert!(
+                !variant.error_code().is_empty(),
+                "{:?} has empty error code",
+                variant
+            );
+            assert!(
+                !variant.suggestion(true).is_empty(),
+                "{:?} has empty direct suggestion",
+                variant
+            );
+            assert!(
+                !variant.suggestion(false).is_empty(),
+                "{:?} has empty indirect suggestion",
+                variant
+            );
+        }
+    }
+
+    // Test all direct suggestions
+    #[test]
+    fn test_direct_suggestions() {
+        assert!(
+            PanicCause::ExplicitPanic
+                .direct_suggestion()
+                .contains("Review")
+        );
+        assert!(
+            PanicCause::BoundsCheck
+                .direct_suggestion()
+                .contains(".get()")
+        );
+        assert!(
+            PanicCause::ArithmeticOverflow("add".to_string())
+                .direct_suggestion()
+                .contains("checked_")
+        );
+        assert!(
+            PanicCause::ShiftOverflow("left".to_string())
+                .direct_suggestion()
+                .contains("Validate")
+        );
+        assert!(
+            PanicCause::DivisionByZero
+                .direct_suggestion()
+                .contains("divisor")
+        );
+        assert!(
+            PanicCause::AssertFailed
+                .direct_suggestion()
+                .contains("assertion")
+        );
+        assert!(
+            PanicCause::DebugAssertFailed
+                .direct_suggestion()
+                .contains("debug assertion")
+        );
+        assert!(
+            PanicCause::Unreachable
+                .direct_suggestion()
+                .contains("unreachable")
+        );
+        assert!(
+            PanicCause::Unimplemented
+                .direct_suggestion()
+                .contains("Implement")
+        );
+        assert!(PanicCause::Todo.direct_suggestion().contains("TODO"));
+        assert!(PanicCause::PanicInDrop.direct_suggestion().contains("Drop"));
+        assert!(
+            PanicCause::CannotUnwind
+                .direct_suggestion()
+                .contains("extern")
+        );
+        assert!(
+            PanicCause::FormattingError
+                .direct_suggestion()
+                .contains("Display")
+        );
+        assert!(
+            PanicCause::CapacityOverflow
+                .direct_suggestion()
+                .contains("try_reserve")
+        );
+        assert!(
+            PanicCause::OutOfMemory
+                .direct_suggestion()
+                .contains("allocation")
+        );
+        assert!(
+            PanicCause::StringSliceError
+                .direct_suggestion()
+                .contains("str::get()")
+        );
+        assert!(PanicCause::InvalidEnum.direct_suggestion().contains("enum"));
+        assert!(
+            PanicCause::MisalignedPointer
+                .direct_suggestion()
+                .contains("alignment")
+        );
+        assert!(PanicCause::Unknown.direct_suggestion().contains("--tree"));
+    }
+
+    // Test all indirect suggestions
+    #[test]
+    fn test_indirect_suggestions() {
+        assert!(
+            PanicCause::ExplicitPanic
+                .indirect_suggestion()
+                .contains("calls a function")
+        );
+        assert!(
+            PanicCause::BoundsCheck
+                .indirect_suggestion()
+                .contains("bounds check")
+        );
+        assert!(
+            PanicCause::ArithmeticOverflow("add".to_string())
+                .indirect_suggestion()
+                .contains("overflow")
+        );
+        assert!(
+            PanicCause::ShiftOverflow("left".to_string())
+                .indirect_suggestion()
+                .contains("shift")
+        );
+        assert!(
+            PanicCause::DivisionByZero
+                .indirect_suggestion()
+                .contains("divide by zero")
+        );
+        assert!(
+            PanicCause::UnwrapNone
+                .indirect_suggestion()
+                .contains("unwrap()")
+        );
+        assert!(
+            PanicCause::UnwrapErr
+                .indirect_suggestion()
+                .contains("unwrap()")
+        );
+        assert!(
+            PanicCause::ExpectNone
+                .indirect_suggestion()
+                .contains("expect()")
+        );
+        assert!(
+            PanicCause::ExpectErr
+                .indirect_suggestion()
+                .contains("expect()")
+        );
+        assert!(
+            PanicCause::AssertFailed
+                .indirect_suggestion()
+                .contains("assertion")
+        );
+        assert!(
+            PanicCause::DebugAssertFailed
+                .indirect_suggestion()
+                .contains("debug assertion")
+        );
+        assert!(
+            PanicCause::Unreachable
+                .indirect_suggestion()
+                .contains("unreachable")
+        );
+        assert!(
+            PanicCause::Unimplemented
+                .indirect_suggestion()
+                .contains("unimplemented!()")
+        );
+        assert!(PanicCause::Todo.indirect_suggestion().contains("todo!()"));
+        assert!(
+            PanicCause::PanicInDrop
+                .indirect_suggestion()
+                .contains("drop")
+        );
+        assert!(
+            PanicCause::CannotUnwind
+                .indirect_suggestion()
+                .contains("no-unwind")
+        );
+        assert!(
+            PanicCause::FormattingError
+                .indirect_suggestion()
+                .contains("formatting")
+        );
+        assert!(
+            PanicCause::CapacityOverflow
+                .indirect_suggestion()
+                .contains("capacity")
+        );
+        assert!(
+            PanicCause::OutOfMemory
+                .indirect_suggestion()
+                .contains("allocate")
+        );
+        assert!(
+            PanicCause::StringSliceError
+                .indirect_suggestion()
+                .contains("string/slice")
+        );
+        assert!(
+            PanicCause::InvalidEnum
+                .indirect_suggestion()
+                .contains("enum")
+        );
+        assert!(
+            PanicCause::MisalignedPointer
+                .indirect_suggestion()
+                .contains("misaligned")
+        );
+        assert!(PanicCause::Unknown.indirect_suggestion().contains("--tree"));
+    }
+
+    // Test format_suggestion for all variants
+    #[test]
+    fn test_format_suggestion_all_variants() {
+        let variants = vec![
+            PanicCause::ExplicitPanic,
+            PanicCause::BoundsCheck,
+            PanicCause::ArithmeticOverflow("add".to_string()),
+            PanicCause::ShiftOverflow("left".to_string()),
+            PanicCause::DivisionByZero,
+            PanicCause::UnwrapNone,
+            PanicCause::UnwrapErr,
+            PanicCause::ExpectNone,
+            PanicCause::ExpectErr,
+            PanicCause::AssertFailed,
+            PanicCause::DebugAssertFailed,
+            PanicCause::Unreachable,
+            PanicCause::Unimplemented,
+            PanicCause::Todo,
+            PanicCause::PanicInDrop,
+            PanicCause::CannotUnwind,
+            PanicCause::FormattingError,
+            PanicCause::CapacityOverflow,
+            PanicCause::OutOfMemory,
+            PanicCause::StringSliceError,
+            PanicCause::InvalidEnum,
+            PanicCause::MisalignedPointer,
+            PanicCause::Unknown,
+        ];
+
+        for variant in &variants {
+            // Test with function name (indirect)
+            let with_func = variant.format_suggestion(false, Some("test_func"));
+            assert!(
+                with_func.contains("test_func"),
+                "{:?} format_suggestion doesn't include function name: {}",
+                variant,
+                with_func
+            );
+        }
+    }
+
+    // Test all docs slugs
+    #[test]
+    fn test_all_docs_slugs() {
+        assert_eq!(PanicCause::BoundsCheck.docs_slug(), "JP002-bounds-check");
+        assert_eq!(
+            PanicCause::ArithmeticOverflow("add".to_string()).docs_slug(),
+            "JP003-arithmetic-overflow"
+        );
+        assert_eq!(
+            PanicCause::ShiftOverflow("left".to_string()).docs_slug(),
+            "JP004-shift-overflow"
+        );
+        assert_eq!(
+            PanicCause::DivisionByZero.docs_slug(),
+            "JP005-division-by-zero"
+        );
+        assert_eq!(PanicCause::ExpectNone.docs_slug(), "JP008-expect-none");
+        assert_eq!(PanicCause::ExpectErr.docs_slug(), "JP009-expect-err");
+        assert_eq!(PanicCause::AssertFailed.docs_slug(), "JP010-assert-failed");
+        assert_eq!(
+            PanicCause::DebugAssertFailed.docs_slug(),
+            "JP011-debug-assert-failed"
+        );
+        assert_eq!(PanicCause::Unreachable.docs_slug(), "JP012-unreachable");
+        assert_eq!(PanicCause::Unimplemented.docs_slug(), "JP013-unimplemented");
+        assert_eq!(PanicCause::Todo.docs_slug(), "JP014-todo");
+        assert_eq!(PanicCause::PanicInDrop.docs_slug(), "JP015-panic-in-drop");
+        assert_eq!(PanicCause::CannotUnwind.docs_slug(), "JP016-cannot-unwind");
+        assert_eq!(
+            PanicCause::FormattingError.docs_slug(),
+            "JP017-formatting-error"
+        );
+        assert_eq!(
+            PanicCause::CapacityOverflow.docs_slug(),
+            "JP018-capacity-overflow"
+        );
+        assert_eq!(PanicCause::OutOfMemory.docs_slug(), "JP019-out-of-memory");
+        assert_eq!(
+            PanicCause::StringSliceError.docs_slug(),
+            "JP020-string-slice-error"
+        );
+        assert_eq!(PanicCause::InvalidEnum.docs_slug(), "JP021-invalid-enum");
+        assert_eq!(
+            PanicCause::MisalignedPointer.docs_slug(),
+            "JP022-misaligned-pointer"
+        );
+    }
+
+    // Test unreachable detection
+    #[test]
+    fn test_detect_panic_cause_unreachable() {
+        assert_eq!(
+            detect_panic_cause("unreachable_panic_handler", None),
+            Some(PanicCause::Unreachable)
+        );
+    }
+
+    // Test raw_vec capacity detection
+    #[test]
+    fn test_detect_panic_cause_raw_vec_grow() {
+        assert_eq!(
+            detect_panic_cause("raw_vec::grow", None),
+            Some(PanicCause::CapacityOverflow)
+        );
+    }
+
+    // Test Display/Debug trait formatting
+    #[test]
+    fn test_detect_panic_cause_display_fmt() {
+        assert_eq!(
+            detect_panic_cause("Display::fmt", None),
+            Some(PanicCause::FormattingError)
+        );
+        assert_eq!(
+            detect_panic_cause("Debug::fmt", None),
+            Some(PanicCause::FormattingError)
+        );
+    }
+}
