@@ -37,4 +37,4 @@ jobs:
         run: cargo build --workspace
 
       - name: Run clippy
-        run: cargo clippy --tests --no-deps --all-features --all-targets
+        run: make clippy
