@@ -13,3 +13,5 @@ Never commit to master/main branch, always use a feature branch and create a PR.
 
 Always wait around for code reviews to terminate, or be repeated if they failed due to 
 rate limiting, and then address all comments from the review.   
+
+Always wait for the human user to approve before you merge a PR.
