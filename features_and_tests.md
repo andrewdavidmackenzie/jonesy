@@ -154,6 +154,11 @@ These features have zero test coverage:
 | Feature                     | Description                              | Priority |
 |-----------------------------|------------------------------------------|----------|
 | LSP server                  | No tests for `jonesy lsp` functionality  | High     |
+| LSP diagnostics publishing  | Send warnings to IDE                     | High     |
+| LSP quick fix actions       | Allow inline/file/function code actions  | High     |
+| LSP auto-refresh            | Analyze on binary change                 | High     |
+| LSP progress indicators     | Show analysis progress in IDE            | Medium   |
+| LSP file change watching    | Watch target/debug for changes           | Medium   |
 | FAT binary handling         | No test for multi-arch binaries          | Medium   |
 | Stale dSYM detection        | No test for timestamp comparison         | Medium   |
 | Terminal hyperlink output   | OSC 8 escape sequences                   | Low      |
@@ -163,6 +168,8 @@ These features have zero test coverage:
 | GitHub Action               | PR annotations (tested in action repo)   | Low      |
 | Problem matcher             | Inline CI warnings                       | Low      |
 | Parallel workspace analysis | Concurrent crate processing              | Low      |
+| Merged line table builds    | Single DWARF pass optimization           | Low      |
+| LTO release builds          | Link-time optimization profile           | Low      |
 
 ### Has Unit Tests But No Integration Tests
 
