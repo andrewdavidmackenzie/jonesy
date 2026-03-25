@@ -70,13 +70,18 @@ runs:
         echo "$output"
 
         # Also capture JSON output for PR comment
+        # Note: jonesy exits non-zero when panics are found, so we ignore the exit code
         if [ -n "${{ inputs.binary }}" ]; then
-          json_output=$(jonesy --format json ${{ inputs.extra-args }} "${{ inputs.binary }}" 2>/dev/null || echo '{}')
+          json_output=$(jonesy --format json ${{ inputs.extra-args }} "${{ inputs.binary }}" 2>/dev/null) || true
         else
-          json_output=$(jonesy --format json ${{ inputs.extra-args }} 2>/dev/null || echo '{}')
+          json_output=$(jonesy --format json ${{ inputs.extra-args }} 2>/dev/null) || true
         fi
-        # Save JSON to file for next step
-        echo "$json_output" > /tmp/jonesy-output.json
+        # Save JSON to file for next step (use empty object if no output)
+        if [ -n "$json_output" ]; then
+          echo "$json_output" > /tmp/jonesy-output.json
+        else
+          echo '{}' > /tmp/jonesy-output.json
+        fi
 
         # Parse panic count from output: "Panic points: X in Y file(s)"
         # This handles counts > 255 which would wrap in exit codes
