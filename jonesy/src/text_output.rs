@@ -78,7 +78,7 @@ fn write_panic_points<W: Write>(
     w: &mut W,
     code_points: &[CrateCodePoint],
     project_root: &str,
-    _tree: bool,
+    include_children: bool,
     no_hyperlinks: bool,
     is_tty: bool,
 ) -> io::Result<()> {
@@ -91,7 +91,7 @@ fn write_panic_points<W: Write>(
 
     writeln!(w, "\nPanic code points in crate:")?;
 
-    // Use tree format only when OSC 8 hyperlinks are available
+    // Use directory tree format when OSC 8 hyperlinks are available
     let use_tree_format = !no_hyperlinks && is_tty;
 
     if use_tree_format {
@@ -103,9 +103,10 @@ fn write_panic_points<W: Write>(
             None,
             no_hyperlinks,
             is_tty,
+            include_children,
         )?;
     } else {
-        write_flat_format(w, code_points, Some(project_root_path))?;
+        write_flat_format(w, code_points, Some(project_root_path), include_children)?;
     }
     Ok(())
 }
@@ -118,6 +119,7 @@ fn write_directory_tree<W: Write>(
     crate_root: Option<&Path>,
     no_hyperlinks: bool,
     is_tty: bool,
+    include_children: bool,
 ) -> io::Result<()> {
     // Group points by directory
     let mut dir_groups: Vec<(String, Vec<&CrateCodePoint>)> = Vec::new();
@@ -166,6 +168,7 @@ fn write_directory_tree<W: Write>(
                 crate_root,
                 no_hyperlinks,
                 is_tty,
+                include_children,
             )?;
         }
     }
@@ -177,9 +180,10 @@ fn write_flat_format<W: Write>(
     w: &mut W,
     points: &[CrateCodePoint],
     project_root: Option<&Path>,
+    include_children: bool,
 ) -> io::Result<()> {
     for point in points {
-        write_flat_point(w, point, project_root)?;
+        write_flat_point(w, point, project_root, include_children)?;
     }
     Ok(())
 }
@@ -189,16 +193,21 @@ fn write_flat_point<W: Write>(
     w: &mut W,
     point: &CrateCodePoint,
     project_root: Option<&Path>,
+    include_children: bool,
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output (works with GitHub problem matchers)
     let display_path = get_relative_path(&point.file, project_root);
     let column = point.column.unwrap_or(1);
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
-    let is_leaf = point.children.is_empty();
+    // Consider point a leaf if it has no children or we're not showing children
+    let is_leaf = point.children.is_empty() || !include_children;
     let sorted_causes = get_sorted_causes(&point.causes);
 
     let cause_str = if is_leaf && !sorted_causes.is_empty() {
+        format!(" {}", format_causes(&sorted_causes))
+    } else if !is_leaf && !sorted_causes.is_empty() {
+        // Show causes even for non-leaf when we have them
         format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
@@ -220,11 +229,11 @@ fn write_flat_point<W: Write>(
         }
     }
 
-    if !point.children.is_empty() {
+    if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
         children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         for child in &children {
-            write_flat_child(w, child, project_root, "     ")?;
+            write_flat_child(w, child, project_root, "     ", include_children)?;
         }
     }
     Ok(())
@@ -236,16 +245,17 @@ fn write_flat_child<W: Write>(
     point: &CrateCodePoint,
     project_root: Option<&Path>,
     indent: &str,
+    include_children: bool,
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output
     let display_path = get_relative_path(&point.file, project_root);
     let column = point.column.unwrap_or(1);
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
-    let is_leaf = point.children.is_empty();
+    let is_leaf = point.children.is_empty() || !include_children;
     let sorted_causes = get_sorted_causes(&point.causes);
 
-    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+    let cause_str = if !sorted_causes.is_empty() {
         format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
@@ -267,12 +277,12 @@ fn write_flat_child<W: Write>(
         }
     }
 
-    if !point.children.is_empty() {
+    if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
         children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         let child_indent = format!("{}     ", indent);
         for child in &children {
-            write_flat_child(w, child, project_root, &child_indent)?;
+            write_flat_child(w, child, project_root, &child_indent, include_children)?;
         }
     }
     Ok(())
@@ -290,6 +300,7 @@ fn write_file_entry<W: Write>(
     crate_root: Option<&Path>,
     no_hyperlinks: bool,
     is_tty: bool,
+    include_children: bool,
 ) -> io::Result<()> {
     let display_path = get_display_path(&point.file, project_root, crate_root);
     let filename = display_path
@@ -314,9 +325,10 @@ fn write_file_entry<W: Write>(
     };
 
     let sorted_causes = get_sorted_causes(&point.causes);
-    let is_leaf = point.children.is_empty();
+    // Consider point a leaf if it has no children or we're not showing children
+    let is_leaf = point.children.is_empty() || !include_children;
 
-    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+    let cause_str = if !sorted_causes.is_empty() {
         format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
@@ -348,7 +360,7 @@ fn write_file_entry<W: Write>(
         }
     }
 
-    if !point.children.is_empty() {
+    if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
         children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
 
@@ -373,6 +385,7 @@ fn write_file_entry<W: Write>(
                 crate_root,
                 no_hyperlinks,
                 is_tty,
+                include_children,
             )?;
         }
     }
@@ -391,6 +404,7 @@ fn write_crate_point<W: Write>(
     crate_root: Option<&Path>,
     no_hyperlinks: bool,
     is_tty: bool,
+    include_children: bool,
 ) -> io::Result<()> {
     let absolute_path = make_absolute(&point.file, project_root);
     let display_root = crate_root.or(project_root);
@@ -419,9 +433,10 @@ fn write_crate_point<W: Write>(
     };
 
     let sorted_causes = get_sorted_causes(&point.causes);
-    let is_leaf = point.children.is_empty();
+    // Consider point a leaf if it has no children or we're not showing children
+    let is_leaf = point.children.is_empty() || !include_children;
 
-    let cause_str = if is_leaf && !sorted_causes.is_empty() {
+    let cause_str = if !sorted_causes.is_empty() {
         format!(" {}", format_causes(&sorted_causes))
     } else {
         String::new()
@@ -453,7 +468,7 @@ fn write_crate_point<W: Write>(
         }
     }
 
-    if !point.children.is_empty() {
+    if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
         children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
 
@@ -478,6 +493,7 @@ fn write_crate_point<W: Write>(
                 crate_root,
                 no_hyperlinks,
                 is_tty,
+                include_children,
             )?;
         }
     }
@@ -805,7 +821,7 @@ mod tests {
             called_function: None,
         };
         let mut output = Vec::new();
-        write_flat_point(&mut output, &point, Some(Path::new("/test"))).unwrap();
+        write_flat_point(&mut output, &point, Some(Path::new("/test")), true).unwrap();
         let output_str = String::from_utf8(output).unwrap();
 
         // Both causes should appear, sorted by error code
@@ -832,6 +848,7 @@ mod tests {
             None,
             true,
             false,
+            true, // include_children
         )
         .unwrap();
         let output_str = String::from_utf8(output).unwrap();

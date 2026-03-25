@@ -432,3 +432,340 @@ fn check_member_lib_type(member_path: &Path, lib_name: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_bin_source_dir_from_path_none() {
+        let result = bin_source_dir_from_path(None);
+        assert_eq!(result, PathBuf::from("src"));
+    }
+
+    #[test]
+    fn test_bin_source_dir_from_path_with_path() {
+        let result = bin_source_dir_from_path(Some(&"src/bin/app.rs".to_string()));
+        assert_eq!(result, PathBuf::from("src/bin"));
+    }
+
+    #[test]
+    fn test_bin_source_dir_from_path_empty_parent() {
+        let result = bin_source_dir_from_path(Some(&"main.rs".to_string()));
+        assert_eq!(result, PathBuf::from("src"));
+    }
+
+    #[test]
+    fn test_find_project_root_not_found() {
+        let result = find_project_root(Path::new("/nonexistent/path/to/binary"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_project_root_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        File::create(&cargo_toml).unwrap();
+
+        let binary_path = temp_dir.path().join("target/debug/myapp");
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+
+        let result = find_project_root(&binary_path);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), temp_dir.path());
+    }
+
+    #[test]
+    fn test_get_project_name_not_found() {
+        let result = get_project_name(Path::new("/nonexistent/path"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_project_name_workspace_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[workspace]
+members = ["crate_a"]
+"#,
+        )
+        .unwrap();
+
+        let result = get_project_name(temp_dir.path());
+        // Workspace-only has no package, returns None
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_project_name_with_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "my-project"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let result = get_project_name(temp_dir.path());
+        assert_eq!(result, Some("my-project".to_string()));
+    }
+
+    #[test]
+    fn test_find_binary_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = find_binary(temp_dir.path(), "nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_binary_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let binary_path = temp_dir.path().join("myapp");
+        File::create(&binary_path).unwrap();
+
+        let result = find_binary(temp_dir.path(), "myapp");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), binary_path);
+    }
+
+    #[test]
+    fn test_find_library_rlib() {
+        let temp_dir = TempDir::new().unwrap();
+        let lib_path = temp_dir.path().join("libmylib.rlib");
+        File::create(&lib_path).unwrap();
+
+        let result = find_library(temp_dir.path(), "mylib");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), lib_path);
+    }
+
+    #[test]
+    fn test_find_library_with_dashes() {
+        let temp_dir = TempDir::new().unwrap();
+        // Cargo converts dashes to underscores in lib names
+        let lib_path = temp_dir.path().join("libmy_lib.rlib");
+        File::create(&lib_path).unwrap();
+
+        let result = find_library(temp_dir.path(), "my-lib");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), lib_path);
+    }
+
+    #[test]
+    fn test_find_library_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = find_library(temp_dir.path(), "nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_expand_workspace_member_no_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = expand_workspace_member(temp_dir.path(), "crates/mylib");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], temp_dir.path().join("crates/mylib"));
+    }
+
+    #[test]
+    fn test_expand_workspace_member_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let crates_dir = temp_dir.path().join("crates");
+        fs::create_dir(&crates_dir).unwrap();
+        fs::create_dir(crates_dir.join("lib_a")).unwrap();
+        fs::create_dir(crates_dir.join("lib_b")).unwrap();
+
+        let result = expand_workspace_member(temp_dir.path(), "crates/*");
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_workspace_member_glob_no_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = expand_workspace_member(temp_dir.path(), "nonexistent/*");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_derive_crate_src_path_no_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        let binary_path = temp_dir.path().join("target/debug/myapp");
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+
+        let result = derive_crate_src_path(&binary_path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_derive_crate_src_path_simple_crate() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "myapp"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        fs::create_dir(temp_dir.path().join("src")).unwrap();
+        File::create(temp_dir.path().join("src/main.rs")).unwrap();
+
+        let binary_path = temp_dir.path().join("target/debug/myapp");
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+
+        let result = derive_crate_src_path(&binary_path);
+        assert_eq!(result, Some("src/".to_string()));
+    }
+
+    #[test]
+    fn test_derive_crate_src_path_library() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[lib]
+name = "mylib"
+"#,
+        )
+        .unwrap();
+        fs::create_dir(temp_dir.path().join("src")).unwrap();
+        File::create(temp_dir.path().join("src/lib.rs")).unwrap();
+
+        // Library artifacts have lib prefix
+        let lib_path = temp_dir.path().join("target/debug/libmylib.rlib");
+        fs::create_dir_all(lib_path.parent().unwrap()).unwrap();
+
+        let result = derive_crate_src_path(&lib_path);
+        // Should find src/
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_check_member_lib_type_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = check_member_lib_type(temp_dir.path(), "mylib");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_check_member_lib_type_cdylib() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[lib]
+name = "mylib"
+crate-type = ["cdylib"]
+"#,
+        )
+        .unwrap();
+
+        let result = check_member_lib_type(temp_dir.path(), "mylib");
+        assert_eq!(result, Some("cdylib".to_string()));
+    }
+
+    #[test]
+    fn test_check_member_lib_type_dylib() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[lib]
+name = "mylib"
+crate-type = ["dylib"]
+"#,
+        )
+        .unwrap();
+
+        let result = check_member_lib_type(temp_dir.path(), "mylib");
+        assert_eq!(result, Some("dylib".to_string()));
+    }
+
+    #[test]
+    fn test_detect_library_type_not_library() {
+        // Binary without lib prefix
+        let result = detect_library_type(Path::new("/target/debug/myapp"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_bin_src_path_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "other"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let result = find_bin_src_path(temp_dir.path(), "myapp");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_bin_src_path_simple_crate() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "myapp"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        fs::create_dir(temp_dir.path().join("src")).unwrap();
+        File::create(temp_dir.path().join("src/main.rs")).unwrap();
+
+        let result = find_bin_src_path(temp_dir.path(), "myapp");
+        assert_eq!(result, Some("src/".to_string()));
+    }
+
+    #[test]
+    fn test_find_lib_src_path_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"
+[package]
+name = "other"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let result = find_lib_src_path(temp_dir.path(), "mylib");
+        assert!(result.is_none());
+    }
+}
