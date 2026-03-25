@@ -881,4 +881,204 @@ mod tests {
         // Indirect panic should mention the called function
         assert!(output_str.contains("parse_config"));
     }
+
+    #[test]
+    fn test_write_text_output_tree_with_children() {
+        // Test that tree=true shows children in flat format
+        let child = CrateCodePoint {
+            name: "child_func".to_string(),
+            file: "src/child.rs".to_string(),
+            line: 5,
+            column: Some(1),
+            causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        };
+        let parent = CrateCodePoint {
+            name: "parent_func".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(1),
+            causes: std::collections::HashSet::new(),
+            children: vec![child],
+            is_direct_panic: false,
+            called_function: None,
+        };
+        let result = make_test_result(vec![parent]);
+        let mut output = Vec::new();
+        // Params: tree, summary_only, no_hyperlinks, is_tty
+        // tree=true (include_children), summary_only=false, no_hyperlinks=true, is_tty=false
+        write_text_output(&mut output, &result, true, false, true, false).unwrap();
+        let output_str = String::from_utf8(output).unwrap();
+
+        // With include_children=true, children should be shown (uses └── format)
+        assert!(
+            output_str.contains("child.rs"),
+            "Expected child.rs in output:\n{}",
+            output_str
+        );
+        assert!(output_str.contains("[JP001: explicit panic!() call]"));
+    }
+
+    #[test]
+    fn test_write_text_output_no_tree_hides_children() {
+        // Test that tree=false hides children
+        let child = CrateCodePoint {
+            name: "child_func".to_string(),
+            file: "src/child.rs".to_string(),
+            line: 5,
+            column: Some(1),
+            causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        };
+        let parent = CrateCodePoint {
+            name: "parent_func".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(1),
+            causes: std::collections::HashSet::new(),
+            children: vec![child],
+            is_direct_panic: false,
+            called_function: None,
+        };
+        let result = make_test_result(vec![parent]);
+        let mut output = Vec::new();
+        // Params: tree, summary_only, no_hyperlinks, is_tty
+        // tree=false, summary_only=false, no_hyperlinks=true, is_tty=false
+        write_text_output(&mut output, &result, false, false, true, false).unwrap();
+        let output_str = String::from_utf8(output).unwrap();
+
+        // With tree=false, children should NOT be shown
+        assert!(!output_str.contains("child.rs"));
+        // Parent should still be shown
+        assert!(output_str.contains("main.rs"));
+    }
+
+    #[test]
+    fn test_write_flat_child_recursive() {
+        // Test flat format with nested children
+        let grandchild = CrateCodePoint {
+            name: "grandchild".to_string(),
+            file: "src/deep.rs".to_string(),
+            line: 1,
+            column: Some(1),
+            causes: vec![PanicCause::Todo].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        };
+        let child = CrateCodePoint {
+            name: "child".to_string(),
+            file: "src/middle.rs".to_string(),
+            line: 5,
+            column: Some(1),
+            causes: std::collections::HashSet::new(),
+            children: vec![grandchild],
+            is_direct_panic: false,
+            called_function: None,
+        };
+        let parent = CrateCodePoint {
+            name: "parent".to_string(),
+            file: "src/top.rs".to_string(),
+            line: 10,
+            column: Some(1),
+            causes: std::collections::HashSet::new(),
+            children: vec![child],
+            is_direct_panic: false,
+            called_function: None,
+        };
+
+        let mut output = Vec::new();
+        write_flat_point(&mut output, &parent, Some(Path::new("/test")), true).unwrap();
+        let output_str = String::from_utf8(output).unwrap();
+
+        // All levels should be present
+        assert!(output_str.contains("top.rs"));
+        assert!(output_str.contains("middle.rs"));
+        assert!(output_str.contains("deep.rs"));
+        assert!(output_str.contains("[JP014: todo!() reached]"));
+    }
+
+    #[test]
+    fn test_write_directory_tree_multiple_dirs() {
+        // Test tree format with multiple directories
+        let points = vec![
+            make_test_point("func1", "/test/src/a/file1.rs", 10, vec![PanicCause::Todo]),
+            make_test_point("func2", "/test/src/b/file2.rs", 20, vec![PanicCause::Unreachable]),
+            make_test_point("func3", "/test/src/a/file3.rs", 30, vec![PanicCause::Unimplemented]),
+        ];
+        let mut output = Vec::new();
+        write_directory_tree(
+            &mut output,
+            &points,
+            Some(Path::new("/test")),
+            None,
+            true,
+            false,
+            true,
+        )
+        .unwrap();
+        let output_str = String::from_utf8(output).unwrap();
+
+        // All files should be present
+        assert!(output_str.contains("file1.rs"));
+        assert!(output_str.contains("file2.rs"));
+        assert!(output_str.contains("file3.rs"));
+        // Directory markers
+        assert!(output_str.contains("src/a/"));
+        assert!(output_str.contains("src/b/"));
+    }
+
+    #[test]
+    fn test_write_directory_tree_root_level_files() {
+        // Test tree format with files at root level (no directory)
+        let points = vec![
+            make_test_point("func1", "/test/main.rs", 10, vec![PanicCause::Todo]),
+            make_test_point("func2", "/test/lib.rs", 20, vec![PanicCause::Unreachable]),
+        ];
+        let mut output = Vec::new();
+        write_directory_tree(
+            &mut output,
+            &points,
+            Some(Path::new("/test")),
+            None,
+            true,
+            false,
+            true,
+        )
+        .unwrap();
+        let output_str = String::from_utf8(output).unwrap();
+
+        // Files should be present without directory prefix
+        assert!(output_str.contains("main.rs"));
+        assert!(output_str.contains("lib.rs"));
+    }
+
+    #[test]
+    fn test_format_causes_with_three_causes() {
+        let causes = vec![
+            &PanicCause::UnwrapNone,
+            &PanicCause::UnwrapErr,
+            &PanicCause::ExplicitPanic,
+        ];
+        let result = format_causes(&causes);
+        assert!(result.contains("[JP001:"));
+        assert!(result.contains("[JP006:"));
+        assert!(result.contains("[JP007:"));
+    }
+
+    #[test]
+    fn test_get_display_path_no_roots() {
+        let result = get_display_path("src/main.rs", None, None);
+        assert_eq!(result, "src/main.rs");
+    }
+
+    #[test]
+    fn test_make_absolute_relative_path() {
+        let result = make_absolute("src/lib.rs", Some(Path::new("/project")));
+        assert_eq!(result, "/project/src/lib.rs");
+    }
 }

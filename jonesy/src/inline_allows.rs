@@ -366,4 +366,142 @@ fn foo() {
         let allows = scan_file_allows("/nonexistent/path/to/file.rs");
         assert!(allows.is_empty());
     }
+
+    #[test]
+    fn test_scan_file_allows_with_content() {
+        use std::io::Write;
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "fn foo() {{").unwrap();
+        writeln!(file, "    bar(); // jonesy:allow(panic)").unwrap();
+        writeln!(file, "}}").unwrap();
+
+        let allows = scan_file_allows(file_path.to_str().unwrap());
+        assert_eq!(allows.len(), 1);
+        assert!(allows.get(&2).unwrap().contains("panic"));
+    }
+
+    #[test]
+    fn test_scan_inline_allows_multiple_files() {
+        use std::io::Write;
+        let temp_dir = tempfile::TempDir::new().unwrap();
+
+        let file1 = temp_dir.path().join("file1.rs");
+        let mut f1 = std::fs::File::create(&file1).unwrap();
+        writeln!(f1, "foo(); // jonesy:allow(unwrap)").unwrap();
+
+        let file2 = temp_dir.path().join("file2.rs");
+        let mut f2 = std::fs::File::create(&file2).unwrap();
+        writeln!(f2, "bar(); // jonesy:allow(panic)").unwrap();
+
+        let paths = [file1.to_str().unwrap(), file2.to_str().unwrap()];
+        let allows = scan_inline_allows(&paths);
+
+        assert_eq!(allows.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_inline_allows_nonexistent_file_skipped() {
+        let paths = ["/nonexistent/file.rs"];
+        let allows = scan_inline_allows(&paths);
+        assert!(allows.is_empty());
+    }
+
+    #[test]
+    fn test_check_inline_allow_with_file() {
+        use std::io::Write;
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "fn foo() {{").unwrap();
+        writeln!(file, "    bar(); // jonesy:allow(unwrap)").unwrap();
+        writeln!(file, "}}").unwrap();
+
+        // Line 2 has the allow comment
+        assert!(check_inline_allow(
+            file_path.to_str().unwrap(),
+            2,
+            "unwrap",
+            None
+        ));
+        // Line 3 is within ±2 range of line 2
+        assert!(check_inline_allow(
+            file_path.to_str().unwrap(),
+            3,
+            "unwrap",
+            None
+        ));
+        // Different cause should not match
+        assert!(!check_inline_allow(
+            file_path.to_str().unwrap(),
+            2,
+            "panic",
+            None
+        ));
+    }
+
+    #[test]
+    fn test_check_inline_allow_absolute_path() {
+        use std::io::Write;
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "x(); // jonesy:allow(*)").unwrap();
+        drop(file);
+
+        // Absolute path should work without workspace root
+        let result = check_inline_allow(file_path.to_str().unwrap(), 1, "anything", None);
+        assert!(result);
+    }
+
+    #[test]
+    fn test_check_inline_allow_nonexistent_file() {
+        assert!(!check_inline_allow("/nonexistent/file.rs", 1, "unwrap", None));
+    }
+
+    #[test]
+    fn test_check_inline_allow_wildcard() {
+        use std::io::Write;
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "dangerous(); // jonesy:allow(*)").unwrap();
+
+        assert!(check_inline_allow(
+            file_path.to_str().unwrap(),
+            1,
+            "anything",
+            None
+        ));
+        assert!(check_inline_allow(
+            file_path.to_str().unwrap(),
+            1,
+            "unwrap",
+            None
+        ));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_wrong_cause() {
+        let mut allows = InlineAllows::new();
+        let mut causes = HashSet::new();
+        causes.insert("unwrap".to_string());
+        allows.insert(("test.rs".to_string(), 10), causes);
+
+        // Wrong cause should not match
+        assert!(!is_allowed_by_inline(&allows, "test.rs", 10, "panic"));
+    }
+
+    #[test]
+    fn test_is_allowed_by_inline_prev_line_wildcard() {
+        let mut allows = InlineAllows::new();
+        let mut causes = HashSet::new();
+        causes.insert("*".to_string());
+        // Comment on line 9
+        allows.insert(("test.rs".to_string(), 9), causes);
+
+        // Line 10 should match via previous line with wildcard
+        assert!(is_allowed_by_inline(&allows, "test.rs", 10, "anything"));
+    }
 }
