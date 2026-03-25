@@ -1,5 +1,7 @@
 # Jonesy: "Don't Panic!"
 
+[![codecov](https://codecov.io/gh/andrewdavidmackenzie/jonesy/graph/badge.svg)](https://codecov.io/gh/andrewdavidmackenzie/jonesy)
+
 Jonesy analyzes Rust binaries to find all code paths that can lead to a panic, helping developers understand where panics
 can originate in their code.
 

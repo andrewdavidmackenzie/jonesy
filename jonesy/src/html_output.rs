@@ -750,3 +750,192 @@ pub fn generate_workspace_html_output(
 
     html
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call_tree::AnalysisSummary;
+    use crate::json_output::WorkspaceMemberResult;
+    use crate::panic_cause::PanicCause;
+    use std::collections::HashSet;
+
+    fn make_test_point(
+        name: &str,
+        file: &str,
+        line: u32,
+        causes: Vec<PanicCause>,
+    ) -> CrateCodePoint {
+        CrateCodePoint {
+            name: name.to_string(),
+            file: file.to_string(),
+            line,
+            column: Some(1),
+            causes: causes.into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        }
+    }
+
+    fn make_test_result(code_points: Vec<CrateCodePoint>) -> AnalysisResult {
+        AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test".to_string(),
+            code_points,
+        }
+    }
+
+    #[test]
+    fn test_generate_html_output_empty() {
+        let result = make_test_result(vec![]);
+        let html = generate_html_output(&result, false, false);
+
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("test_project"));
+        assert!(html.contains("No panic points found"));
+        assert!(html.contains("</html>"));
+    }
+
+    #[test]
+    fn test_generate_html_output_with_panic_points() {
+        let result = make_test_result(vec![make_test_point(
+            "test_func",
+            "src/main.rs",
+            42,
+            vec![PanicCause::UnwrapNone],
+        )]);
+        let html = generate_html_output(&result, false, false);
+
+        assert!(html.contains("src/main.rs"));
+        assert!(html.contains(":42:"));
+        assert!(html.contains("test_func"));
+        assert!(html.contains("JP006"));
+        assert!(html.contains("unwrap() on None"));
+    }
+
+    #[test]
+    fn test_generate_html_output_summary_only() {
+        let result = make_test_result(vec![make_test_point(
+            "test_func",
+            "src/main.rs",
+            42,
+            vec![PanicCause::UnwrapNone],
+        )]);
+        let html = generate_html_output(&result, false, true);
+
+        // Summary-only should have empty panic points list
+        assert!(html.contains("Panic Points"));
+        // But no individual panic point entries
+        assert!(!html.contains("test_func"));
+    }
+
+    #[test]
+    fn test_generate_html_output_with_tree() {
+        let child = CrateCodePoint {
+            name: "child_func".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 20,
+            column: Some(5),
+            causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        };
+        let parent = CrateCodePoint {
+            name: "parent_func".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(1),
+            causes: HashSet::new(),
+            children: vec![child],
+            is_direct_panic: false,
+            called_function: Some("child_func".to_string()),
+        };
+        let result = make_test_result(vec![parent]);
+        let html = generate_html_output(&result, true, false);
+
+        // Both parent and child should appear
+        assert!(html.contains("parent_func"));
+        assert!(html.contains("child_func"));
+        assert!(html.contains("src/main.rs"));
+        assert!(html.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_generate_html_output_escapes_html() {
+        let result = AnalysisResult {
+            project_name: "test<script>alert('xss')</script>".to_string(),
+            project_root: "/test".to_string(),
+            code_points: vec![],
+        };
+        let html = generate_html_output(&result, false, false);
+
+        // HTML should be escaped
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn test_generate_workspace_html_output() {
+        let member = WorkspaceMemberResult {
+            name: "crate_a".to_string(),
+            path: "crate_a".to_string(),
+            summary: AnalysisSummary::from_points(
+                vec![("file".to_string(), 1)].into_iter().collect(),
+                vec!["file".to_string()].into_iter().collect(),
+            ),
+            code_points: vec![make_test_point(
+                "func",
+                "crate_a/src/lib.rs",
+                5,
+                vec![PanicCause::Todo],
+            )],
+        };
+        let workspace = WorkspaceResult {
+            root: "/workspace".to_string(),
+            members: vec![member],
+            total_summary: AnalysisSummary::from_points(
+                vec![("file".to_string(), 1)].into_iter().collect(),
+                vec!["file".to_string()].into_iter().collect(),
+            ),
+        };
+
+        let html = generate_workspace_html_output(&workspace, false, false);
+
+        assert!(html.contains("Workspace Members"));
+        assert!(html.contains("crate_a"));
+        assert!(html.contains("JP014"));
+        assert!(html.contains("todo!()"));
+    }
+
+    #[test]
+    fn test_escape_html() {
+        assert_eq!(escape_html("<script>"), "&lt;script&gt;");
+        assert_eq!(escape_html("a & b"), "a &amp; b");
+        assert_eq!(escape_html("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(escape_html("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_html_structure() {
+        let result = make_test_result(vec![]);
+        let html = generate_html_output(&result, false, false);
+
+        // Check HTML structure
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<html lang=\"en\">"));
+        assert!(html.contains("<head>"));
+        assert!(html.contains("<body>"));
+        assert!(html.contains("</head>"));
+        assert!(html.contains("</body>"));
+        assert!(html.ends_with("</html>\n"));
+    }
+
+    #[test]
+    fn test_html_includes_version() {
+        let result = make_test_result(vec![]);
+        let html = generate_html_output(&result, false, false);
+
+        assert!(html.contains(VERSION));
+    }
+}

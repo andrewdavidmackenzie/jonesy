@@ -532,4 +532,145 @@ mod tests {
 
         assert_ne!(hash1, hash3);
     }
+
+    #[test]
+    fn test_target_needs_analysis_not_in_cache() {
+        let cache = AnalysisCache::default();
+        assert!(cache.target_needs_analysis(Path::new("/nonexistent/path")));
+    }
+
+    #[test]
+    fn test_update_target() {
+        let mut cache = AnalysisCache::default();
+        let path = PathBuf::from("/test/target");
+        cache.update_target(&path, 5);
+
+        assert!(cache.targets.contains_key(&path));
+        let state = cache.targets.get(&path).unwrap();
+        assert_eq!(state.panic_count, 5);
+    }
+
+    #[test]
+    fn test_config_changed_not_in_cache() {
+        let cache = AnalysisCache::default();
+        assert!(cache.config_changed(Path::new("/nonexistent/config")));
+    }
+
+    #[test]
+    fn test_update_config() {
+        let mut cache = AnalysisCache::default();
+        let path = PathBuf::from("/test/config.toml");
+        cache.update_config(&path);
+
+        assert!(cache.configs.contains_key(&path));
+    }
+
+    #[test]
+    fn test_update_workspace() {
+        let mut cache = AnalysisCache::default();
+        let state = WorkspaceState {
+            members: vec!["member1".to_string()],
+            binaries: HashMap::new(),
+            libraries: HashMap::new(),
+        };
+        cache.update_workspace(state.clone());
+
+        assert_eq!(cache.workspace.members, vec!["member1"]);
+    }
+
+    #[test]
+    fn test_prune_stale_targets() {
+        let mut cache = AnalysisCache::default();
+        // Add a non-existent target
+        cache.targets.insert(
+            PathBuf::from("/nonexistent/target"),
+            TargetState {
+                path: PathBuf::from("/nonexistent/target"),
+                mtime: 0,
+                panic_count: 0,
+            },
+        );
+        assert_eq!(cache.targets.len(), 1);
+
+        cache.prune_stale_targets();
+        assert!(cache.targets.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_changes_affected_targets() {
+        let changes = WorkspaceChanges {
+            added_binaries: vec!["bin1".to_string()],
+            changed_binaries: vec!["bin2".to_string()],
+            added_libraries: vec!["lib1".to_string()],
+            changed_libraries: vec!["lib2".to_string()],
+            ..Default::default()
+        };
+
+        let targets = changes.affected_targets();
+        assert!(targets.contains(&"bin1".to_string()));
+        assert!(targets.contains(&"bin2".to_string()));
+        assert!(targets.contains(&"lib1".to_string()));
+        assert!(targets.contains(&"lib2".to_string()));
+        assert_eq!(targets.len(), 4);
+    }
+
+    #[test]
+    fn test_workspace_changes_affects_target_binary() {
+        let changes = WorkspaceChanges {
+            added_binaries: vec!["my-app".to_string()],
+            ..Default::default()
+        };
+
+        // Binary with dashes -> underscore normalization
+        assert!(changes.affects_target(Path::new("/target/debug/my_app")));
+        assert!(changes.affects_target(Path::new("/target/debug/my-app")));
+        assert!(!changes.affects_target(Path::new("/target/debug/other")));
+    }
+
+    #[test]
+    fn test_workspace_changes_affects_target_library() {
+        let changes = WorkspaceChanges {
+            added_libraries: vec!["mylib".to_string()],
+            ..Default::default()
+        };
+
+        // Library with lib prefix
+        assert!(changes.affects_target(Path::new("/target/debug/libmylib.rlib")));
+        assert!(changes.affects_target(Path::new("/target/debug/libmylib.dylib")));
+        assert!(!changes.affects_target(Path::new("/target/debug/libother.rlib")));
+    }
+
+    #[test]
+    fn test_workspace_changes_affects_target_changed() {
+        let changes = WorkspaceChanges {
+            changed_binaries: vec!["cli".to_string()],
+            changed_libraries: vec!["core".to_string()],
+            ..Default::default()
+        };
+
+        assert!(changes.affects_target(Path::new("/target/debug/cli")));
+        assert!(changes.affects_target(Path::new("/target/debug/libcore.rlib")));
+    }
+
+    #[test]
+    fn test_cache_version() {
+        let cache = AnalysisCache::default();
+        // Default should have version 0
+        assert_eq!(cache.version, 0);
+
+        // After loading, version should be set to current
+        // (we can't easily test this without filesystem)
+    }
+
+    #[test]
+    fn test_workspace_changes_no_full_reanalysis_without_member_changes() {
+        let changes = WorkspaceChanges {
+            added_binaries: vec!["bin1".to_string()],
+            changed_libraries: vec!["lib1".to_string()],
+            ..Default::default()
+        };
+
+        assert!(changes.has_changes());
+        assert!(!changes.needs_full_reanalysis());
+    }
 }

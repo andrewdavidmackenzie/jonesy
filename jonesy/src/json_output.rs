@@ -190,3 +190,256 @@ pub fn generate_workspace_json_output(
 
     serde_json::to_string_pretty(&output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call_tree::AnalysisSummary;
+    use crate::panic_cause::PanicCause;
+    use std::collections::HashSet;
+
+    fn make_test_code_point(
+        name: &str,
+        file: &str,
+        line: u32,
+        causes: Vec<PanicCause>,
+    ) -> CrateCodePoint {
+        CrateCodePoint {
+            name: name.to_string(),
+            file: file.to_string(),
+            line,
+            column: Some(1),
+            causes: causes.into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        }
+    }
+
+    #[test]
+    fn test_make_absolute_path_already_absolute() {
+        let path = make_absolute_path("/home/user/project/src/main.rs", "/home/user/project");
+        assert_eq!(path, "/home/user/project/src/main.rs");
+    }
+
+    #[test]
+    fn test_make_absolute_path_relative() {
+        let path = make_absolute_path("src/main.rs", "/home/user/project");
+        assert_eq!(path, "/home/user/project/src/main.rs");
+    }
+
+    #[test]
+    fn test_make_absolute_path_with_trailing_slash() {
+        let path = make_absolute_path("src/main.rs", "/home/user/project/");
+        assert_eq!(path, "/home/user/project/src/main.rs");
+    }
+
+    #[test]
+    fn test_generate_json_output_empty() {
+        let result = AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test".to_string(),
+            code_points: vec![],
+        };
+
+        let json = generate_json_output(&result, false, false).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["version"], JSON_SCHEMA_VERSION);
+        assert_eq!(parsed["project"]["name"], "test_project");
+        assert_eq!(parsed["project"]["root"], "/test");
+        assert_eq!(parsed["summary"]["panic_points"], 0);
+        assert_eq!(parsed["summary"]["files_affected"], 0);
+        assert!(parsed["panic_points"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_generate_json_output_with_code_points() {
+        let result = AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test".to_string(),
+            code_points: vec![make_test_code_point(
+                "test_func",
+                "src/main.rs",
+                10,
+                vec![PanicCause::UnwrapNone],
+            )],
+        };
+
+        let json = generate_json_output(&result, false, false).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["summary"]["panic_points"], 1);
+        assert_eq!(parsed["summary"]["files_affected"], 1);
+
+        let points = parsed["panic_points"].as_array().unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0]["file"], "/test/src/main.rs");
+        assert_eq!(points[0]["line"], 10);
+        assert_eq!(points[0]["function"], "test_func");
+    }
+
+    #[test]
+    fn test_generate_json_output_summary_only() {
+        let result = AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test".to_string(),
+            code_points: vec![make_test_code_point(
+                "test_func",
+                "src/main.rs",
+                10,
+                vec![PanicCause::UnwrapNone],
+            )],
+        };
+
+        let json = generate_json_output(&result, false, true).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+
+        // Summary should still show counts
+        assert_eq!(parsed["summary"]["panic_points"], 1);
+        // But panic_points array should be empty
+        assert!(parsed["panic_points"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_generate_json_output_with_children() {
+        let child = CrateCodePoint {
+            name: "child_func".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 20,
+            column: Some(5),
+            causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: true,
+            called_function: None,
+        };
+
+        let parent = CrateCodePoint {
+            name: "parent_func".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(1),
+            causes: HashSet::new(),
+            children: vec![child],
+            is_direct_panic: false,
+            called_function: Some("child_func".to_string()),
+        };
+
+        let result = AnalysisResult {
+            project_name: "test".to_string(),
+            project_root: "/test".to_string(),
+            code_points: vec![parent],
+        };
+
+        // Without tree flag, children should be empty
+        let json = generate_json_output(&result, false, false).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        let points = parsed["panic_points"].as_array().unwrap();
+        assert!(
+            points[0].get("children").is_none()
+                || points[0]["children"].as_array().unwrap().is_empty()
+        );
+
+        // With tree flag, children should be included
+        let json_tree = generate_json_output(&result, true, false).unwrap();
+        let parsed_tree: Value = serde_json::from_str(&json_tree).unwrap();
+        let points_tree = parsed_tree["panic_points"].as_array().unwrap();
+        let children = points_tree[0]["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["function"], "child_func");
+    }
+
+    #[test]
+    fn test_code_point_to_json_includes_causes() {
+        let point = make_test_code_point(
+            "test",
+            "src/main.rs",
+            10,
+            vec![PanicCause::UnwrapNone, PanicCause::UnwrapErr],
+        );
+
+        let json = code_point_to_json(&point, "/test", false);
+        let causes = json["causes"].as_array().unwrap();
+        assert_eq!(causes.len(), 2);
+        // Causes should be sorted by error code
+        assert_eq!(causes[0]["code"], "JP006");
+        assert_eq!(causes[1]["code"], "JP007");
+    }
+
+    #[test]
+    fn test_workspace_json_output() {
+        let member = WorkspaceMemberResult {
+            name: "crate_a".to_string(),
+            path: "crate_a".to_string(),
+            summary: AnalysisSummary::from_points(
+                vec![("file1".to_string(), 1), ("file1".to_string(), 2)]
+                    .into_iter()
+                    .collect(),
+                vec!["file1".to_string()].into_iter().collect(),
+            ),
+            code_points: vec![make_test_code_point(
+                "func",
+                "crate_a/src/lib.rs",
+                5,
+                vec![PanicCause::Todo],
+            )],
+        };
+
+        let workspace = WorkspaceResult {
+            root: "/workspace".to_string(),
+            members: vec![member],
+            total_summary: AnalysisSummary::from_points(
+                vec![("file1".to_string(), 1), ("file1".to_string(), 2)]
+                    .into_iter()
+                    .collect(),
+                vec!["file1".to_string()].into_iter().collect(),
+            ),
+        };
+
+        let json = generate_workspace_json_output(&workspace, false, false).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["version"], JSON_WORKSPACE_SCHEMA_VERSION);
+        assert_eq!(parsed["workspace"]["root"], "/workspace");
+        assert_eq!(parsed["summary"]["total_panic_points"], 2);
+        assert_eq!(parsed["summary"]["members_analyzed"], 1);
+
+        let members = parsed["workspace"]["members"].as_array().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0]["name"], "crate_a");
+    }
+
+    #[test]
+    fn test_workspace_json_output_summary_only() {
+        let member = WorkspaceMemberResult {
+            name: "crate_a".to_string(),
+            path: "crate_a".to_string(),
+            summary: AnalysisSummary::from_points(
+                vec![("file".to_string(), 1)].into_iter().collect(),
+                vec!["file".to_string()].into_iter().collect(),
+            ),
+            code_points: vec![make_test_code_point(
+                "func",
+                "src/lib.rs",
+                5,
+                vec![PanicCause::Todo],
+            )],
+        };
+
+        let workspace = WorkspaceResult {
+            root: "/workspace".to_string(),
+            members: vec![member],
+            total_summary: AnalysisSummary::from_points(
+                vec![("file".to_string(), 1)].into_iter().collect(),
+                vec!["file".to_string()].into_iter().collect(),
+            ),
+        };
+
+        let json = generate_workspace_json_output(&workspace, false, true).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+
+        let members = parsed["workspace"]["members"].as_array().unwrap();
+        // panic_points should be empty in summary-only mode
+        assert!(members[0]["panic_points"].as_array().unwrap().is_empty());
+    }
+}

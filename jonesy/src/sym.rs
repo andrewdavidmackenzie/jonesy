@@ -2994,3 +2994,174 @@ fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for matches_crate_pattern
+    #[test]
+    fn test_matches_crate_pattern_simple() {
+        assert!(matches_crate_pattern("src/main.rs", "src/"));
+        assert!(matches_crate_pattern("src/lib.rs", "src/"));
+        assert!(matches_crate_pattern("src/module/mod.rs", "src/"));
+    }
+
+    #[test]
+    fn test_matches_crate_pattern_no_match() {
+        assert!(!matches_crate_pattern("tests/test.rs", "src/"));
+        assert!(!matches_crate_pattern("examples/ex.rs", "src/"));
+    }
+
+    #[test]
+    fn test_matches_crate_pattern_multi_pattern() {
+        let pattern = "flowc/src/|flowr/src/";
+        assert!(matches_crate_pattern("flowc/src/main.rs", pattern));
+        assert!(matches_crate_pattern("flowr/src/lib.rs", pattern));
+        assert!(!matches_crate_pattern("other/src/lib.rs", pattern));
+    }
+
+    #[test]
+    fn test_matches_crate_pattern_workspace() {
+        let pattern = "crate_a/src/|crate_b/src/";
+        assert!(matches_crate_pattern("crate_a/src/lib.rs", pattern));
+        assert!(matches_crate_pattern("crate_b/src/main.rs", pattern));
+        assert!(!matches_crate_pattern("crate_c/src/lib.rs", pattern));
+    }
+
+    #[test]
+    fn test_matches_crate_pattern_empty_pattern() {
+        // Empty pattern should not match
+        assert!(!matches_crate_pattern("src/main.rs", ""));
+        // Pattern with empty segments should work
+        assert!(matches_crate_pattern("src/main.rs", "|src/|"));
+    }
+
+    // Tests for is_dependency_path
+    #[test]
+    fn test_is_dependency_path_cargo_registry() {
+        assert!(is_dependency_path(
+            "/home/user/.cargo/registry/src/crate/lib.rs"
+        ));
+        assert!(is_dependency_path(
+            "C:\\Users\\user\\.cargo\\registry\\src\\crate\\lib.rs"
+        ));
+    }
+
+    #[test]
+    fn test_is_dependency_path_rustc() {
+        assert!(is_dependency_path(
+            "/rustc/abc123/library/core/src/option.rs"
+        ));
+        assert!(is_dependency_path("/rust/deps/std/src/lib.rs"));
+        assert!(is_dependency_path("library/core/src/panicking.rs"));
+    }
+
+    #[test]
+    fn test_is_dependency_path_generated() {
+        assert!(is_dependency_path("/__/generated/code.rs"));
+        assert!(is_dependency_path("__framework/src/lib.rs"));
+        assert!(is_dependency_path("src/__generated.rs"));
+    }
+
+    #[test]
+    fn test_is_dependency_path_user_code() {
+        // User code should not be detected as dependency
+        assert!(!is_dependency_path("src/main.rs"));
+        assert!(!is_dependency_path("/home/user/project/src/lib.rs"));
+        assert!(!is_dependency_path("crate_a/src/module.rs"));
+    }
+
+    // Tests for ValidSourceFiles
+    #[test]
+    fn test_valid_source_files_needs_validation() {
+        // Empty files means no validation needed
+        let empty_valid = ValidSourceFiles::default();
+        assert!(!empty_valid.needs_validation("src/"));
+
+        // With files, "src/" pattern needs validation
+        let mut files = std::collections::HashSet::new();
+        files.insert("src/main.rs".to_string());
+        let valid = ValidSourceFiles {
+            files,
+            project_root: None,
+        };
+        assert!(valid.needs_validation("src/"));
+        // Workspace patterns don't need validation (specific enough)
+        assert!(!valid.needs_validation("flowc/src/|flowr/src/"));
+        assert!(!valid.needs_validation("my_crate/src/"));
+    }
+
+    #[test]
+    fn test_valid_source_files_contains() {
+        let mut files = std::collections::HashSet::new();
+        files.insert("src/main.rs".to_string());
+        files.insert("src/lib.rs".to_string());
+        let valid = ValidSourceFiles {
+            files,
+            project_root: None,
+        };
+
+        assert!(valid.contains("src/main.rs"));
+        assert!(valid.contains("src/lib.rs"));
+        assert!(!valid.contains("src/other.rs"));
+    }
+
+    #[test]
+    fn test_matches_crate_pattern_validated_with_allowlist() {
+        let mut files = std::collections::HashSet::new();
+        files.insert("src/main.rs".to_string());
+        files.insert("src/module/mod.rs".to_string());
+        let valid = ValidSourceFiles {
+            files,
+            project_root: Some(std::path::PathBuf::from("/project")),
+        };
+
+        // With validation, only files in the allowlist should match
+        assert!(matches_crate_pattern_validated(
+            "src/main.rs",
+            "src/",
+            Some(&valid)
+        ));
+        assert!(matches_crate_pattern_validated(
+            "src/module/mod.rs",
+            "src/",
+            Some(&valid)
+        ));
+        // File not in allowlist should not match
+        assert!(!matches_crate_pattern_validated(
+            "src/other.rs",
+            "src/",
+            Some(&valid)
+        ));
+    }
+
+    // Tests for decode_branch_target (ARM64)
+    #[test]
+    fn test_decode_branch_target_forward() {
+        // BL instruction: offset = +4 (next instruction)
+        // imm26 = 1, pc = 0x1000
+        let insn = 0x94000001_u32; // BL +4
+        let target = decode_branch_target(insn, 0x1000);
+        assert_eq!(target, 0x1004);
+    }
+
+    #[test]
+    fn test_decode_branch_target_backward() {
+        // BL instruction with negative offset (high bit set in imm26)
+        // This represents a backward branch
+        let pc = 0x2000_u64;
+        // imm26 = 0x3FFFFFF (-1 in 26-bit signed) => offset = -4
+        let insn = 0x97FFFFFF_u32; // BL -4
+        let target = decode_branch_target(insn, pc);
+        assert_eq!(target, pc.wrapping_sub(4));
+    }
+
+    #[test]
+    fn test_decode_branch_target_zero_offset() {
+        // BL with offset 0 (branches to itself)
+        let insn = 0x94000000_u32;
+        let target = decode_branch_target(insn, 0x1000);
+        assert_eq!(target, 0x1000);
+    }
+}

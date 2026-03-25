@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  lint:
     runs-on: macos-14  # ARM64 runner (M1)
     steps:
       - uses: actions/checkout@v4
@@ -36,5 +36,5 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-      - name: Run clippy and tests
-        run: make all
+      - name: Run clippy
+        run: make clippy
