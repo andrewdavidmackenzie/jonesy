@@ -2199,18 +2199,8 @@ fn parse_function_die<R: Reader>(
                 _ => {}
             },
             gimli::DW_AT_decl_file => {
-                if let AttributeValue::FileIndex(idx) = attr.value()
-                    && let Some(line_program) = &unit.line_program
-                    && let Some(file_entry) = line_program.header().file(idx)
-                    && let Some(dir) = file_entry.directory(line_program.header())
-                {
-                    let dir_str = dwarf.attr_string(unit, dir.clone())?;
-                    let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
-                    file = Some(format!(
-                        "{}/{}",
-                        dir_str.to_string_lossy()?,
-                        file_str.to_string_lossy()?
-                    ));
+                if let AttributeValue::FileIndex(idx) = attr.value() {
+                    file = resolve_decl_file(dwarf, unit, idx)?;
                 }
             }
             gimli::DW_AT_decl_line => {
@@ -2386,6 +2376,30 @@ fn resolve_abstract_origin_name<R: Reader>(
     Ok(name)
 }
 
+/// Resolve file path from DW_AT_decl_file attribute value.
+fn resolve_decl_file<R: Reader>(
+    dwarf: &Dwarf<R>,
+    unit: &Unit<R>,
+    file_idx: u64,
+) -> Result<Option<String>, gimli::Error> {
+    let Some(line_program) = &unit.line_program else {
+        return Ok(None);
+    };
+    let Some(file_entry) = line_program.header().file(file_idx) else {
+        return Ok(None);
+    };
+    let Some(dir) = file_entry.directory(line_program.header()) else {
+        return Ok(None);
+    };
+    let dir_str = dwarf.attr_string(unit, dir.clone())?;
+    let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
+    Ok(Some(format!(
+        "{}/{}",
+        dir_str.to_string_lossy()?,
+        file_str.to_string_lossy()?
+    )))
+}
+
 /// Resolve name, file, and line from a DW_AT_specification reference.
 /// Used when a function definition references a separate declaration.
 fn resolve_specification<R: Reader>(
@@ -2415,18 +2429,8 @@ fn resolve_specification<R: Reader>(
                 }
             }
             gimli::DW_AT_decl_file => {
-                if let AttributeValue::FileIndex(idx) = attr.value()
-                    && let Some(line_program) = &unit.line_program
-                    && let Some(file_entry) = line_program.header().file(idx)
-                    && let Some(dir) = file_entry.directory(line_program.header())
-                {
-                    let dir_str = dwarf.attr_string(unit, dir.clone())?;
-                    let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
-                    file = Some(format!(
-                        "{}/{}",
-                        dir_str.to_string_lossy()?,
-                        file_str.to_string_lossy()?
-                    ));
+                if let AttributeValue::FileIndex(idx) = attr.value() {
+                    file = resolve_decl_file(dwarf, unit, idx)?;
                 }
             }
             gimli::DW_AT_decl_line => {
