@@ -344,10 +344,8 @@ pub fn collect_crate_code_points_hierarchical(
     let mut roots: Vec<CodePointKey> = points.keys().cloned().collect();
     roots.sort(); // Deterministic ordering
 
-    // Build tree from roots with caching to avoid exponential rebuilding of shared subtrees
-    // Cache: key -> built subtree (avoids rebuilding same subtree multiple times)
-    let mut cache: HashMap<CodePointKey, CrateCodePoint> = HashMap::new();
-
+    // Build each root with its own cache so each top-level root keeps a full subtree.
+    // (Still caches within a root to avoid repeated rebuilding in that root.)
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,
@@ -407,7 +405,10 @@ pub fn collect_crate_code_points_hierarchical(
 
     roots
         .iter()
-        .filter_map(|root| build_subtree(root, &points, &mut HashSet::new(), &mut cache))
+        .filter_map(|root| {
+            let mut cache: HashMap<CodePointKey, CrateCodePoint> = HashMap::new();
+            build_subtree(root, &points, &mut HashSet::new(), &mut cache)
+        })
         .collect()
 }
 
