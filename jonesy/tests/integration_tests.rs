@@ -1115,3 +1115,131 @@ fn test_oom_detection_via_abort() {
         stdout
     );
 }
+
+/// Test that functions with DW_AT_specification are correctly included in analysis (issue #181).
+/// This verifies that method definitions that reference separate declarations are parsed.
+/// Without DW_AT_specification handling, TimeStamp::now would be missing from the tree.
+#[test]
+fn test_dwarf_specification_handling() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("unwrap_or_default");
+
+    // Run jonesy with JSON output to check tree structure
+    let json_stdout = run_jonesy_raw_output(&example_dir, &["--format", "json", "--tree"]);
+    let json: serde_json::Value =
+        serde_json::from_str(&json_stdout).expect("Failed to parse JSON output");
+
+    let panic_points = json["panic_points"]
+        .as_array()
+        .expect("Expected panic_points array");
+
+    // Find panic points that have TimeStamp::now in the tree
+    // This verifies that TimeStamp::now is correctly included via DW_AT_specification
+    let mut found_timestamp_now = false;
+    let mut timestamp_function_name = String::new();
+
+    for point in panic_points {
+        if let Some(children) = point["children"].as_array() {
+            for child in children {
+                // Check if child is TimeStamp::now
+                if let Some(func) = child["function"].as_str() {
+                    if func.contains("TimeStamp") && func.contains("now") {
+                        found_timestamp_now = true;
+                        timestamp_function_name = func.to_string();
+                    }
+                }
+                // Check nested children (TimeStamp::now is grandchild of main)
+                if let Some(grandchildren) = child["children"].as_array() {
+                    for grandchild in grandchildren {
+                        if let Some(func) = grandchild["function"].as_str() {
+                            if func.contains("TimeStamp") && func.contains("now") {
+                                found_timestamp_now = true;
+                                timestamp_function_name = func.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_timestamp_now,
+        "TimeStamp::now should appear in the call tree.\n\
+         This verifies DW_AT_specification handling works correctly.\n\
+         JSON output:\n{}",
+        json_stdout
+    );
+
+    assert!(
+        timestamp_function_name.contains("TimeStamp") && timestamp_function_name.contains("now"),
+        "Expected TimeStamp::now function, got: '{}'\n\
+         JSON output:\n{}",
+        timestamp_function_name,
+        json_stdout
+    );
+}
+
+/// Test that intermediate functions (functions in modules called from main) are reported
+/// as root-level panic points, not just as children of their callers.
+/// This is critical for LSP diagnostics - users should see warnings ON the function definition,
+/// not just at call sites.
+#[test]
+fn test_intermediate_functions_reported_as_roots() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+
+    // Run jonesy with text output
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks"]);
+
+    // Check that module/mod.rs entries appear as ROOT-level entries (starting with "-->")
+    // not just as children (starting with "└──")
+    let root_module_entries: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.trim_start().starts_with("--> ") && line.contains("module/mod.rs"))
+        .collect();
+
+    // Should have at least some root-level entries for module/mod.rs
+    // Functions like cause_an_unwrap, cause_expect_none, etc. should be reported at root level
+    assert!(
+        !root_module_entries.is_empty(),
+        "Module functions should be reported as root-level panic points.\n\
+         Functions in module/mod.rs contain direct panic calls (unwrap, expect, panic!)\n\
+         and should appear as root entries, not just as children of main.rs calls.\n\
+         Found {} root module entries.\n\
+         Output:\n{}",
+        root_module_entries.len(),
+        stdout
+    );
+
+    // Verify specific functions are reported at root level
+    let has_unwrap_root = root_module_entries
+        .iter()
+        .any(|line| line.contains(":9:") || line.contains(":10:")); // cause_an_unwrap lines
+    let has_expect_root = root_module_entries
+        .iter()
+        .any(|line| line.contains(":40:") || line.contains(":39:")); // cause_expect_none lines
+
+    assert!(
+        has_unwrap_root || has_expect_root,
+        "Expected at least one module function (like cause_an_unwrap or cause_expect_none)\n\
+         to appear as a root-level entry.\n\
+         Root module entries found: {:?}\n\
+         Full output:\n{}",
+        root_module_entries,
+        stdout
+    );
+
+    // Verify we have multiple root entries from module (not just one)
+    // This catches regressions where only some module functions are reported
+    assert!(
+        root_module_entries.len() >= 10,
+        "Expected at least 10 root-level module entries (for various panic functions).\n\
+         Found only {} entries: {:?}\n\
+         Each module function with a panic path should appear as a root entry.",
+        root_module_entries.len(),
+        root_module_entries
+    );
+}

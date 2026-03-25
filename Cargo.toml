@@ -10,6 +10,7 @@ members = [
     "examples/perfect",
     "examples/rlib",
     "examples/staticlib",
+    "examples/unwrap_or_default",
 ]
 
 # Optimize release builds for performance
