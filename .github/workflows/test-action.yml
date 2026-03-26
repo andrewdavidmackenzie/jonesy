@@ -1,0 +1,113 @@
+# Test workflow for the jonesy GitHub Action
+#
+# This workflow tests the jonesy GitHub Action by running it on the examples/panic
+# directory and verifying it produces the expected results.
+
+name: Test GitHub Action
+
+on:
+  pull_request:
+    paths:
+      - 'action.yml'
+      - '.github/workflows/test-action.yml'
+      - '.github/problem-matcher.json'
+  push:
+    branches: [master]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/test-action.yml'
+      - '.github/problem-matcher.json'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  test-action:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build jonesy from source
+        run: cargo build --package jonesy
+
+      - name: Build panic example
+        working-directory: examples/panic
+        run: cargo build
+
+      - name: Generate dSYM for panic example
+        run: dsymutil target/debug/panic
+
+      # Test 1: Basic analysis with local jonesy binary
+      - name: Test basic analysis
+        id: basic-test
+        working-directory: .
+        run: |
+          # Run jonesy on the panic example
+          output=$(./target/debug/jonesy --bin target/debug/panic --no-hyperlinks 2>&1) || true
+          echo "$output"
+
+          # Verify we found panic points
+          if echo "$output" | grep -q "Panic points:"; then
+            panic_count=$(echo "$output" | grep -oE "Panic points: [0-9]+" | grep -oE "[0-9]+")
+            echo "panic-count=$panic_count" >> $GITHUB_OUTPUT
+            echo "✅ Found $panic_count panic points as expected"
+          else
+            echo "❌ Failed to find panic points in output"
+            exit 1
+          fi
+
+      - name: Verify panic count
+        run: |
+          count="${{ steps.basic-test.outputs.panic-count }}"
+          if [ "$count" -gt 20 ]; then
+            echo "✅ Found $count panic points (expected > 20 for panic example)"
+          else
+            echo "❌ Expected at least 20 panic points, found $count"
+            exit 1
+          fi
+
+      # Test 2: JSON output format
+      - name: Test JSON output
+        run: |
+          output=$(./target/debug/jonesy --bin target/debug/panic --format json 2>&1) || true
+
+          # Verify JSON is valid and contains expected fields
+          if echo "$output" | jq -e '.summary.panic_points' >/dev/null 2>&1; then
+            panic_count=$(echo "$output" | jq -r '.summary.panic_points')
+            echo "✅ JSON output valid, found $panic_count panic points"
+          else
+            echo "❌ Invalid JSON output or missing summary.panic_points"
+            echo "Output: $output"
+            exit 1
+          fi
+
+      # Test 3: Extra args functionality
+      - name: Test extra args (--tree flag)
+        run: |
+          output=$(./target/debug/jonesy --bin target/debug/panic --tree --no-hyperlinks 2>&1) || true
+
+          # --tree should show call hierarchy with indentation
+          if echo "$output" | grep -qE "^[[:space:]]+└──|^[[:space:]]+├──"; then
+            echo "✅ --tree flag shows call hierarchy"
+          else
+            echo "❌ --tree flag not working (no indented call tree found)"
+            echo "Output: $output"
+            exit 1
+          fi
+
+      # Test 4: Working directory functionality
+      - name: Test working directory
+        run: |
+          # Run from examples/panic directory (it should auto-discover the binary)
+          cd examples/panic
+          output=$(../../target/debug/jonesy --no-hyperlinks 2>&1) || true
+          echo "$output"
+
+          # Verify it found the binary and analyzed it
+          if echo "$output" | grep -q "Processing"; then
+            echo "✅ Auto-discovery works from working directory"
+          else
+            echo "❌ Failed to auto-discover binary from working directory"
+            exit 1
+          fi
