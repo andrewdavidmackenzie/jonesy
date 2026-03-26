@@ -1270,10 +1270,7 @@ fn test_dsym_auto_generation() {
     }
 
     // Verify dSYM is gone
-    assert!(
-        !dsym_path.exists(),
-        "dSYM should be removed before test"
-    );
+    assert!(!dsym_path.exists(), "dSYM should be removed before test");
 
     // Run jonesy - it should auto-generate the dSYM
     let jonesy_bin = workspace_root.join("target/debug/jonesy");

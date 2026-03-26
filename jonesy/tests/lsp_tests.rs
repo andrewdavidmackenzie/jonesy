@@ -820,7 +820,9 @@ fn test_lsp_diagnostics_published() {
 
     // Verify diagnostic structure
     for notif in &diagnostic_notifications {
-        let params = notif.get("params").expect("publishDiagnostics should have params");
+        let params = notif
+            .get("params")
+            .expect("publishDiagnostics should have params");
 
         // Should have uri field
         assert!(
@@ -830,7 +832,9 @@ fn test_lsp_diagnostics_published() {
         );
 
         // Should have diagnostics array
-        let diagnostics = params.get("diagnostics").expect("Should have diagnostics array");
+        let diagnostics = params
+            .get("diagnostics")
+            .expect("Should have diagnostics array");
         assert!(diagnostics.is_array(), "diagnostics should be an array");
 
         // If there are diagnostics, verify their structure
@@ -840,7 +844,10 @@ fn test_lsp_diagnostics_published() {
                 assert!(diag.get("range").is_some(), "Diagnostic should have range");
 
                 // Should have message
-                assert!(diag.get("message").is_some(), "Diagnostic should have message");
+                assert!(
+                    diag.get("message").is_some(),
+                    "Diagnostic should have message"
+                );
 
                 // Should have source = "jonesy"
                 assert_eq!(
@@ -1044,9 +1051,9 @@ fn test_lsp_binary_change_triggers_reanalysis() {
         let notifications = client.collect_notifications(Duration::from_secs(5));
 
         // Should have triggered re-analysis (look for publishDiagnostics)
-        let has_diagnostics = notifications.iter().any(|n| {
-            n.get("method") == Some(&json!("textDocument/publishDiagnostics"))
-        });
+        let has_diagnostics = notifications
+            .iter()
+            .any(|n| n.get("method") == Some(&json!("textDocument/publishDiagnostics")));
 
         assert!(
             has_diagnostics,
