@@ -270,7 +270,7 @@ pub fn cause_division_overflow() {
     let _result = i32::MIN.checked_div(-1); // Returns None
 }
 
-#[allow(arithmetic_overflow, unconditional_panic)]
+#[allow(arithmetic_overflow, unconditional_panic, clippy::modulo_one)]
 pub fn cause_remainder_overflow() {
     // Remainder overflow: i32::MIN % -1 can overflow on some platforms
     // jonesy: expect panic(overflow)
