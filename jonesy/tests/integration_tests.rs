@@ -1244,12 +1244,10 @@ fn test_intermediate_functions_reported_as_roots() {
 
     // Verify specific functions are reported at root level at correct source lines
     let has_unwrap_root = root_module_entries.iter().any(|line| {
-        (unwrap_line.saturating_sub(1)..=unwrap_line + 1)
-            .any(|l| line.contains(&format!(":{l}:")))
+        (unwrap_line.saturating_sub(1)..=unwrap_line + 1).any(|l| line.contains(&format!(":{l}:")))
     });
     let has_expect_root = root_module_entries.iter().any(|line| {
-        (expect_line.saturating_sub(1)..=expect_line + 1)
-            .any(|l| line.contains(&format!(":{l}:")))
+        (expect_line.saturating_sub(1)..=expect_line + 1).any(|l| line.contains(&format!(":{l}:")))
     });
 
     assert!(
