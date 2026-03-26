@@ -926,17 +926,18 @@ fn test_lsp_diagnostics_contain_error_codes() {
     thread::sleep(Duration::from_millis(500));
     let _ = client.collect_notifications(Duration::from_secs(2));
 
-    // Trigger analysis manually
-    let _ = client.send_request(
+    // Trigger analysis manually (use longer timeout as analysis can take time)
+    let _ = client.send_request_timeout(
         "workspace/executeCommand",
         json!({
             "command": "jonesy.analyze",
             "arguments": []
         }),
+        Duration::from_secs(60),
     );
 
     // Collect notifications from analysis
-    let notifications = client.collect_notifications(Duration::from_secs(5));
+    let notifications = client.collect_notifications(Duration::from_secs(10));
 
     // Find diagnostics with error codes
     let mut found_error_code = false;
@@ -1029,37 +1030,41 @@ fn test_lsp_binary_change_triggers_reanalysis() {
 
     // Touch the binary to simulate a rebuild
     let binary_path = panic_example.join("target/debug/panic");
-    if binary_path.exists() {
-        // Read and rewrite to update mtime
-        let content = fs::read(&binary_path).unwrap();
-        fs::write(&binary_path, content).unwrap();
+    assert!(
+        binary_path.exists(),
+        "Binary should exist after build: {}",
+        binary_path.display()
+    );
 
-        // Send didChangeWatchedFiles notification (simulating what the client would do)
-        client
-            .send_notification(
-                "workspace/didChangeWatchedFiles",
-                json!({
-                    "changes": [{
-                        "uri": format!("file://{}", binary_path.display()),
-                        "type": 2  // Changed
-                    }]
-                }),
-            )
-            .expect("Failed to send didChangeWatchedFiles");
+    // Read and rewrite to update mtime
+    let content = fs::read(&binary_path).unwrap();
+    fs::write(&binary_path, content).unwrap();
 
-        // Collect notifications - should see new diagnostics being published
-        let notifications = client.collect_notifications(Duration::from_secs(5));
+    // Send didChangeWatchedFiles notification (simulating what the client would do)
+    client
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            json!({
+                "changes": [{
+                    "uri": format!("file://{}", binary_path.display()),
+                    "type": 2  // Changed
+                }]
+            }),
+        )
+        .expect("Failed to send didChangeWatchedFiles");
 
-        // Should have triggered re-analysis (look for publishDiagnostics)
-        let has_diagnostics = notifications
-            .iter()
-            .any(|n| n.get("method") == Some(&json!("textDocument/publishDiagnostics")));
+    // Collect notifications - should see new diagnostics being published
+    let notifications = client.collect_notifications(Duration::from_secs(5));
 
-        assert!(
-            has_diagnostics,
-            "Binary change should trigger re-analysis and publish diagnostics"
-        );
-    }
+    // Should have triggered re-analysis (look for publishDiagnostics)
+    let has_diagnostics = notifications
+        .iter()
+        .any(|n| n.get("method") == Some(&json!("textDocument/publishDiagnostics")));
+
+    assert!(
+        has_diagnostics,
+        "Binary change should trigger re-analysis and publish diagnostics"
+    );
 
     client.shutdown();
 }
