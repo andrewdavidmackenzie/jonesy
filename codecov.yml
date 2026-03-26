@@ -6,8 +6,8 @@ coverage:
         threshold: 1%
     patch:
       default:
-        # New code should have some coverage
-        threshold: 50%
+        # Maintain the overall level of coverage prior to a change
+        target: auto
 
 ignore:
   - "examples/**/*"
