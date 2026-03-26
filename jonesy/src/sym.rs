@@ -2415,12 +2415,15 @@ fn resolve_decl_file<R: Reader>(
 }
 
 /// Resolve name, file, and line from a DW_AT_specification reference.
+/// Resolved specification data: (name, file, line)
+type SpecificationResult = (Option<String>, Option<String>, Option<u32>);
+
 /// Used when a function definition references a separate declaration.
 fn resolve_specification<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     offset: gimli::UnitOffset<R::Offset>,
-) -> Result<(Option<String>, Option<String>, Option<u32>), gimli::Error> {
+) -> Result<SpecificationResult, gimli::Error> {
     let entry = unit.entry(offset)?;
     let mut name: Option<String> = None;
     let mut file: Option<String> = None;

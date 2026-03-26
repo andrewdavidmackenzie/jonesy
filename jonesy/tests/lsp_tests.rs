@@ -72,14 +72,9 @@ impl TestLspClient {
 
         let reader_thread = thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
-            loop {
-                match read_lsp_message(&mut reader) {
-                    Ok(message) => {
-                        if tx.send(message).is_err() {
-                            break; // Receiver dropped
-                        }
-                    }
-                    Err(_) => break, // EOF or error
+            while let Ok(message) = read_lsp_message(&mut reader) {
+                if tx.send(message).is_err() {
+                    break; // Receiver dropped
                 }
             }
         });
