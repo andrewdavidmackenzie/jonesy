@@ -1,0 +1,15 @@
+coverage:
+  status:
+    project:
+      default:
+        # Don't fail if coverage drops slightly
+        threshold: 1%
+    patch:
+      default:
+        # New code should have some coverage
+        threshold: 50%
+
+ignore:
+  - "examples/**/*"
+  - "jonesy/tests/**/*"
+  - "target/**/*"
