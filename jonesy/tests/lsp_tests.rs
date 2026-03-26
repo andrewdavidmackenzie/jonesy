@@ -1218,8 +1218,7 @@ fn test_lsp_file_change_watching() {
     // Trigger a config file change (jonesy.toml) via didChangeWatchedFiles
     let config_path = panic_example.join("jonesy.toml");
     // Create a minimal config file to trigger the watcher
-    fs::write(&config_path, "# jonesy config\n")
-        .expect("Failed to create test config file");
+    fs::write(&config_path, "# jonesy config\n").expect("Failed to create test config file");
 
     client
         .send_notification(
