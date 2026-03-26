@@ -2825,4 +2825,306 @@ mod tests {
         assert_eq!(result.analyzed_count, 0);
         assert_eq!(result.skipped_count, 0);
     }
+
+    // ========================================================================
+    // Tests for code_point_to_diagnostic
+    // ========================================================================
+
+    #[test]
+    fn test_code_point_to_diagnostic_empty_causes() {
+        let point = make_code_point("src/main.rs", 42, Some(10));
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(diag.source, Some("jonesy".to_string()));
+        assert_eq!(diag.message, "potential panic point");
+        assert!(diag.code.is_none());
+        assert!(diag.code_description.is_none());
+        // LSP uses 0-based lines
+        assert_eq!(diag.range.start.line, 41);
+        assert_eq!(diag.range.start.character, 9);
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_single_cause() {
+        use crate::panic_cause::PanicCause;
+
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapNone);
+
+        let point = CrateCodePoint {
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(5),
+            name: "my_func".to_string(),
+            causes,
+            children: Vec::new(),
+            is_direct_panic: true,
+            called_function: None,
+        };
+
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        assert!(diag.message.contains("unwrap"));
+        assert!(diag.code.is_some());
+        assert!(diag.code_description.is_some());
+        // Should have help message for direct panic
+        assert!(diag.message.contains("help:"));
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_multiple_causes() {
+        use crate::panic_cause::PanicCause;
+
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapNone);
+        causes.insert(PanicCause::ExpectNone);
+
+        let point = CrateCodePoint {
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(5),
+            name: "my_func".to_string(),
+            causes,
+            children: Vec::new(),
+            is_direct_panic: false,
+            called_function: Some("risky_fn".to_string()),
+        };
+
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        // Multiple causes shown in message
+        assert!(diag.message.contains("JP"));
+        // Data should contain cause info
+        assert!(diag.data.is_some());
+        let data = diag.data.unwrap();
+        let causes_arr: Vec<String> = serde_json::from_value(data["causes"].clone()).unwrap();
+        assert_eq!(causes_arr.len(), 2);
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_no_column() {
+        let point = make_code_point("src/main.rs", 100, None);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        // No column defaults to 1, then subtract 1 for 0-based = 0
+        assert_eq!(diag.range.start.character, 0);
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_line_1() {
+        // Edge case: line 1 should not underflow
+        let point = make_code_point("src/main.rs", 1, Some(1));
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        assert_eq!(diag.range.start.line, 0);
+        assert_eq!(diag.range.start.character, 0);
+    }
+
+    // ========================================================================
+    // Tests for get_module_pattern
+    // ========================================================================
+
+    #[test]
+    fn test_get_module_pattern_tests_dir() {
+        let uri = Url::parse("file:///workspace/tests/unit_tests.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/tests/**", "tests")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_benches_dir() {
+        let uri = Url::parse("file:///workspace/benches/perf.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/benches/**", "benches")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_examples_dir() {
+        let uri = Url::parse("file:///workspace/examples/demo.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/examples/**", "examples")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_test_suffix() {
+        let uri = Url::parse("file:///workspace/src/parser_test.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/*_test.rs", "test files")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_tests_suffix() {
+        let uri = Url::parse("file:///workspace/src/parser_tests.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/*_tests.rs", "test files")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_regular_src() {
+        let uri = Url::parse("file:///workspace/src/parser.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_module_pattern_main_rs() {
+        let uri = Url::parse("file:///workspace/src/main.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // Tests for expand_workspace_glob
+    // ========================================================================
+
+    #[test]
+    fn test_expand_workspace_glob_nonexistent_dir() {
+        let workspace_root = PathBuf::from("/nonexistent/path");
+        let result = expand_workspace_glob(&workspace_root, "crates/*");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_expand_workspace_glob_real_workspace() {
+        let workspace_root = find_workspace_root();
+        let result = expand_workspace_glob(&workspace_root, "examples/*");
+
+        // Should find example crates
+        assert!(!result.is_empty(), "Should find example directories");
+
+        // All results should have Cargo.toml
+        for path in &result {
+            assert!(
+                path.join("Cargo.toml").exists(),
+                "{} should have Cargo.toml",
+                path.display()
+            );
+        }
+    }
+
+    // ========================================================================
+    // Tests for discover_workspace
+    // ========================================================================
+
+    #[test]
+    fn test_discover_workspace_real() {
+        let workspace_root = find_workspace_root();
+        let info = discover_workspace(&workspace_root);
+
+        assert!(info.is_some());
+        let info = info.unwrap();
+
+        // Should have workspace members
+        assert!(!info.members.is_empty());
+
+        // Should have src_filter
+        assert!(!info.src_filter.is_empty());
+    }
+
+    #[test]
+    fn test_discover_workspace_single_crate() {
+        let workspace_root = find_workspace_root();
+        let panic_example = workspace_root.join("examples/panic");
+
+        let info = discover_workspace(&panic_example);
+        assert!(info.is_some());
+        let info = info.unwrap();
+
+        // Single crate should have "src/" in filter
+        assert!(
+            info.src_filter.contains("src/"),
+            "Single crate filter should contain 'src/', got: {}",
+            info.src_filter
+        );
+    }
+
+    #[test]
+    fn test_discover_workspace_nonexistent() {
+        let workspace_root = PathBuf::from("/nonexistent/path");
+        let info = discover_workspace(&workspace_root);
+        assert!(info.is_none());
+    }
+
+    // ========================================================================
+    // Tests for find_workspace_binaries edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_find_workspace_binaries_no_cargo_toml() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_no_cargo");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let result = find_workspace_binaries(&temp_dir);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_workspace_binaries_no_target() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_no_target");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create minimal Cargo.toml
+        std::fs::write(
+            temp_dir.join("Cargo.toml"),
+            r#"[package]
+name = "test"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let result = find_workspace_binaries(&temp_dir);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Tests for find_config_files edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_find_config_files_no_cargo_toml() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_config_no_cargo");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let files = find_config_files(&temp_dir);
+
+        // Should always include jonesy.toml path
+        assert!(files.iter().any(|p| p.ends_with("jonesy.toml")));
+        // But not much else without Cargo.toml
+        assert_eq!(files.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_config_files_single_crate() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_config_single");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create minimal Cargo.toml (not a workspace)
+        std::fs::write(
+            temp_dir.join("Cargo.toml"),
+            r#"[package]
+name = "test"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let files = find_config_files(&temp_dir);
+
+        // Should include jonesy.toml and Cargo.toml
+        assert!(files.iter().any(|p| p.ends_with("jonesy.toml")));
+        assert!(files.iter().any(|p| p.ends_with("Cargo.toml")));
+        assert_eq!(files.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
