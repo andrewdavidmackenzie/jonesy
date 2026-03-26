@@ -924,3 +924,279 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // OutputFormat tests
+    // ========================================================================
+
+    #[test]
+    fn test_output_format_default() {
+        let format = OutputFormat::default();
+        assert!(format.is_text());
+        assert!(!format.is_json());
+        assert!(!format.is_html());
+        assert!(format.show_progress());
+        assert!(!format.is_summary_only());
+        assert!(!format.show_tree());
+        assert!(format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_text_constructor() {
+        let format = OutputFormat::text(true, true, true, false);
+        assert!(format.is_text());
+        assert!(format.show_tree());
+        assert!(format.is_summary_only());
+        assert!(!format.show_progress()); // quiet=true means no progress
+        assert!(!format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_json_constructor() {
+        let format = OutputFormat::json(true, false);
+        assert!(format.is_json());
+        assert!(!format.is_text());
+        assert!(!format.is_html());
+        assert!(format.show_tree());
+        assert!(!format.is_summary_only());
+        assert!(!format.show_progress()); // JSON never shows progress
+        assert!(!format.use_hyperlinks()); // JSON never uses hyperlinks
+    }
+
+    #[test]
+    fn test_output_format_html_constructor() {
+        let format = OutputFormat::html(false, true);
+        assert!(format.is_html());
+        assert!(!format.is_text());
+        assert!(!format.is_json());
+        assert!(!format.show_tree());
+        assert!(format.is_summary_only());
+        assert!(!format.show_progress()); // HTML never shows progress
+        assert!(!format.use_hyperlinks()); // HTML never uses hyperlinks
+    }
+
+    #[test]
+    fn test_output_format_quiet() {
+        let format = OutputFormat::quiet();
+        assert!(format.is_text());
+        assert!(!format.show_progress());
+        assert!(!format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_show_progress_logic() {
+        // Progress shown when text, not quiet, not summary_only
+        let format = OutputFormat::text(false, false, false, true);
+        assert!(format.show_progress());
+
+        // No progress when quiet
+        let format = OutputFormat::text(false, false, true, true);
+        assert!(!format.show_progress());
+
+        // No progress when summary_only
+        let format = OutputFormat::text(false, true, false, true);
+        assert!(!format.show_progress());
+
+        // No progress when both
+        let format = OutputFormat::text(false, true, true, true);
+        assert!(!format.show_progress());
+    }
+
+    // ========================================================================
+    // parse_max_threads tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_max_threads_default() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_max_threads(&args).unwrap();
+        // Default should be at least 1
+        assert!(result >= 1);
+    }
+
+    #[test]
+    fn test_parse_max_threads_explicit() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "4".to_string(),
+        ];
+        let result = parse_max_threads(&args).unwrap();
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    fn test_parse_max_threads_one() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "1".to_string(),
+        ];
+        let result = parse_max_threads(&args).unwrap();
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_parse_max_threads_zero_error() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "0".to_string(),
+        ];
+        let result = parse_max_threads(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 1"));
+    }
+
+    #[test]
+    fn test_parse_max_threads_missing_value() {
+        let args = vec!["jonesy".to_string(), "--max-threads".to_string()];
+        let result = parse_max_threads(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a number"));
+    }
+
+    #[test]
+    fn test_parse_max_threads_invalid_value() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "abc".to_string(),
+        ];
+        let result = parse_max_threads(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    // ========================================================================
+    // parse_output_format tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_output_format_default() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_text());
+        assert!(result.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_parse_output_format_text_explicit() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "text".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_text());
+    }
+
+    #[test]
+    fn test_parse_output_format_json() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        let result = parse_output_format(&args, true, false, false, false).unwrap();
+        assert!(result.is_json());
+        assert!(result.show_tree());
+    }
+
+    #[test]
+    fn test_parse_output_format_html() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "html".to_string(),
+        ];
+        let result = parse_output_format(&args, false, true, false, false).unwrap();
+        assert!(result.is_html());
+        assert!(result.is_summary_only());
+    }
+
+    #[test]
+    fn test_parse_output_format_case_insensitive() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "JSON".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_json());
+    }
+
+    #[test]
+    fn test_parse_output_format_invalid() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "xml".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid format"));
+    }
+
+    #[test]
+    fn test_parse_output_format_missing_value() {
+        let args = vec!["jonesy".to_string(), "--format".to_string()];
+        let result = parse_output_format(&args, false, false, false, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires an argument"));
+    }
+
+    #[test]
+    fn test_parse_output_format_no_hyperlinks() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_output_format(&args, false, false, false, true).unwrap();
+        assert!(result.is_text());
+        assert!(!result.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_parse_output_format_with_flags() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_output_format(&args, true, true, true, true).unwrap();
+        assert!(result.is_text());
+        assert!(result.show_tree());
+        assert!(result.is_summary_only());
+        assert!(!result.show_progress()); // quiet + summary_only
+        assert!(!result.use_hyperlinks());
+    }
+
+    // ========================================================================
+    // usage tests
+    // ========================================================================
+
+    #[test]
+    fn test_usage_contains_version() {
+        let help = usage();
+        assert!(help.contains(VERSION));
+    }
+
+    #[test]
+    fn test_usage_contains_key_options() {
+        let help = usage();
+        assert!(help.contains("--bin"));
+        assert!(help.contains("--lib"));
+        assert!(help.contains("--tree"));
+        assert!(help.contains("--quiet"));
+        assert!(help.contains("--format"));
+        assert!(help.contains("--config"));
+        assert!(help.contains("--max-threads"));
+        assert!(help.contains("lsp"));
+    }
+
+    #[test]
+    fn test_usage_contains_format_options() {
+        let help = usage();
+        assert!(help.contains("text"));
+        assert!(help.contains("json"));
+        assert!(help.contains("html"));
+    }
+}
