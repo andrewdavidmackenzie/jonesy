@@ -2180,19 +2180,63 @@ mod tests {
         }
     }
 
+    /// Build workspace_test and wait for all expected artifacts to exist.
+    /// This handles race conditions when multiple tests build the same workspace
+    /// concurrently (cargo serializes via locks, but artifacts may briefly disappear
+    /// during rebuilds triggered by different RUSTFLAGS in coverage runs).
+    fn build_workspace_test(workspace_test_dir: &Path) {
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .current_dir(workspace_test_dir)
+            .status()
+            .expect("Failed to build workspace_test");
+        assert!(status.success(), "Failed to build workspace_test");
+
+        // Wait for all expected artifacts to appear on disk.
+        // Under coverage instrumentation, a parallel test's cargo build may
+        // temporarily remove artifacts during a rebuild.
+        let target_debug = workspace_test_dir.join("target/debug");
+        let expected = [
+            "crate_a",
+            "crate_b_bin",
+            "libcrate_b_lib.rlib",
+            "libcrate_c.rlib",
+        ];
+
+        for _ in 0..10 {
+            let all_exist = expected.iter().all(|name| target_debug.join(name).exists());
+            if all_exist {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        // One final check with diagnostic output
+        let missing: Vec<_> = expected
+            .iter()
+            .filter(|name| !target_debug.join(name).exists())
+            .collect();
+        if !missing.is_empty() {
+            panic!(
+                "Build artifacts not found after waiting: {:?}. target/debug contents: {:?}",
+                missing,
+                std::fs::read_dir(&target_debug)
+                    .map(|entries| entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
+            );
+        }
+    }
+
     #[test]
     fn test_find_workspace_binaries_with_custom_lib_name() {
         // Use workspace_test example which has a crate with custom [lib] name
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-        // Build if needed
-        let status = std::process::Command::new("cargo")
-            .arg("build")
-            .current_dir(&workspace_test_dir)
-            .status()
-            .expect("Failed to build workspace_test");
-        assert!(status.success(), "Failed to build workspace_test");
+        build_workspace_test(&workspace_test_dir);
 
         // Find targets
         let targets =
@@ -2241,13 +2285,7 @@ mod tests {
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-        // Build if needed
-        let status = std::process::Command::new("cargo")
-            .arg("build")
-            .current_dir(&workspace_test_dir)
-            .status()
-            .expect("Failed to build workspace_test");
-        assert!(status.success(), "Failed to build workspace_test");
+        build_workspace_test(&workspace_test_dir);
 
         // Run CLI and capture panic points
         let cli_output = std::process::Command::new(workspace_root.join("target/debug/jonesy"))
