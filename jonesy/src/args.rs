@@ -742,14 +742,20 @@ fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
     Ok(binaries)
 }
 
-/// Parse --bin name_or_path
-/// Can be either a path to a binary or a binary name to look up in Cargo.toml
-fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
-    // Find the argument after --bin
+/// Extract the binary name/path argument from --bin flag.
+///
+/// Returns the argument value after --bin, or an error if:
+/// - --bin flag is not found
+/// - No value follows --bin
+/// - There are unexpected trailing positional arguments
+///
+/// This is a pure function that only examines the args slice.
+fn extract_bin_arg<'a>(args: &[&'a String]) -> Result<&'a str, String> {
     let bin_arg_idx = args
         .iter()
         .position(|a| *a == "--bin")
         .ok_or("--bin flag not found")?;
+
     let bin_name = args
         .get(bin_arg_idx + 1)
         .ok_or("--bin requires a binary name or path")?;
@@ -764,7 +770,52 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         }
     }
 
-    let binary_path = PathBuf::from(bin_name.as_str());
+    Ok(bin_name.as_str())
+}
+
+/// Find a binary by name in a manifest's [[bin]] targets.
+///
+/// Returns the binary path if found, None otherwise.
+/// Handles hyphen/underscore normalization (e.g., "my-bin" matches "my_bin").
+fn find_bin_in_manifest(
+    bin_name: &str,
+    manifest: &Manifest,
+    target_dir: &Path,
+) -> Option<PathBuf> {
+    // Check [[bin]] targets
+    for bin in &manifest.bin {
+        let manifest_bin_name = bin
+            .name
+            .as_ref()
+            .or(manifest.package.as_ref().map(|p| &p.name));
+        if let Some(name) = manifest_bin_name {
+            if name == bin_name || name.replace('-', "_") == bin_name {
+                let bin_path = target_dir.join(name);
+                if bin_path.exists() {
+                    return Some(bin_path);
+                }
+            }
+        }
+    }
+
+    // Check package name (default binary)
+    if let Some(pkg) = &manifest.package {
+        if pkg.name == bin_name || pkg.name.replace('-', "_") == bin_name {
+            let bin_path = target_dir.join(&pkg.name);
+            if bin_path.exists() {
+                return Some(bin_path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse --bin name_or_path
+/// Can be either a path to a binary or a binary name to look up in Cargo.toml
+fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    let bin_name = extract_bin_arg(args)?;
+    let binary_path = PathBuf::from(bin_name);
 
     // First check if it's a path that exists
     if binary_path.exists() {
@@ -791,30 +842,9 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
     // Look for target/debug directory
     let target_dir = find_target_dir()?;
 
-    // Check if this binary name matches any [[bin]] target
-    for bin in &manifest.bin {
-        let manifest_bin_name = bin
-            .name
-            .as_ref()
-            .or(manifest.package.as_ref().map(|p| &p.name));
-        if let Some(name) = manifest_bin_name
-            && (name == bin_name.as_str() || name.replace('-', "_") == bin_name.as_str())
-        {
-            let bin_path = target_dir.join(name);
-            if bin_path.exists() {
-                return Ok(vec![bin_path]);
-            }
-        }
-    }
-
-    // Check if it matches the package name (default binary)
-    if let Some(pkg) = &manifest.package
-        && (pkg.name == bin_name.as_str() || pkg.name.replace('-', "_") == bin_name.as_str())
-    {
-        let bin_path = target_dir.join(&pkg.name);
-        if bin_path.exists() {
-            return Ok(vec![bin_path]);
-        }
+    // Check if this binary name matches any [[bin]] target or package name
+    if let Some(bin_path) = find_bin_in_manifest(bin_name, &manifest, &target_dir) {
+        return Ok(vec![bin_path]);
     }
 
     // If this is a workspace, search workspace members
@@ -822,7 +852,7 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         if let Ok(workspace_binaries) = find_workspace_binaries(&manifest) {
             for bin_path in workspace_binaries {
                 if let Some(name) = bin_path.file_name().and_then(|n| n.to_str()) {
-                    if name == bin_name.as_str() || name.replace('-', "_") == bin_name.as_str() {
+                    if name == bin_name || name.replace('-', "_") == bin_name {
                         return Ok(vec![bin_path]);
                     }
                 }
@@ -836,11 +866,14 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
     ))
 }
 
-/// Parse --lib [path_to_library_object]
-/// If a path is provided, use it directly.
-/// Otherwise, find the library target from Cargo.toml
-fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
-    // Find the --lib flag position
+/// Extract the optional library path argument from --lib flag.
+///
+/// Returns Ok(Some(path)) if --lib has a path argument
+/// Returns Ok(None) if --lib is used without a path (use Cargo.toml lookup)
+/// Returns Err if --lib flag not found or there are unexpected trailing args
+///
+/// This is a pure function that only examines the args slice.
+fn extract_lib_arg<'a>(args: &[&'a String]) -> Result<Option<&'a str>, String> {
     let lib_arg_idx = args
         .iter()
         .position(|a| *a == "--lib")
@@ -861,8 +894,49 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         }
     }
 
+    Ok(lib_path_arg.map(|s| s.as_str()))
+}
+
+/// Determine the library name from a manifest.
+///
+/// Returns the library name from [lib] section if present,
+/// otherwise derives it from package name (replacing hyphens with underscores).
+fn get_lib_name(manifest: &Manifest) -> Option<String> {
+    manifest
+        .lib
+        .as_ref()
+        .and_then(|l| l.name.clone())
+        .or_else(|| manifest.package.as_ref().map(|p| p.name.replace('-', "_")))
+}
+
+/// Find a library file by name in the target directory.
+///
+/// Checks for .dylib, .rlib, and .a files in order.
+/// Returns the first existing library path, or None if not found.
+fn find_lib_in_target(lib_name: &str, target_dir: &Path) -> Option<PathBuf> {
+    let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
+    let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
+    let staticlib_path = target_dir.join(format!("lib{}.a", lib_name));
+
+    if dylib_path.exists() {
+        Some(dylib_path)
+    } else if rlib_path.exists() {
+        Some(rlib_path)
+    } else if staticlib_path.exists() {
+        Some(staticlib_path)
+    } else {
+        None
+    }
+}
+
+/// Parse --lib [path_to_library_object]
+/// If a path is provided, use it directly.
+/// Otherwise, find the library target from Cargo.toml
+fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    let lib_path_arg = extract_lib_arg(args)?;
+
     if let Some(path_str) = lib_path_arg {
-        let binary_path = PathBuf::from(path_str.as_str());
+        let binary_path = PathBuf::from(path_str);
         if !binary_path.exists() {
             return Err(format!(
                 "Library shared object not found at {:?}",
@@ -898,31 +972,14 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
 
     let target_dir = find_target_dir()?;
 
-    // Library name defaults to package name with hyphens replaced by underscores
-    let lib_name = manifest
-        .lib
-        .as_ref()
-        .and_then(|l| l.name.clone())
-        .or_else(|| manifest.package.as_ref().map(|p| p.name.replace('-', "_")))
-        .ok_or("Cannot determine library name")?;
+    let lib_name = get_lib_name(&manifest).ok_or("Cannot determine library name")?;
 
-    // On macOS, look for .dylib, .rlib, or .a (staticlib)
-    let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
-    let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
-    let staticlib_path = target_dir.join(format!("lib{}.a", lib_name));
-
-    if dylib_path.exists() {
-        Ok(vec![dylib_path])
-    } else if rlib_path.exists() {
-        Ok(vec![rlib_path])
-    } else if staticlib_path.exists() {
-        Ok(vec![staticlib_path])
-    } else {
-        Err(format!(
+    find_lib_in_target(&lib_name, &target_dir).map(|p| vec![p]).ok_or_else(|| {
+        format!(
             "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
             lib_name
-        ))
-    }
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1198,5 +1255,205 @@ mod tests {
         assert!(help.contains("text"));
         assert!(help.contains("json"));
         assert!(help.contains("html"));
+    }
+
+    // ========================================================================
+    // extract_bin_arg tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_bin_arg_valid() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "my-binary");
+    }
+
+    #[test]
+    fn test_extract_bin_arg_with_path() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "/path/to/binary".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "/path/to/binary");
+    }
+
+    #[test]
+    fn test_extract_bin_arg_missing_value() {
+        let args = vec!["jonesy".to_string(), "--bin".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a binary name"));
+    }
+
+    #[test]
+    fn test_extract_bin_arg_no_flag() {
+        let args = vec!["jonesy".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("flag not found"));
+    }
+
+    #[test]
+    fn test_extract_bin_arg_extra_positional() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+            "extra-arg".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unexpected extra argument"));
+    }
+
+    #[test]
+    fn test_extract_bin_arg_allows_trailing_flags() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+            "--quiet".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "my-binary");
+    }
+
+    // ========================================================================
+    // extract_lib_arg tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_lib_arg_with_path() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "/path/to/lib.rlib".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, Some("/path/to/lib.rlib"));
+    }
+
+    #[test]
+    fn test_extract_lib_arg_without_path() {
+        let args = vec!["jonesy".to_string(), "--lib".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_lib_arg_followed_by_flag() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "--quiet".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, None); // --quiet is not a path
+    }
+
+    #[test]
+    fn test_extract_lib_arg_no_flag() {
+        let args = vec!["jonesy".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("flag not found"));
+    }
+
+    #[test]
+    fn test_extract_lib_arg_extra_positional() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "/path/to/lib.rlib".to_string(),
+            "extra-arg".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unexpected extra argument"));
+    }
+
+    // ========================================================================
+    // get_lib_name tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_lib_name_from_lib_section() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+
+            [lib]
+            name = "custom_lib_name"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        assert_eq!(result, Some("custom_lib_name".to_string()));
+    }
+
+    #[test]
+    fn test_get_lib_name_from_package() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        assert_eq!(result, Some("my_package".to_string())); // hyphen -> underscore
+    }
+
+    #[test]
+    fn test_get_lib_name_no_package() {
+        let content = r#"
+            [workspace]
+            members = ["crate_a"]
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        assert_eq!(result, None);
+    }
+
+    // ========================================================================
+    // find_lib_in_target tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_lib_in_target_nonexistent() {
+        let result = find_lib_in_target("nonexistent", Path::new("/tmp"));
+        assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // find_bin_in_manifest tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_bin_in_manifest_no_bins() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = find_bin_in_manifest("nonexistent", &manifest, Path::new("/tmp"));
+        assert!(result.is_none());
     }
 }
