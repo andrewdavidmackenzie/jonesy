@@ -100,94 +100,102 @@ fn main() {
     }
 }
 
-#[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap on None
 fn bin_unwrap_none() {
-    let _: () = None.unwrap();
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let opt: Option<i32> = if rng.random_bool(0.0) { Some(42) } else { None };
+    // jonesy: expect panic unwrap on None
+    opt.unwrap();
 }
 
-#[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap on Err
 fn bin_unwrap_err() {
-    let _: () = Err("error").unwrap();
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let result: Result<i32, &str> = if rng.random_bool(0.0) {
+        Ok(42)
+    } else {
+        Err("error")
+    };
+    // jonesy: expect panic unwrap on Err
+    result.unwrap();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect on None
 fn bin_expect_none() {
+    // jonesy: expect panic expect on None
     let _: () = None.expect("expected a value");
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect on Err
 fn bin_expect_err() {
+    // jonesy: expect panic expect on Err
     let _: () = Err("error").expect("expected ok");
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap_err on Ok
 fn bin_unwrap_err_on_ok() {
+    // jonesy: expect panic unwrap_err on Ok
     let _: &str = Ok::<i32, &str>(42).unwrap_err();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect_err on Ok
 fn bin_expect_err_on_ok() {
+    // jonesy: expect panic expect_err on Ok
     let _: &str = Ok::<i32, &str>(42).expect_err("expected an error");
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert failed
 fn bin_assert_false() {
+    // jonesy: expect panic assert failed
     assert!(false);
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert_eq failed
 fn bin_assert_eq_fail() {
+    // jonesy: expect panic assert_eq failed
     assert_eq!(1, 2);
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// jonesy: expect panic assert_ne failed
 fn bin_assert_ne_fail() {
+    // jonesy: expect panic assert_ne failed
     assert_ne!(1, 1);
 }
 
-// jonesy: expect panic debug_assert failed (debug builds only)
 fn bin_debug_assert_false() {
+    // jonesy: expect panic debug_assert failed (debug builds only)
     debug_assert!(false);
 }
 
-// jonesy: expect panic debug_assert_eq failed
 fn bin_debug_assert_eq_fail() {
+    // jonesy: expect panic debug_assert_eq failed
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
-// jonesy: expect panic debug_assert_ne failed
 fn bin_debug_assert_ne_fail() {
+    // jonesy: expect panic debug_assert_ne failed
     debug_assert_ne!(1, 1);
 }
 
-// jonesy: expect panic unreachable reached
 fn bin_unreachable_code() {
+    // jonesy: expect panic unreachable reached
     unreachable!();
 }
 
-// jonesy: expect panic unimplemented reached
 fn bin_unimplemented_code() {
+    // jonesy: expect panic unimplemented reached
     unimplemented!();
 }
 
-// jonesy: expect panic todo reached
 fn bin_todo_code() {
+    // jonesy: expect panic todo reached
     todo!();
 }
 
 #[allow(unconditional_panic)]
-// jonesy: expect panic division by zero
 fn bin_divide_by_zero() {
+    // jonesy: expect panic division by zero
     let _ = 1 / 0;
 }
 
@@ -199,8 +207,8 @@ fn bin_arithmetic_overflow() {
 }
 
 #[allow(arithmetic_overflow)]
-// jonesy: expect panic shift overflow
 fn bin_shift_overflow() {
+    // jonesy: expect panic shift overflow
     let _ = 1u32 << 33;
 }
 

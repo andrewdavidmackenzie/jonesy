@@ -6,3 +6,6 @@ edition = "2024"
 [lib]
 name = "crate_c"
 path = "src/lib.rs"
+
+[dependencies]
+rand = "0.9"

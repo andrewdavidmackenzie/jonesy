@@ -7,3 +7,6 @@ edition = "2024"
 name = "rlib_example"
 path = "src/lib.rs"
 crate-type = ["rlib"]
+
+[dependencies]
+rand = "0.9"

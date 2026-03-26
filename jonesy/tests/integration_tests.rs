@@ -120,12 +120,12 @@ fn paths_match(detected_path: &str, marker_path: &str) -> bool {
 }
 
 /// Check if a detected panic point has an expected marker nearby
-/// The marker comment can be on the same line, previous line, or up to 2 lines before
+/// The marker comment must be on the same line or the line immediately before the detection
 /// If the marker specifies a cause, it must match the detected cause
 fn has_nearby_marker(detected: &PanicPoint, markers: &[ExpectedMarker]) -> bool {
     markers.iter().any(|marker| {
         let location_matches = paths_match(&detected.file, &marker.file)
-            && (detected.line >= marker.line && detected.line <= marker.line + 2);
+            && (detected.line >= marker.line && detected.line <= marker.line + 1);
 
         if !location_matches {
             return false;
@@ -140,10 +140,11 @@ fn has_nearby_marker(detected: &PanicPoint, markers: &[ExpectedMarker]) -> bool 
 }
 
 /// Check if a marker has a nearby detected panic with matching cause
+/// Detection must be on the same line as the marker or the line immediately after it
 fn has_nearby_detection(marker: &ExpectedMarker, detected: &HashSet<PanicPoint>) -> bool {
     detected.iter().any(|p| {
         let location_matches = paths_match(&p.file, &marker.file)
-            && (p.line >= marker.line && p.line <= marker.line + 2);
+            && (p.line >= marker.line && p.line <= marker.line + 1);
 
         if !location_matches {
             return false;
@@ -922,11 +923,22 @@ fn test_rlib_todo_detection() {
     // Run jonesy and get raw output
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
-    // The todo!() call is in cause_todo() at line 88 of mod.rs
-    // We should detect this panic point
+    // The todo!() call is in cause_todo() in mod.rs
+    // We should detect this panic point near the todo!() line
+    let todo_line = {
+        let mod_path = example_dir.join("src/module/mod.rs");
+        let content = fs::read_to_string(&mod_path).expect("Failed to read mod.rs");
+        content
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.trim() == "todo!();")
+            .map(|(i, _)| i + 1) // 1-indexed
+            .expect("Could not find todo!() in mod.rs")
+    };
     let todo_detected = stdout.lines().any(|line| {
-        // Look for mod.rs:88 (the line with todo!())
-        line.contains("mod.rs:88:") || line.contains("mod.rs:87:") || line.contains("mod.rs:89:")
+        // Look for mod.rs at the todo!() line (±1 for DWARF tolerance)
+        (todo_line.saturating_sub(1)..=todo_line + 1)
+            .any(|l| line.contains(&format!("mod.rs:{}:", l)))
     });
 
     assert!(
@@ -1214,13 +1226,29 @@ fn test_intermediate_functions_reported_as_roots() {
         stdout
     );
 
-    // Verify specific functions are reported at root level
-    let has_unwrap_root = root_module_entries
-        .iter()
-        .any(|line| line.contains(":9:") || line.contains(":10:")); // cause_an_unwrap lines
-    let has_expect_root = root_module_entries
-        .iter()
-        .any(|line| line.contains(":40:") || line.contains(":39:")); // cause_expect_none lines
+    // Find actual source lines for unwrap and expect calls
+    let mod_path = example_dir.join("src/module/mod.rs");
+    let mod_content = fs::read_to_string(&mod_path).expect("Failed to read mod.rs");
+    let unwrap_line = mod_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.trim() == "opt.unwrap();")
+        .map(|(i, _)| i + 1)
+        .expect("Could not find opt.unwrap() in mod.rs");
+    let expect_line = mod_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("None.expect("))
+        .map(|(i, _)| i + 1)
+        .expect("Could not find None.expect() in mod.rs");
+
+    // Verify specific functions are reported at root level at correct source lines
+    let has_unwrap_root = root_module_entries.iter().any(|line| {
+        (unwrap_line.saturating_sub(1)..=unwrap_line + 1).any(|l| line.contains(&format!(":{l}:")))
+    });
+    let has_expect_root = root_module_entries.iter().any(|line| {
+        (expect_line.saturating_sub(1)..=expect_line + 1).any(|l| line.contains(&format!(":{l}:")))
+    });
 
     assert!(
         has_unwrap_root || has_expect_root,
@@ -1322,4 +1350,162 @@ fn test_dsym_auto_generation() {
 
     // Clean up
     let _ = fs::remove_dir_all(&dsym_path);
+}
+
+#[test]
+fn test_quiet_flag_suppresses_progress() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+    let jonesy_bin = workspace_root
+        .join("target")
+        .join("debug")
+        .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX));
+
+    // Run without --quiet to confirm progress messages appear
+    let mut child = Command::new(&jonesy_bin)
+        .args(["--no-hyperlinks"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jonesy");
+
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(_) => {}
+        None => {
+            child.kill().expect("Failed to kill");
+            let _ = child.wait();
+            panic!("Jonesy timed out (no quiet)");
+        }
+    }
+    let output = child.wait_with_output().expect("Failed to get output");
+    let stdout_normal = String::from_utf8_lossy(&output.stdout);
+
+    // Run with --quiet
+    let mut child = Command::new(&jonesy_bin)
+        .args(["--quiet", "--no-hyperlinks"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jonesy");
+
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(_) => {}
+        None => {
+            child.kill().expect("Failed to kill");
+            let _ = child.wait();
+            panic!("Jonesy timed out (quiet)");
+        }
+    }
+    let output = child.wait_with_output().expect("Failed to get output");
+    let stdout_quiet = String::from_utf8_lossy(&output.stdout);
+
+    // Both should still report panic points (--quiet suppresses progress, not results)
+    assert!(
+        stdout_normal.contains("Panic points:"),
+        "Normal output should contain 'Panic points:'"
+    );
+    assert!(
+        stdout_quiet.contains("Panic points:"),
+        "Quiet output should still contain 'Panic points:'"
+    );
+
+    // Quiet output should be shorter (no progress lines)
+    assert!(
+        stdout_quiet.lines().count() <= stdout_normal.lines().count(),
+        "Quiet output ({} lines) should not be longer than normal output ({} lines)",
+        stdout_quiet.lines().count(),
+        stdout_normal.lines().count()
+    );
+
+    // Normal output should contain progress indicator like "Processing"
+    // Quiet output should not
+    let normal_has_processing = stdout_normal.contains("Processing");
+    let quiet_has_processing = stdout_quiet.contains("Processing");
+
+    assert!(
+        normal_has_processing,
+        "Normal output should contain 'Processing' progress messages to validate --quiet behavior"
+    );
+    assert!(
+        !quiet_has_processing,
+        "Quiet output should not contain 'Processing' progress messages"
+    );
+}
+
+#[test]
+fn test_problem_matcher_regex() {
+    setup();
+
+    // Load the problem matcher regex from the JSON file
+    let workspace_root = find_workspace_root();
+    let matcher_path = workspace_root.join(".github/problem-matcher.json");
+    let matcher_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&matcher_path).expect("Failed to read problem-matcher.json"),
+    )
+    .expect("Failed to parse problem-matcher.json");
+
+    let pattern = matcher_json["problemMatcher"][0]["pattern"][0]["regexp"]
+        .as_str()
+        .expect("No regexp in problem matcher");
+
+    let re = regex::Regex::new(pattern).expect("Invalid problem matcher regex");
+
+    // Run jonesy on the panic example and get output
+    let output =
+        run_jonesy_raw_output(&workspace_root.join("examples/panic"), &["--no-hyperlinks"]);
+
+    // Find lines that contain " --> " (panic point indicators)
+    let panic_lines: Vec<&str> = output
+        .lines()
+        .filter(|line| line.contains(" --> ") && line.contains("[JP"))
+        .collect();
+
+    assert!(
+        !panic_lines.is_empty(),
+        "Should have panic point lines in output"
+    );
+
+    // Verify the problem matcher regex matches at least some panic lines
+    let mut matched = 0;
+    for line in &panic_lines {
+        if let Some(caps) = re.captures(line) {
+            matched += 1;
+
+            // Verify captured groups are non-empty
+            let file = caps.get(1).expect("No file capture").as_str();
+            let line_num = caps.get(2).expect("No line capture").as_str();
+            let col = caps.get(3).expect("No column capture").as_str();
+            let code = caps.get(4).expect("No code capture").as_str();
+            let message = caps.get(5).expect("No message capture").as_str();
+
+            assert!(!file.is_empty(), "File should not be empty");
+            assert!(
+                line_num.parse::<u32>().is_ok(),
+                "Line should be a number: {}",
+                line_num
+            );
+            assert!(
+                col.parse::<u32>().is_ok(),
+                "Column should be a number: {}",
+                col
+            );
+            assert!(
+                code.starts_with("JP"),
+                "Code should start with JP: {}",
+                code
+            );
+            assert!(!message.is_empty(), "Message should not be empty");
+        }
+    }
+
+    assert!(
+        matched > 0,
+        "Problem matcher regex should match at least one panic line. \
+         Tested {} lines, none matched. Sample: {:?}",
+        panic_lines.len(),
+        panic_lines.first()
+    );
 }

@@ -2162,6 +2162,12 @@ pub async fn run_lsp_server() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that build and inspect workspace_test artifacts.
+    /// Without this, parallel tests can trigger concurrent cargo builds that
+    /// temporarily remove artifacts during rebuilds (especially under coverage).
+    static WORKSPACE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// Find the workspace root by looking for Cargo.toml with [workspace]
     fn find_workspace_root() -> PathBuf {
@@ -2180,19 +2186,63 @@ mod tests {
         }
     }
 
+    /// Build workspace_test, holding WORKSPACE_TEST_LOCK to prevent parallel
+    /// tests from interfering with each other's build artifacts.
+    fn build_workspace_test(workspace_test_dir: &Path) -> std::sync::MutexGuard<'static, ()> {
+        let guard = WORKSPACE_TEST_LOCK.lock().unwrap();
+
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .current_dir(workspace_test_dir)
+            .status()
+            .expect("Failed to build workspace_test");
+        assert!(status.success(), "Failed to build workspace_test");
+
+        // Verify all expected artifacts exist (CI builds take ~2s, wait up to 4s)
+        let target_debug = workspace_test_dir.join("target/debug");
+        let expected = [
+            "crate_a",
+            "crate_b_bin",
+            "libcrate_b_lib.rlib",
+            "libcrate_c.rlib",
+        ];
+
+        for _ in 0..8 {
+            let all_exist = expected.iter().all(|name| target_debug.join(name).exists());
+            if all_exist {
+                return guard;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        // Final check with diagnostic output
+        let missing: Vec<_> = expected
+            .iter()
+            .filter(|name| !target_debug.join(name).exists())
+            .collect();
+        if !missing.is_empty() {
+            panic!(
+                "Build artifacts not found after waiting: {:?}. target/debug contents: {:?}",
+                missing,
+                std::fs::read_dir(&target_debug)
+                    .map(|entries| entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
+            );
+        }
+        guard
+    }
+
     #[test]
     fn test_find_workspace_binaries_with_custom_lib_name() {
         // Use workspace_test example which has a crate with custom [lib] name
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-        // Build if needed
-        let status = std::process::Command::new("cargo")
-            .arg("build")
-            .current_dir(&workspace_test_dir)
-            .status()
-            .expect("Failed to build workspace_test");
-        assert!(status.success(), "Failed to build workspace_test");
+        // Hold the lock through assertions so no parallel test can rebuild artifacts
+        let _guard = build_workspace_test(&workspace_test_dir);
 
         // Find targets
         let targets =
@@ -2241,13 +2291,8 @@ mod tests {
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-        // Build if needed
-        let status = std::process::Command::new("cargo")
-            .arg("build")
-            .current_dir(&workspace_test_dir)
-            .status()
-            .expect("Failed to build workspace_test");
-        assert!(status.success(), "Failed to build workspace_test");
+        // Hold the lock through the entire test so no parallel test can rebuild artifacts
+        let _guard = build_workspace_test(&workspace_test_dir);
 
         // Run CLI and capture panic points
         let cli_output = std::process::Command::new(workspace_root.join("target/debug/jonesy"))

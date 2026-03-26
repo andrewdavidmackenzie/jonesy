@@ -214,6 +214,8 @@ fn is_dependency_path(file_path: &str) -> bool {
 
     // Rust stdlib and compiler-generated paths
     if file_path.contains("/rustc/")
+        || file_path.contains("/.rustup/toolchains/")
+        || file_path.contains("/rustlib/src/")
         || file_path.starts_with("/rust/deps/")
         || file_path.starts_with("library/")
     {
@@ -484,6 +486,13 @@ impl FullLineTable {
 
             if let Some(program) = &unit.line_program {
                 let mut rows = program.clone().rows();
+                // Track last crate entry to carry forward at crate→stdlib transitions.
+                // When inlined stdlib code (e.g., unwrap) appears, the DWARF line table
+                // switches from crate source to stdlib source. We emit a synthetic crate
+                // entry at the transition address so get_line() resolves to the call site
+                // rather than falling back to the function start.
+                let mut last_crate_line: Option<(u32, Option<u32>)> = None;
+                let mut last_was_crate = false;
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
@@ -539,6 +548,21 @@ impl FullLineTable {
                                 line,
                                 column,
                             });
+                            last_crate_line = Some((line, column));
+                            last_was_crate = true;
+                        } else {
+                            // Transition from crate to non-crate (stdlib): emit synthetic
+                            // crate entry at this address with the last crate line info
+                            if last_was_crate {
+                                if let Some((prev_line, prev_col)) = last_crate_line {
+                                    crate_entries.push(CrateLineEntry {
+                                        address: row.address(),
+                                        line: prev_line,
+                                        column: prev_col,
+                                    });
+                                }
+                            }
+                            last_was_crate = false;
                         }
                     }
                 }
@@ -1761,11 +1785,10 @@ impl LibraryCallGraph {
 
                         // If call site points to library code, find the last crate source
                         // line between function start and call site for precise line numbers
-                        let (file, line, column) = if file.as_ref().is_some_and(|f| {
-                            f.starts_with("/rustc/")
-                                || f.contains("/.cargo/")
-                                || f.contains("/deps/")
-                        }) {
+                        let (file, line, column) = if file
+                            .as_ref()
+                            .is_some_and(|f| is_dependency_path(f))
+                        {
                             // Try to find precise line in crate source
                             if let Some(crate_path) = crate_src_path
                                 && let Some(lt) = line_lookup.as_ref()
@@ -2415,12 +2438,15 @@ fn resolve_decl_file<R: Reader>(
 }
 
 /// Resolve name, file, and line from a DW_AT_specification reference.
+/// Resolved specification data: (name, file, line)
+type SpecificationResult = (Option<String>, Option<String>, Option<u32>);
+
 /// Used when a function definition references a separate declaration.
 fn resolve_specification<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     offset: gimli::UnitOffset<R::Offset>,
-) -> Result<(Option<String>, Option<String>, Option<u32>), gimli::Error> {
+) -> Result<SpecificationResult, gimli::Error> {
     let entry = unit.entry(offset)?;
     let mut name: Option<String> = None;
     let mut file: Option<String> = None;
@@ -3066,6 +3092,16 @@ mod tests {
         ));
         assert!(is_dependency_path("/rust/deps/std/src/lib.rs"));
         assert!(is_dependency_path("library/core/src/panicking.rs"));
+    }
+
+    #[test]
+    fn test_is_dependency_path_rustup_toolchain() {
+        assert!(is_dependency_path(
+            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs"
+        ));
+        assert!(is_dependency_path(
+            "/home/user/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs"
+        ));
     }
 
     #[test]

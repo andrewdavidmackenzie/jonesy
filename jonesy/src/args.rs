@@ -1261,7 +1261,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_valid() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--bin".to_string(),
             "my-binary".to_string(),
@@ -1273,7 +1273,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_with_path() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--bin".to_string(),
             "/path/to/binary".to_string(),
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_missing_value() {
-        let args = vec!["jonesy".to_string(), "--bin".to_string()];
+        let args = ["jonesy".to_string(), "--bin".to_string()];
         let refs: Vec<&String> = args.iter().collect();
         let result = extract_bin_arg(&refs);
         assert!(result.is_err());
@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_no_flag() {
-        let args = vec!["jonesy".to_string()];
+        let args = ["jonesy".to_string()];
         let refs: Vec<&String> = args.iter().collect();
         let result = extract_bin_arg(&refs);
         assert!(result.is_err());
@@ -1303,7 +1303,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_extra_positional() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--bin".to_string(),
             "my-binary".to_string(),
@@ -1317,7 +1317,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_allows_trailing_flags() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--bin".to_string(),
             "my-binary".to_string(),
@@ -1334,7 +1334,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_with_path() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--lib".to_string(),
             "/path/to/lib.rlib".to_string(),
@@ -1346,7 +1346,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_without_path() {
-        let args = vec!["jonesy".to_string(), "--lib".to_string()];
+        let args = ["jonesy".to_string(), "--lib".to_string()];
         let refs: Vec<&String> = args.iter().collect();
         let result = extract_lib_arg(&refs).unwrap();
         assert_eq!(result, None);
@@ -1354,7 +1354,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_followed_by_flag() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--lib".to_string(),
             "--quiet".to_string(),
@@ -1366,7 +1366,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_no_flag() {
-        let args = vec!["jonesy".to_string()];
+        let args = ["jonesy".to_string()];
         let refs: Vec<&String> = args.iter().collect();
         let result = extract_lib_arg(&refs);
         assert!(result.is_err());
@@ -1375,7 +1375,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_extra_positional() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--lib".to_string(),
             "/path/to/lib.rlib".to_string(),
@@ -1655,7 +1655,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_at_end() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--quiet".to_string(),
             "--bin".to_string(),
@@ -1668,7 +1668,7 @@ mod tests {
 
     #[test]
     fn test_extract_bin_arg_with_multiple_flags_after() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--bin".to_string(),
             "my-binary".to_string(),
@@ -1686,7 +1686,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_at_end_no_path() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--quiet".to_string(),
             "--lib".to_string(),
@@ -1698,7 +1698,7 @@ mod tests {
 
     #[test]
     fn test_extract_lib_arg_with_path_and_trailing_flags() {
-        let args = vec![
+        let args = [
             "jonesy".to_string(),
             "--lib".to_string(),
             "/path/to/lib.rlib".to_string(),
