@@ -46,6 +46,8 @@ struct TestLspClient {
     request_id: i32,
     response_rx: mpsc::Receiver<Value>,
     _reader_thread: thread::JoinHandle<()>,
+    /// Buffer for notifications received during wait_for_response
+    notification_buffer: Vec<Value>,
 }
 
 impl TestLspClient {
@@ -87,11 +89,22 @@ impl TestLspClient {
             request_id: 0,
             response_rx: rx,
             _reader_thread: reader_thread,
+            notification_buffer: Vec::new(),
         }
     }
 
     /// Send a JSON-RPC request and return the response with timeout
     fn send_request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.send_request_timeout(method, params, Duration::from_secs(10))
+    }
+
+    /// Send a JSON-RPC request with custom timeout
+    fn send_request_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         self.request_id += 1;
         let id = self.request_id;
         let request = json!({
@@ -102,7 +115,7 @@ impl TestLspClient {
         });
 
         self.send_message(&request)?;
-        self.wait_for_response(id, Duration::from_secs(10))
+        self.wait_for_response(id, timeout)
     }
 
     /// Send a JSON-RPC notification (no response expected)
@@ -132,8 +145,8 @@ impl TestLspClient {
         Ok(())
     }
 
-    /// Wait for a response with the given ID, skipping notifications
-    fn wait_for_response(&self, expected_id: i32, timeout: Duration) -> Result<Value, String> {
+    /// Wait for a response with the given ID, buffering notifications for later retrieval
+    fn wait_for_response(&mut self, expected_id: i32, timeout: Duration) -> Result<Value, String> {
         let deadline = std::time::Instant::now() + timeout;
 
         loop {
@@ -147,13 +160,22 @@ impl TestLspClient {
 
             match self.response_rx.recv_timeout(remaining) {
                 Ok(message) => {
-                    // Check if this is our response
+                    // Check if this is our response (has id, no method = response)
                     if let Some(id) = message.get("id") {
+                        // Server-initiated request (has both id and method) - respond to it
+                        if message.get("method").is_some() {
+                            self.respond_to_server_request(&message);
+                            continue;
+                        }
+                        // Our response
                         if id.as_i64() == Some(expected_id as i64) {
                             return Ok(message);
                         }
                     }
-                    // Otherwise it's a notification or different response, continue
+                    // Notification (no id) - buffer it
+                    if message.get("id").is_none() {
+                        self.notification_buffer.push(message);
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     return Err("Timeout waiting for response".to_string());
@@ -165,10 +187,24 @@ impl TestLspClient {
         }
     }
 
-    /// Collect notifications for a duration
+    /// Respond to server-initiated requests (like workDoneProgress/create)
+    fn respond_to_server_request(&mut self, request: &Value) {
+        let id = request.get("id").cloned().unwrap_or(json!(null));
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": null
+        });
+        let _ = self.send_message(&response);
+    }
+
+    /// Collect notifications for a duration (also drains buffered notifications)
+    /// Also responds to any server requests received during collection
     #[allow(dead_code)]
-    fn collect_notifications(&self, duration: Duration) -> Vec<Value> {
-        let mut notifications = Vec::new();
+    fn collect_notifications(&mut self, duration: Duration) -> Vec<Value> {
+        // First, drain any notifications that were buffered during wait_for_response
+        let mut notifications: Vec<Value> = self.notification_buffer.drain(..).collect();
+
         let deadline = std::time::Instant::now() + duration;
 
         loop {
@@ -182,9 +218,16 @@ impl TestLspClient {
 
             match self.response_rx.recv_timeout(remaining) {
                 Ok(message) => {
+                    // Server request (has both id and method) - respond to it
+                    if message.get("id").is_some() && message.get("method").is_some() {
+                        self.respond_to_server_request(&message);
+                        continue;
+                    }
+                    // Notification (no id)
                     if message.get("id").is_none() {
                         notifications.push(message);
                     }
+                    // Response to our request - ignore during notification collection
                 }
                 Err(_) => break,
             }
@@ -626,15 +669,23 @@ fn test_lsp_execute_command_analyze() {
     let workspace_root = find_workspace_root();
     let panic_example = workspace_root.join("examples/panic");
 
-    // Build the panic example
+    // Build the panic example with local target directory
     let status = Command::new("cargo")
-        .arg("build")
+        .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .expect("Failed to build panic example");
     assert!(status.success());
+
+    // Generate dSYM for macOS debug info
+    let binary_path = panic_example.join("target/debug/panic");
+    let _ = Command::new("dsymutil")
+        .arg(&binary_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 
     ensure_jonesy_built(&workspace_root);
 
@@ -676,6 +727,343 @@ fn test_lsp_execute_command_analyze() {
     assert!(
         response.get("result").is_some(),
         "Command should return a result"
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_diagnostics_published() {
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+
+    // Build the panic example with local target directory
+    let status = Command::new("cargo")
+        .args(["build", "--target-dir", "./target"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build panic example");
+    assert!(status.success());
+
+    // Generate dSYM for macOS debug info
+    let binary_path = panic_example.join("target/debug/panic");
+    let _ = Command::new("dsymutil")
+        .arg(&binary_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&panic_example);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", panic_example.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Wait briefly for server to start processing
+    thread::sleep(Duration::from_millis(500));
+
+    // Drain initial log messages
+    let _ = client.collect_notifications(Duration::from_secs(2));
+
+    // Manually trigger analysis and wait for completion (60s timeout for analysis)
+    let response = client
+        .send_request_timeout(
+            "workspace/executeCommand",
+            json!({
+                "command": "jonesy.analyze",
+                "arguments": []
+            }),
+            Duration::from_secs(60),
+        )
+        .expect("Execute command failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Analysis command failed: {:?}",
+        response
+    );
+
+    // Now collect the diagnostics that were published during analysis
+    let notifications = client.collect_notifications(Duration::from_secs(5));
+
+    // Filter for publishDiagnostics notifications
+    let diagnostic_notifications: Vec<_> = notifications
+        .iter()
+        .filter(|n| n.get("method") == Some(&json!("textDocument/publishDiagnostics")))
+        .collect();
+
+    // Debug: print what notifications we received
+    let notification_methods: Vec<_> = notifications
+        .iter()
+        .filter_map(|n| n.get("method").and_then(|m| m.as_str()))
+        .collect();
+
+    // Should have published diagnostics for at least one file
+    assert!(
+        !diagnostic_notifications.is_empty(),
+        "Should have published diagnostics. Got {} notifications total. Methods: {:?}",
+        notifications.len(),
+        notification_methods
+    );
+
+    // Verify diagnostic structure
+    for notif in &diagnostic_notifications {
+        let params = notif
+            .get("params")
+            .expect("publishDiagnostics should have params");
+
+        // Should have uri field
+        assert!(
+            params.get("uri").is_some(),
+            "Diagnostic should have uri: {:?}",
+            params
+        );
+
+        // Should have diagnostics array
+        let diagnostics = params
+            .get("diagnostics")
+            .expect("Should have diagnostics array");
+        assert!(diagnostics.is_array(), "diagnostics should be an array");
+
+        // If there are diagnostics, verify their structure
+        if let Some(arr) = diagnostics.as_array() {
+            for diag in arr {
+                // Should have range
+                assert!(diag.get("range").is_some(), "Diagnostic should have range");
+
+                // Should have message
+                assert!(
+                    diag.get("message").is_some(),
+                    "Diagnostic should have message"
+                );
+
+                // Should have source = "jonesy"
+                assert_eq!(
+                    diag.get("source"),
+                    Some(&json!("jonesy")),
+                    "Diagnostic source should be 'jonesy'"
+                );
+
+                // Should have severity (warning = 2)
+                assert_eq!(
+                    diag.get("severity"),
+                    Some(&json!(2)),
+                    "Diagnostic severity should be warning (2)"
+                );
+            }
+        }
+    }
+
+    // At least one file should have actual diagnostics (panic example has many panic points)
+    let has_diagnostics = diagnostic_notifications.iter().any(|n| {
+        n.get("params")
+            .and_then(|p| p.get("diagnostics"))
+            .and_then(|d| d.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false)
+    });
+
+    assert!(
+        has_diagnostics,
+        "At least one file should have diagnostics in panic example"
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_diagnostics_contain_error_codes() {
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+
+    // Build the panic example with local target directory
+    let status = Command::new("cargo")
+        .args(["build", "--target-dir", "./target"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build panic example");
+    assert!(status.success());
+
+    // Generate dSYM for macOS debug info
+    let binary_path = panic_example.join("target/debug/panic");
+    let _ = Command::new("dsymutil")
+        .arg(&binary_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&panic_example);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", panic_example.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Wait briefly then drain initial messages
+    thread::sleep(Duration::from_millis(500));
+    let _ = client.collect_notifications(Duration::from_secs(2));
+
+    // Trigger analysis manually (use longer timeout as analysis can take time)
+    let _ = client.send_request_timeout(
+        "workspace/executeCommand",
+        json!({
+            "command": "jonesy.analyze",
+            "arguments": []
+        }),
+        Duration::from_secs(60),
+    );
+
+    // Collect notifications from analysis
+    let notifications = client.collect_notifications(Duration::from_secs(10));
+
+    // Find diagnostics with error codes
+    let mut found_error_code = false;
+    let mut found_docs_url = false;
+
+    for notif in &notifications {
+        if notif.get("method") != Some(&json!("textDocument/publishDiagnostics")) {
+            continue;
+        }
+
+        if let Some(params) = notif.get("params") {
+            if let Some(diagnostics) = params.get("diagnostics").and_then(|d| d.as_array()) {
+                for diag in diagnostics {
+                    // Check for error code (JP001, JP002, etc.)
+                    if let Some(code) = diag.get("code") {
+                        if let Some(code_str) = code.as_str() {
+                            if code_str.starts_with("JP") {
+                                found_error_code = true;
+                            }
+                        }
+                    }
+
+                    // Check for documentation URL in codeDescription
+                    if let Some(code_desc) = diag.get("codeDescription") {
+                        if code_desc.get("href").is_some() {
+                            found_docs_url = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_error_code,
+        "Diagnostics should contain JP error codes"
+    );
+
+    assert!(
+        found_docs_url,
+        "Diagnostics should contain documentation URLs in codeDescription"
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_binary_change_triggers_reanalysis() {
+    use std::fs;
+
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+
+    // Build the panic example with local target directory
+    let status = Command::new("cargo")
+        .args(["build", "--target-dir", "./target"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build panic example");
+    assert!(status.success());
+
+    // Generate dSYM for macOS debug info
+    let binary_path = panic_example.join("target/debug/panic");
+    let _ = Command::new("dsymutil")
+        .arg(&binary_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&panic_example);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", panic_example.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Wait for initial analysis to complete
+    let _ = client.collect_notifications(Duration::from_secs(3));
+
+    // Touch the binary to simulate a rebuild
+    let binary_path = panic_example.join("target/debug/panic");
+    assert!(
+        binary_path.exists(),
+        "Binary should exist after build: {}",
+        binary_path.display()
+    );
+
+    // Read and rewrite to update mtime
+    let content = fs::read(&binary_path).unwrap();
+    fs::write(&binary_path, content).unwrap();
+
+    // Send didChangeWatchedFiles notification (simulating what the client would do)
+    client
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            json!({
+                "changes": [{
+                    "uri": format!("file://{}", binary_path.display()),
+                    "type": 2  // Changed
+                }]
+            }),
+        )
+        .expect("Failed to send didChangeWatchedFiles");
+
+    // Collect notifications - should see new diagnostics being published
+    let notifications = client.collect_notifications(Duration::from_secs(5));
+
+    // Should have triggered re-analysis (look for publishDiagnostics)
+    let has_diagnostics = notifications
+        .iter()
+        .any(|n| n.get("method") == Some(&json!("textDocument/publishDiagnostics")));
+
+    assert!(
+        has_diagnostics,
+        "Binary change should trigger re-analysis and publish diagnostics"
     );
 
     client.shutdown();
