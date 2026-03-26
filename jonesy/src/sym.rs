@@ -1785,11 +1785,10 @@ impl LibraryCallGraph {
 
                         // If call site points to library code, find the last crate source
                         // line between function start and call site for precise line numbers
-                        let (file, line, column) = if file.as_ref().is_some_and(|f| {
-                            f.starts_with("/rustc/")
-                                || f.contains("/.cargo/")
-                                || f.contains("/deps/")
-                        }) {
+                        let (file, line, column) = if file
+                            .as_ref()
+                            .is_some_and(|f| is_dependency_path(f))
+                        {
                             // Try to find precise line in crate source
                             if let Some(crate_path) = crate_src_path
                                 && let Some(lt) = line_lookup.as_ref()

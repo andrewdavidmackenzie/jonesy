@@ -923,11 +923,22 @@ fn test_rlib_todo_detection() {
     // Run jonesy and get raw output
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
-    // The todo!() call is in cause_todo() at line 88 of mod.rs
-    // We should detect this panic point
+    // The todo!() call is in cause_todo() in mod.rs
+    // We should detect this panic point near the todo!() line
+    let todo_line = {
+        let mod_path = example_dir.join("src/module/mod.rs");
+        let content = fs::read_to_string(&mod_path).expect("Failed to read mod.rs");
+        content
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.trim() == "todo!();")
+            .map(|(i, _)| i + 1) // 1-indexed
+            .expect("Could not find todo!() in mod.rs")
+    };
     let todo_detected = stdout.lines().any(|line| {
-        // Look for mod.rs:88 (the line with todo!())
-        line.contains("mod.rs:88:") || line.contains("mod.rs:87:") || line.contains("mod.rs:89:")
+        // Look for mod.rs at the todo!() line (±1 for DWARF tolerance)
+        (todo_line.saturating_sub(1)..=todo_line + 1)
+            .any(|l| line.contains(&format!("mod.rs:{}:", l)))
     });
 
     assert!(
@@ -1215,13 +1226,31 @@ fn test_intermediate_functions_reported_as_roots() {
         stdout
     );
 
-    // Verify specific functions are reported at root level
-    let has_unwrap_root = root_module_entries
-        .iter()
-        .any(|line| line.contains(":9:") || line.contains(":10:")); // cause_an_unwrap lines
-    let has_expect_root = root_module_entries
-        .iter()
-        .any(|line| line.contains(":40:") || line.contains(":39:")); // cause_expect_none lines
+    // Find actual source lines for unwrap and expect calls
+    let mod_path = example_dir.join("src/module/mod.rs");
+    let mod_content = fs::read_to_string(&mod_path).expect("Failed to read mod.rs");
+    let unwrap_line = mod_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.trim() == "opt.unwrap();")
+        .map(|(i, _)| i + 1)
+        .expect("Could not find opt.unwrap() in mod.rs");
+    let expect_line = mod_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("None.expect("))
+        .map(|(i, _)| i + 1)
+        .expect("Could not find None.expect() in mod.rs");
+
+    // Verify specific functions are reported at root level at correct source lines
+    let has_unwrap_root = root_module_entries.iter().any(|line| {
+        (unwrap_line.saturating_sub(1)..=unwrap_line + 1)
+            .any(|l| line.contains(&format!(":{l}:")))
+    });
+    let has_expect_root = root_module_entries.iter().any(|line| {
+        (expect_line.saturating_sub(1)..=expect_line + 1)
+            .any(|l| line.contains(&format!(":{l}:")))
+    });
 
     assert!(
         has_unwrap_root || has_expect_root,

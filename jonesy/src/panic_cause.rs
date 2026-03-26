@@ -587,7 +587,10 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
     }
     if func_name.contains("unwrap_failed") {
         // Check file path first (most reliable), then fall back to function name
+        // Note: file_path may be the crate source file (not stdlib) when called from
+        // rlib analysis, so always check func_name as fallback
         let is_result = file_path
+            .filter(|f| f.contains("result.rs") || f.contains("core/result") || f.contains("option.rs") || f.contains("core/option"))
             .map(|f| f.contains("result.rs") || f.contains("core/result"))
             .unwrap_or_else(|| func_name.contains("result"));
         if is_result {

@@ -516,6 +516,7 @@ pub fn analyze_archive(
                     && !f.starts_with("src/arch/")
                     && !f.starts_with("src/raw/")
                     && !f.contains("/.cargo/")
+                    && !f.contains("/.rustup/")
                     && !f.contains("/deps/")
             });
 
