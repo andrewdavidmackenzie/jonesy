@@ -25,7 +25,11 @@ pub fn lib_unwrap_none() {
 pub fn lib_unwrap_err() {
     use rand::Rng;
     let mut rng = rand::rng();
-    let result: Result<i32, &str> = if rng.random_bool(0.0) { Ok(42) } else { Err("error") };
+    let result: Result<i32, &str> = if rng.random_bool(0.0) {
+        Ok(42)
+    } else {
+        Err("error")
+    };
     // jonesy: expect panic unwrap on Err
     result.unwrap();
 
