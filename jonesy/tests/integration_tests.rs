@@ -1404,3 +1404,78 @@ fn test_quiet_flag_suppresses_progress() {
         );
     }
 }
+
+#[test]
+fn test_problem_matcher_regex() {
+    setup();
+
+    // Load the problem matcher regex from the JSON file
+    let workspace_root = find_workspace_root();
+    let matcher_path = workspace_root.join(".github/problem-matcher.json");
+    let matcher_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&matcher_path).expect("Failed to read problem-matcher.json"),
+    )
+    .expect("Failed to parse problem-matcher.json");
+
+    let pattern = matcher_json["problemMatcher"][0]["pattern"][0]["regexp"]
+        .as_str()
+        .expect("No regexp in problem matcher");
+
+    let re = regex::Regex::new(pattern).expect("Invalid problem matcher regex");
+
+    // Run jonesy on the panic example and get output
+    let output =
+        run_jonesy_raw_output(&workspace_root.join("examples/panic"), &["--no-hyperlinks"]);
+
+    // Find lines that contain " --> " (panic point indicators)
+    let panic_lines: Vec<&str> = output
+        .lines()
+        .filter(|line| line.contains(" --> ") && line.contains("[JP"))
+        .collect();
+
+    assert!(
+        !panic_lines.is_empty(),
+        "Should have panic point lines in output"
+    );
+
+    // Verify the problem matcher regex matches at least some panic lines
+    let mut matched = 0;
+    for line in &panic_lines {
+        if let Some(caps) = re.captures(line) {
+            matched += 1;
+
+            // Verify captured groups are non-empty
+            let file = caps.get(1).expect("No file capture").as_str();
+            let line_num = caps.get(2).expect("No line capture").as_str();
+            let col = caps.get(3).expect("No column capture").as_str();
+            let code = caps.get(4).expect("No code capture").as_str();
+            let message = caps.get(5).expect("No message capture").as_str();
+
+            assert!(!file.is_empty(), "File should not be empty");
+            assert!(
+                line_num.parse::<u32>().is_ok(),
+                "Line should be a number: {}",
+                line_num
+            );
+            assert!(
+                col.parse::<u32>().is_ok(),
+                "Column should be a number: {}",
+                col
+            );
+            assert!(
+                code.starts_with("JP"),
+                "Code should start with JP: {}",
+                code
+            );
+            assert!(!message.is_empty(), "Message should not be empty");
+        }
+    }
+
+    assert!(
+        matched > 0,
+        "Problem matcher regex should match at least one panic line. \
+         Tested {} lines, none matched. Sample: {:?}",
+        panic_lines.len(),
+        panic_lines.first()
+    );
+}
