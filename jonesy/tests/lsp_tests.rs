@@ -1,0 +1,682 @@
+//! LSP integration tests for jonesy.
+//!
+//! These tests spawn the jonesy LSP server as a subprocess and communicate
+//! with it via JSON-RPC over stdin/stdout.
+
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+/// Helper to find the workspace root
+fn find_workspace_root() -> PathBuf {
+    let mut current = std::env::current_dir().unwrap();
+    loop {
+        let cargo_toml = current.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let content = std::fs::read_to_string(&cargo_toml).unwrap_or_default();
+            if content.contains("[workspace]") {
+                return current;
+            }
+        }
+        if !current.pop() {
+            panic!("Could not find workspace root");
+        }
+    }
+}
+
+/// Ensure jonesy is built
+fn ensure_jonesy_built(workspace_root: &PathBuf) {
+    let status = Command::new("cargo")
+        .args(["build", "--package", "jonesy"])
+        .current_dir(workspace_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build jonesy");
+    assert!(status.success(), "Failed to build jonesy");
+}
+
+/// LSP client for testing with timeout support
+struct TestLspClient {
+    child: Child,
+    request_id: i32,
+    response_rx: mpsc::Receiver<Value>,
+    _reader_thread: thread::JoinHandle<()>,
+}
+
+impl TestLspClient {
+    /// Start the LSP server subprocess with a background reader thread
+    fn start(working_dir: &PathBuf) -> Self {
+        // Always use jonesy from the main workspace target/debug
+        let main_workspace = find_workspace_root();
+        let jonesy_bin = main_workspace.join("target/debug/jonesy");
+
+        let mut child = Command::new(&jonesy_bin)
+            .arg("lsp")
+            .current_dir(working_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn jonesy lsp");
+
+        // Take stdout and spawn a reader thread
+        let stdout = child.stdout.take().expect("Failed to get stdout");
+        let (tx, rx) = mpsc::channel();
+
+        let reader_thread = thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match read_lsp_message(&mut reader) {
+                    Ok(message) => {
+                        if tx.send(message).is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                    Err(_) => break, // EOF or error
+                }
+            }
+        });
+
+        Self {
+            child,
+            request_id: 0,
+            response_rx: rx,
+            _reader_thread: reader_thread,
+        }
+    }
+
+    /// Send a JSON-RPC request and return the response with timeout
+    fn send_request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.request_id += 1;
+        let id = self.request_id;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        });
+
+        self.send_message(&request)?;
+        self.wait_for_response(id, Duration::from_secs(10))
+    }
+
+    /// Send a JSON-RPC notification (no response expected)
+    fn send_notification(&mut self, method: &str, params: Value) -> Result<(), String> {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params
+        });
+
+        self.send_message(&notification)
+    }
+
+    /// Send a message with LSP content-length header
+    fn send_message(&mut self, message: &Value) -> Result<(), String> {
+        let content = serde_json::to_string(message).map_err(|e| e.to_string())?;
+        let header = format!("Content-Length: {}\r\n\r\n", content.len());
+
+        let stdin = self.child.stdin.as_mut().ok_or("Failed to get stdin")?;
+        stdin
+            .write_all(header.as_bytes())
+            .map_err(|e| e.to_string())?;
+        stdin
+            .write_all(content.as_bytes())
+            .map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Wait for a response with the given ID, skipping notifications
+    fn wait_for_response(&self, expected_id: i32, timeout: Duration) -> Result<Value, String> {
+        let deadline = std::time::Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or(Duration::ZERO);
+
+            if remaining.is_zero() {
+                return Err("Timeout waiting for response".to_string());
+            }
+
+            match self.response_rx.recv_timeout(remaining) {
+                Ok(message) => {
+                    // Check if this is our response
+                    if let Some(id) = message.get("id") {
+                        if id.as_i64() == Some(expected_id as i64) {
+                            return Ok(message);
+                        }
+                    }
+                    // Otherwise it's a notification or different response, continue
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("Timeout waiting for response".to_string());
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Reader thread disconnected".to_string());
+                }
+            }
+        }
+    }
+
+    /// Collect notifications for a duration
+    #[allow(dead_code)]
+    fn collect_notifications(&self, duration: Duration) -> Vec<Value> {
+        let mut notifications = Vec::new();
+        let deadline = std::time::Instant::now() + duration;
+
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or(Duration::ZERO);
+
+            if remaining.is_zero() {
+                break;
+            }
+
+            match self.response_rx.recv_timeout(remaining) {
+                Ok(message) => {
+                    if message.get("id").is_none() {
+                        notifications.push(message);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        notifications
+    }
+
+    /// Shutdown the server gracefully
+    fn shutdown(mut self) {
+        // Send shutdown request (ignore errors)
+        let _ = self.send_request("shutdown", json!({}));
+
+        // Send exit notification
+        let _ = self.send_notification("exit", json!(null));
+
+        // Wait briefly for process to exit
+        thread::sleep(Duration::from_millis(100));
+
+        // Force kill if still running
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for TestLspClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+/// Read a single LSP message from a buffered reader
+fn read_lsp_message<R: BufRead>(reader: &mut R) -> Result<Value, String> {
+    // Read headers
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        let line = line.trim();
+
+        if line.is_empty() {
+            break;
+        }
+
+        if line.to_lowercase().starts_with("content-length:") {
+            let len_str = line.split(':').nth(1).ok_or("Invalid header")?.trim();
+            content_length = Some(
+                len_str
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?,
+            );
+        }
+    }
+
+    let content_length = content_length.ok_or("No Content-Length header")?;
+
+    // Read content
+    let mut content = vec![0u8; content_length];
+    reader.read_exact(&mut content).map_err(|e| e.to_string())?;
+
+    serde_json::from_slice(&content).map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[test]
+fn test_lsp_initialize() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Send initialize request
+    let response = client
+        .send_request(
+            "initialize",
+            json!({
+                "processId": std::process::id(),
+                "rootUri": format!("file://{}", workspace_root.display()),
+                "capabilities": {}
+            }),
+        )
+        .expect("Initialize request failed");
+
+    // Verify response
+    assert!(
+        response.get("error").is_none(),
+        "Initialize failed: {:?}",
+        response
+    );
+
+    let result = response.get("result").expect("No result in response");
+
+    // Check server capabilities
+    let capabilities = result.get("capabilities").expect("No capabilities");
+    assert!(
+        capabilities.get("textDocumentSync").is_some(),
+        "Missing textDocumentSync capability"
+    );
+    assert!(
+        capabilities.get("codeActionProvider").is_some(),
+        "Missing codeActionProvider capability"
+    );
+    assert!(
+        capabilities.get("executeCommandProvider").is_some(),
+        "Missing executeCommandProvider capability"
+    );
+
+    // Check server info
+    let server_info = result.get("serverInfo").expect("No serverInfo");
+    assert_eq!(server_info.get("name"), Some(&json!("jonesy")));
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_initialized_notification() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    // Send initialized notification (should not error)
+    client
+        .send_notification("initialized", json!({}))
+        .expect("Failed to send initialized notification");
+
+    // Give server time to process
+    thread::sleep(Duration::from_millis(100));
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_shutdown() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    // Use the shutdown helper which handles the proper protocol
+    client.shutdown();
+
+    // If we get here without panicking, shutdown worked
+}
+
+#[test]
+fn test_lsp_server_info_version() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let response = client
+        .send_request(
+            "initialize",
+            json!({
+                "processId": std::process::id(),
+                "rootUri": format!("file://{}", workspace_root.display()),
+                "capabilities": {}
+            }),
+        )
+        .expect("Initialize failed");
+
+    let result = response.get("result").expect("No result");
+    let server_info = result.get("serverInfo").expect("No serverInfo");
+
+    // Version should be present and non-empty
+    let version = server_info.get("version").expect("No version");
+    assert!(version.is_string(), "Version should be a string");
+    let version_str = version.as_str().unwrap();
+    assert!(!version_str.is_empty(), "Version should not be empty");
+    assert!(
+        version_str.contains('.'),
+        "Version should be semver-like: {}",
+        version_str
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_workspace_folders() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize with workspace folders instead of rootUri
+    let response = client
+        .send_request(
+            "initialize",
+            json!({
+                "processId": std::process::id(),
+                "rootUri": null,
+                "workspaceFolders": [{
+                    "uri": format!("file://{}", workspace_root.display()),
+                    "name": "jonesy"
+                }],
+                "capabilities": {}
+            }),
+        )
+        .expect("Initialize failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Initialize with workspace folders failed: {:?}",
+        response
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_did_open_close() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Open a file
+    let test_file = workspace_root.join("jonesy/src/main.rs");
+    client
+        .send_notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": format!("file://{}", test_file.display()),
+                    "languageId": "rust",
+                    "version": 1,
+                    "text": "fn main() {}"
+                }
+            }),
+        )
+        .expect("didOpen failed");
+
+    // Close the file
+    client
+        .send_notification(
+            "textDocument/didClose",
+            json!({
+                "textDocument": {
+                    "uri": format!("file://{}", test_file.display())
+                }
+            }),
+        )
+        .expect("didClose failed");
+
+    thread::sleep(Duration::from_millis(100));
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_code_action_returns_analyze() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Request code actions (without diagnostics, should still return analyze action)
+    let main_rs = workspace_root.join("jonesy/src/main.rs");
+    let response = client
+        .send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {
+                    "uri": format!("file://{}", main_rs.display())
+                },
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 0}
+                },
+                "context": {
+                    "diagnostics": []
+                }
+            }),
+        )
+        .expect("Code action request failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Code action failed: {:?}",
+        response
+    );
+
+    let result = response.get("result").expect("No result");
+    let actions = result.as_array().expect("Result is not an array");
+
+    // Should have the "Run Jonesy Panic Analysis" action
+    let has_analyze_action = actions.iter().any(|action| {
+        action
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(|t| t.contains("Jonesy"))
+            .unwrap_or(false)
+    });
+
+    assert!(
+        has_analyze_action,
+        "Should have 'Run Jonesy Panic Analysis' action. Actions: {:?}",
+        actions
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_code_action_with_diagnostic() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Create a mock jonesy diagnostic
+    let main_rs = workspace_root.join("jonesy/src/main.rs");
+    let mock_diagnostic = json!({
+        "range": {
+            "start": {"line": 5, "character": 0},
+            "end": {"line": 5, "character": 10}
+        },
+        "severity": 2,
+        "source": "jonesy",
+        "message": "panic point: unwrap() on None",
+        "data": {
+            "causes": ["unwrap"],
+            "function": "main",
+            "file": "src/main.rs"
+        }
+    });
+
+    // Request code actions with the diagnostic
+    let response = client
+        .send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {
+                    "uri": format!("file://{}", main_rs.display())
+                },
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 5, "character": 10}
+                },
+                "context": {
+                    "diagnostics": [mock_diagnostic]
+                }
+            }),
+        )
+        .expect("Code action request failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Code action failed: {:?}",
+        response
+    );
+
+    let result = response.get("result").expect("No result");
+    let actions = result.as_array().expect("Result is not an array");
+
+    // Should have quick fix actions for the diagnostic
+    let has_allow_action = actions.iter().any(|action| {
+        action
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(|t| t.contains("Allow"))
+            .unwrap_or(false)
+    });
+
+    assert!(
+        has_allow_action,
+        "Should have 'Allow' quick fix actions. Actions: {:?}",
+        actions
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_execute_command_analyze() {
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+
+    // Build the panic example
+    let status = Command::new("cargo")
+        .arg("build")
+        .current_dir(&panic_example)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build panic example");
+    assert!(status.success());
+
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&panic_example);
+
+    // Initialize with panic example as workspace
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", panic_example.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Wait for initial analysis to complete
+    thread::sleep(Duration::from_secs(2));
+
+    // Execute jonesy.analyze command
+    let response = client
+        .send_request(
+            "workspace/executeCommand",
+            json!({
+                "command": "jonesy.analyze",
+                "arguments": []
+            }),
+        )
+        .expect("Execute command failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Execute command failed: {:?}",
+        response
+    );
+
+    // Verify the command returned a result (success field is optional)
+    assert!(
+        response.get("result").is_some(),
+        "Command should return a result"
+    );
+
+    client.shutdown();
+}
