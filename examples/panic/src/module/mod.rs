@@ -244,7 +244,7 @@ pub fn cause_slice_index_oob() {
 
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
-    // jonesy: expect panic string slice boundary error
+    // jonesy: expect panic(str_slice)
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 
     // Panic-free alternative: use .get() which returns Option
@@ -257,4 +257,64 @@ pub fn cause_string_index_panic() {
     for (i, c) in s.char_indices() {
         println!("Char '{c}' starts at byte {i}");
     }
+}
+
+#[allow(arithmetic_overflow, unconditional_panic)]
+pub fn cause_division_overflow() {
+    // Division overflow: i32::MIN / -1 overflows because the result
+    // would be i32::MAX + 1 which doesn't fit in i32
+    // jonesy: expect panic(overflow)
+    let _ = i32::MIN / -1;
+
+    // Panic-free alternative: use checked_div
+    let _result = i32::MIN.checked_div(-1); // Returns None
+}
+
+#[allow(arithmetic_overflow, unconditional_panic, clippy::modulo_one)]
+pub fn cause_remainder_overflow() {
+    // Remainder overflow: i32::MIN % -1 can overflow on some platforms
+    // jonesy: expect panic(overflow)
+    let _ = i32::MIN % -1;
+
+    // Panic-free alternative: use checked_rem
+    let _result = i32::MIN.checked_rem(-1); // Returns None
+}
+
+pub fn cause_capacity_overflow() {
+    // Attempting to allocate an impossibly large vector
+    // jonesy: expect panic(capacity)
+    let _v: Vec<u8> = Vec::with_capacity(usize::MAX);
+
+    // Panic-free alternative: use try_reserve
+    // (not shown here to avoid additional panic points from println!)
+}
+
+#[repr(u8)]
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum SmallEnum {
+    A = 0,
+    B = 1,
+}
+
+pub fn cause_invalid_enum() {
+    // SAFETY: This is intentionally unsafe and will panic
+    // when Rust checks the enum discriminant
+    // jonesy: expect panic(invalid_enum)
+    let _invalid: SmallEnum = unsafe { std::mem::transmute::<u8, SmallEnum>(42) };
+
+    // Panic-free alternative: validate before transmute
+    // or use TryFrom trait for safe conversion
+}
+
+pub fn cause_misaligned_pointer() {
+    let data: [u8; 8] = [0; 8];
+    // Create a misaligned pointer to u32 (requires 4-byte alignment)
+    let ptr = &data[1] as *const u8 as *const u32;
+    // SAFETY: This is intentionally unsafe - dereferencing misaligned pointer
+    // jonesy: expect panic(misaligned_ptr)
+    let _ = unsafe { *ptr };
+
+    // Panic-free alternative: use read_unaligned for potentially misaligned data
+    // let value = unsafe { ptr.read_unaligned() };
 }

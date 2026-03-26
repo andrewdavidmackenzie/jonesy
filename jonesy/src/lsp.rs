@@ -1672,6 +1672,136 @@ struct WorkspaceInfo {
     src_filter: String,
 }
 
+// ============================================================================
+// Pure helper functions - extracted for unit testing
+// These can be used in analyze_and_publish/run_analysis_task in the future
+// to reduce code duplication. For now they're tested independently.
+// ============================================================================
+
+/// Deduplicate code points by (file, line, column).
+///
+/// Points are considered duplicates if they have the same file path, line number,
+/// and column (or both have no column). This handles the case where multiple
+/// targets report the same panic point from shared code.
+#[cfg(test)]
+fn deduplicate_code_points(points: Vec<CrateCodePoint>) -> Vec<CrateCodePoint> {
+    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    points
+        .into_iter()
+        .filter(|p| {
+            let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+            seen.insert(key)
+        })
+        .collect()
+}
+
+/// Group code points by file URI, filtering out paths in target/ directory.
+///
+/// Returns a HashMap where keys are file URIs and values are the code points
+/// found in that file. Points with paths inside the target directory are excluded.
+#[cfg(test)]
+fn group_points_by_uri(
+    points: Vec<CrateCodePoint>,
+    workspace_root: &Path,
+    target_dir: &str,
+) -> HashMap<Url, Vec<CrateCodePoint>> {
+    let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
+
+    for point in points {
+        // Skip files in target/ directory
+        if point.file.starts_with(target_dir) {
+            continue;
+        }
+
+        let raw_path = PathBuf::from(&point.file);
+        let file_path = if raw_path.is_absolute() {
+            raw_path
+        } else {
+            workspace_root.join(raw_path)
+        };
+
+        if let Ok(uri) = Url::from_file_path(&file_path) {
+            points_by_file.entry(uri).or_default().push(point);
+        }
+    }
+
+    points_by_file
+}
+
+/// Build the source filter string from workspace info.
+///
+/// The src_filter is used to filter DWARF debug info to only include
+/// paths matching the workspace's source directories. Format is like
+/// "crate_a/src/|crate_b/src/|..." for workspaces.
+#[cfg(test)]
+fn build_src_filter(workspace_info: Option<&WorkspaceInfo>, workspace_root: &Path) -> String {
+    workspace_info
+        .map(|info| info.src_filter.clone())
+        .unwrap_or_else(|| {
+            // Fallback: use workspace root name + /src/
+            workspace_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|name| format!("{}/src/", name))
+                .unwrap_or_else(|| "src/".to_string())
+        })
+}
+
+/// Result of analyzing workspace targets.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct AnalysisResult {
+    /// All code points found, deduplicated across targets
+    points: Vec<CrateCodePoint>,
+    /// Total number of panic points found (before deduplication)
+    total_count: usize,
+    /// Number of targets that were successfully analyzed
+    analyzed_count: usize,
+    /// Number of targets that failed or were skipped
+    skipped_count: usize,
+}
+
+/// Analyze all targets in a workspace and return deduplicated results.
+///
+/// This is the core analysis logic extracted from `analyze_and_publish` and
+/// `run_analysis_task` for easier testing. It runs analysis on each target
+/// synchronously and returns all unique panic points.
+#[cfg(test)]
+fn analyze_workspace_targets(
+    targets: &[PathBuf],
+    workspace_root: &Path,
+    src_filter: &str,
+) -> AnalysisResult {
+    let mut result = AnalysisResult::default();
+    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+
+    for target in targets {
+        match analyze_single_target(target, workspace_root, src_filter) {
+            Ok(points) => {
+                result.analyzed_count += 1;
+                let point_count = points.len();
+                result.total_count += point_count;
+
+                // Filter to new points only (dedup across targets)
+                let new_points: Vec<_> = points
+                    .into_iter()
+                    .filter(|p| {
+                        let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+                        seen.insert(key)
+                    })
+                    .collect();
+
+                result.points.extend(new_points);
+            }
+            Err(_) => {
+                result.skipped_count += 1;
+            }
+        }
+    }
+
+    result
+}
+
 /// Quickly discover workspace structure without running full analysis
 fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     let cargo_toml = workspace_root.join("Cargo.toml");
@@ -2470,5 +2600,531 @@ mod tests {
             "Should find exactly 5 config files. Found: {:?}",
             config_files
         );
+    }
+
+    // ========================================================================
+    // Unit tests for pure helper functions
+    // ========================================================================
+
+    fn make_code_point(file: &str, line: u32, column: Option<u32>) -> CrateCodePoint {
+        CrateCodePoint {
+            file: file.to_string(),
+            line,
+            column,
+            name: "test_func".to_string(),
+            causes: HashSet::new(),
+            children: Vec::new(),
+            is_direct_panic: false,
+            called_function: None,
+        }
+    }
+
+    #[test]
+    fn test_deduplicate_code_points_empty() {
+        let points: Vec<CrateCodePoint> = vec![];
+        let result = deduplicate_code_points(points);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_deduplicate_code_points_no_duplicates() {
+        let points = vec![
+            make_code_point("src/main.rs", 10, Some(5)),
+            make_code_point("src/main.rs", 20, Some(10)),
+            make_code_point("src/lib.rs", 10, Some(5)),
+        ];
+        let result = deduplicate_code_points(points);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_deduplicate_code_points_with_duplicates() {
+        let points = vec![
+            make_code_point("src/main.rs", 10, Some(5)),
+            make_code_point("src/main.rs", 10, Some(5)), // duplicate
+            make_code_point("src/main.rs", 20, Some(10)),
+            make_code_point("src/main.rs", 10, Some(5)), // duplicate
+        ];
+        let result = deduplicate_code_points(points);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].line, 10);
+        assert_eq!(result[1].line, 20);
+    }
+
+    #[test]
+    fn test_deduplicate_code_points_column_matters() {
+        // Same file and line, different columns - NOT duplicates
+        let points = vec![
+            make_code_point("src/main.rs", 10, Some(5)),
+            make_code_point("src/main.rs", 10, Some(15)),
+        ];
+        let result = deduplicate_code_points(points);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_deduplicate_code_points_none_column() {
+        // None columns are treated as 0 for deduplication
+        let points = vec![
+            make_code_point("src/main.rs", 10, None),
+            make_code_point("src/main.rs", 10, None), // duplicate
+            make_code_point("src/main.rs", 10, Some(0)), // also duplicate (None -> 0)
+        ];
+        let result = deduplicate_code_points(points);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_group_points_by_uri_empty() {
+        let points: Vec<CrateCodePoint> = vec![];
+        let workspace_root = PathBuf::from("/workspace");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_group_points_by_uri_filters_target_dir() {
+        let points = vec![
+            make_code_point("/workspace/src/main.rs", 10, Some(5)),
+            make_code_point("/workspace/target/debug/build/foo.rs", 20, Some(10)), // filtered
+            make_code_point("/workspace/src/lib.rs", 30, Some(15)),
+        ];
+        let workspace_root = PathBuf::from("/workspace");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+
+        assert_eq!(result.len(), 2);
+        assert!(result.keys().all(|uri| !uri.path().contains("/target/")));
+    }
+
+    #[test]
+    fn test_group_points_by_uri_groups_by_file() {
+        let points = vec![
+            make_code_point("/workspace/src/main.rs", 10, Some(5)),
+            make_code_point("/workspace/src/main.rs", 20, Some(10)),
+            make_code_point("/workspace/src/lib.rs", 30, Some(15)),
+        ];
+        let workspace_root = PathBuf::from("/workspace");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+
+        assert_eq!(result.len(), 2);
+
+        let main_uri = Url::from_file_path("/workspace/src/main.rs").unwrap();
+        let lib_uri = Url::from_file_path("/workspace/src/lib.rs").unwrap();
+
+        assert_eq!(result.get(&main_uri).unwrap().len(), 2);
+        assert_eq!(result.get(&lib_uri).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_group_points_by_uri_relative_paths() {
+        // Relative paths should be joined with workspace_root
+        let points = vec![
+            make_code_point("src/main.rs", 10, Some(5)),
+            make_code_point("src/lib.rs", 20, Some(10)),
+        ];
+        let workspace_root = PathBuf::from("/workspace");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+
+        assert_eq!(result.len(), 2);
+
+        let main_uri = Url::from_file_path("/workspace/src/main.rs").unwrap();
+        assert!(result.contains_key(&main_uri));
+    }
+
+    #[test]
+    fn test_build_src_filter_with_workspace_info() {
+        let info = WorkspaceInfo {
+            members: vec!["crate_a".to_string(), "crate_b".to_string()],
+            targets: vec![],
+            src_filter: "crate_a/src/|crate_b/src/".to_string(),
+        };
+        let workspace_root = PathBuf::from("/workspace");
+        let result = build_src_filter(Some(&info), &workspace_root);
+        assert_eq!(result, "crate_a/src/|crate_b/src/");
+    }
+
+    #[test]
+    fn test_build_src_filter_without_workspace_info() {
+        let workspace_root = PathBuf::from("/home/user/my_project");
+        let result = build_src_filter(None, &workspace_root);
+        assert_eq!(result, "my_project/src/");
+    }
+
+    #[test]
+    fn test_build_src_filter_root_path_fallback() {
+        // Edge case: workspace root is "/" - should fallback to "src/"
+        let workspace_root = PathBuf::from("/");
+        let result = build_src_filter(None, &workspace_root);
+        // Root has no file_name, so falls back to "src/"
+        assert_eq!(result, "src/");
+    }
+
+    #[test]
+    fn test_analyze_workspace_targets_empty() {
+        let targets: Vec<PathBuf> = vec![];
+        let workspace_root = PathBuf::from("/workspace");
+        let result = analyze_workspace_targets(&targets, &workspace_root, "src/");
+
+        assert!(result.points.is_empty());
+        assert_eq!(result.total_count, 0);
+        assert_eq!(result.analyzed_count, 0);
+        assert_eq!(result.skipped_count, 0);
+    }
+
+    #[test]
+    fn test_analyze_workspace_targets_nonexistent() {
+        // Non-existent targets should be skipped
+        let targets = vec![PathBuf::from("/nonexistent/binary")];
+        let workspace_root = PathBuf::from("/workspace");
+        let result = analyze_workspace_targets(&targets, &workspace_root, "src/");
+
+        assert!(result.points.is_empty());
+        assert_eq!(result.analyzed_count, 0);
+        assert_eq!(result.skipped_count, 1);
+    }
+
+    #[test]
+    fn test_analyze_workspace_targets_real_binary() {
+        // Test with a real binary from the workspace
+        let workspace_root = find_workspace_root();
+        let panic_example = workspace_root.join("examples/panic");
+
+        // Build the example first
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .current_dir(&panic_example)
+            .status();
+
+        if status.is_err() || !status.unwrap().success() {
+            // Skip test if build fails
+            return;
+        }
+
+        let binary = panic_example.join("target/debug/panic");
+        if !binary.exists() {
+            return;
+        }
+
+        let targets = vec![binary];
+        let result = analyze_workspace_targets(&targets, &panic_example, "panic/src/");
+
+        assert_eq!(result.analyzed_count, 1);
+        assert_eq!(result.skipped_count, 0);
+        // The panic example should have many panic points
+        assert!(
+            result.total_count > 0,
+            "Should find panic points in panic example"
+        );
+    }
+
+    #[test]
+    fn test_analysis_result_default() {
+        let result = AnalysisResult::default();
+        assert!(result.points.is_empty());
+        assert_eq!(result.total_count, 0);
+        assert_eq!(result.analyzed_count, 0);
+        assert_eq!(result.skipped_count, 0);
+    }
+
+    // ========================================================================
+    // Tests for code_point_to_diagnostic
+    // ========================================================================
+
+    #[test]
+    fn test_code_point_to_diagnostic_empty_causes() {
+        let point = make_code_point("src/main.rs", 42, Some(10));
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(diag.source, Some("jonesy".to_string()));
+        assert_eq!(diag.message, "potential panic point");
+        assert!(diag.code.is_none());
+        assert!(diag.code_description.is_none());
+        // LSP uses 0-based lines
+        assert_eq!(diag.range.start.line, 41);
+        assert_eq!(diag.range.start.character, 9);
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_single_cause() {
+        use crate::panic_cause::PanicCause;
+
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapNone);
+
+        let point = CrateCodePoint {
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(5),
+            name: "my_func".to_string(),
+            causes,
+            children: Vec::new(),
+            is_direct_panic: true,
+            called_function: None,
+        };
+
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        assert!(diag.message.contains("unwrap"));
+        assert!(diag.code.is_some());
+        assert!(diag.code_description.is_some());
+        // Should have help message for direct panic
+        assert!(diag.message.contains("help:"));
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_multiple_causes() {
+        use crate::panic_cause::PanicCause;
+
+        let mut causes = HashSet::new();
+        causes.insert(PanicCause::UnwrapNone);
+        causes.insert(PanicCause::ExpectNone);
+
+        let point = CrateCodePoint {
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: Some(5),
+            name: "my_func".to_string(),
+            causes,
+            children: Vec::new(),
+            is_direct_panic: false,
+            called_function: Some("risky_fn".to_string()),
+        };
+
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        // Multiple causes shown in message
+        assert!(diag.message.contains("JP"));
+        // Data should contain cause info
+        assert!(diag.data.is_some());
+        let data = diag.data.unwrap();
+        let causes_arr: Vec<String> = serde_json::from_value(data["causes"].clone()).unwrap();
+        assert_eq!(causes_arr.len(), 2);
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_no_column() {
+        let point = make_code_point("src/main.rs", 100, None);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        // No column defaults to 1, then subtract 1 for 0-based = 0
+        assert_eq!(diag.range.start.character, 0);
+    }
+
+    #[test]
+    fn test_code_point_to_diagnostic_line_1() {
+        // Edge case: line 1 should not underflow
+        let point = make_code_point("src/main.rs", 1, Some(1));
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+
+        assert_eq!(diag.range.start.line, 0);
+        assert_eq!(diag.range.start.character, 0);
+    }
+
+    // ========================================================================
+    // Tests for get_module_pattern
+    // ========================================================================
+
+    #[test]
+    fn test_get_module_pattern_tests_dir() {
+        let uri = Url::parse("file:///workspace/tests/unit_tests.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/tests/**", "tests")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_benches_dir() {
+        let uri = Url::parse("file:///workspace/benches/perf.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/benches/**", "benches")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_examples_dir() {
+        let uri = Url::parse("file:///workspace/examples/demo.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/examples/**", "examples")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_test_suffix() {
+        let uri = Url::parse("file:///workspace/src/parser_test.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/*_test.rs", "test files")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_tests_suffix() {
+        let uri = Url::parse("file:///workspace/src/parser_tests.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert_eq!(result, Some(("**/*_tests.rs", "test files")));
+    }
+
+    #[test]
+    fn test_get_module_pattern_regular_src() {
+        let uri = Url::parse("file:///workspace/src/parser.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_module_pattern_main_rs() {
+        let uri = Url::parse("file:///workspace/src/main.rs").unwrap();
+        let result = JonesyLspServer::get_module_pattern(&uri);
+        assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // Tests for expand_workspace_glob
+    // ========================================================================
+
+    #[test]
+    fn test_expand_workspace_glob_nonexistent_dir() {
+        let workspace_root = PathBuf::from("/nonexistent/path");
+        let result = expand_workspace_glob(&workspace_root, "crates/*");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_expand_workspace_glob_real_workspace() {
+        let workspace_root = find_workspace_root();
+        let result = expand_workspace_glob(&workspace_root, "examples/*");
+
+        // Should find example crates
+        assert!(!result.is_empty(), "Should find example directories");
+
+        // All results should have Cargo.toml
+        for path in &result {
+            assert!(
+                path.join("Cargo.toml").exists(),
+                "{} should have Cargo.toml",
+                path.display()
+            );
+        }
+    }
+
+    // ========================================================================
+    // Tests for discover_workspace
+    // ========================================================================
+
+    #[test]
+    fn test_discover_workspace_real() {
+        let workspace_root = find_workspace_root();
+        let info = discover_workspace(&workspace_root);
+
+        assert!(info.is_some());
+        let info = info.unwrap();
+
+        // Should have workspace members
+        assert!(!info.members.is_empty());
+
+        // Should have src_filter
+        assert!(!info.src_filter.is_empty());
+    }
+
+    #[test]
+    fn test_discover_workspace_single_crate() {
+        let workspace_root = find_workspace_root();
+        let panic_example = workspace_root.join("examples/panic");
+
+        let info = discover_workspace(&panic_example);
+        assert!(info.is_some());
+        let info = info.unwrap();
+
+        // Single crate should have "src/" in filter
+        assert!(
+            info.src_filter.contains("src/"),
+            "Single crate filter should contain 'src/', got: {}",
+            info.src_filter
+        );
+    }
+
+    #[test]
+    fn test_discover_workspace_nonexistent() {
+        let workspace_root = PathBuf::from("/nonexistent/path");
+        let info = discover_workspace(&workspace_root);
+        assert!(info.is_none());
+    }
+
+    // ========================================================================
+    // Tests for find_workspace_binaries edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_find_workspace_binaries_no_cargo_toml() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_no_cargo");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let result = find_workspace_binaries(&temp_dir);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_workspace_binaries_no_target() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_no_target");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create minimal Cargo.toml
+        std::fs::write(
+            temp_dir.join("Cargo.toml"),
+            r#"[package]
+name = "test"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let result = find_workspace_binaries(&temp_dir);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Tests for find_config_files edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_find_config_files_no_cargo_toml() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_config_no_cargo");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let files = find_config_files(&temp_dir);
+
+        // Should always include jonesy.toml path
+        assert!(files.iter().any(|p| p.ends_with("jonesy.toml")));
+        // But not much else without Cargo.toml
+        assert_eq!(files.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_config_files_single_crate() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_config_single");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create minimal Cargo.toml (not a workspace)
+        std::fs::write(
+            temp_dir.join("Cargo.toml"),
+            r#"[package]
+name = "test"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let files = find_config_files(&temp_dir);
+
+        // Should include jonesy.toml and Cargo.toml
+        assert!(files.iter().any(|p| p.ends_with("jonesy.toml")));
+        assert!(files.iter().any(|p| p.ends_with("Cargo.toml")));
+        assert_eq!(files.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

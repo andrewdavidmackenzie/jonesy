@@ -742,14 +742,20 @@ fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
     Ok(binaries)
 }
 
-/// Parse --bin name_or_path
-/// Can be either a path to a binary or a binary name to look up in Cargo.toml
-fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
-    // Find the argument after --bin
+/// Extract the binary name/path argument from --bin flag.
+///
+/// Returns the argument value after --bin, or an error if:
+/// - --bin flag is not found
+/// - No value follows --bin
+/// - There are unexpected trailing positional arguments
+///
+/// This is a pure function that only examines the args slice.
+fn extract_bin_arg<'a>(args: &[&'a String]) -> Result<&'a str, String> {
     let bin_arg_idx = args
         .iter()
         .position(|a| *a == "--bin")
         .ok_or("--bin flag not found")?;
+
     let bin_name = args
         .get(bin_arg_idx + 1)
         .ok_or("--bin requires a binary name or path")?;
@@ -764,7 +770,48 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         }
     }
 
-    let binary_path = PathBuf::from(bin_name.as_str());
+    Ok(bin_name.as_str())
+}
+
+/// Find a binary by name in a manifest's [[bin]] targets.
+///
+/// Returns the binary path if found, None otherwise.
+/// Handles hyphen/underscore normalization (e.g., "my-bin" matches "my_bin").
+fn find_bin_in_manifest(bin_name: &str, manifest: &Manifest, target_dir: &Path) -> Option<PathBuf> {
+    // Check [[bin]] targets
+    for bin in &manifest.bin {
+        let manifest_bin_name = bin
+            .name
+            .as_ref()
+            .or(manifest.package.as_ref().map(|p| &p.name));
+        if let Some(name) = manifest_bin_name {
+            if name == bin_name || name.replace('-', "_") == bin_name {
+                let bin_path = target_dir.join(name);
+                if bin_path.exists() {
+                    return Some(bin_path);
+                }
+            }
+        }
+    }
+
+    // Check package name (default binary)
+    if let Some(pkg) = &manifest.package {
+        if pkg.name == bin_name || pkg.name.replace('-', "_") == bin_name {
+            let bin_path = target_dir.join(&pkg.name);
+            if bin_path.exists() {
+                return Some(bin_path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse --bin name_or_path
+/// Can be either a path to a binary or a binary name to look up in Cargo.toml
+fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    let bin_name = extract_bin_arg(args)?;
+    let binary_path = PathBuf::from(bin_name);
 
     // First check if it's a path that exists
     if binary_path.exists() {
@@ -791,30 +838,9 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
     // Look for target/debug directory
     let target_dir = find_target_dir()?;
 
-    // Check if this binary name matches any [[bin]] target
-    for bin in &manifest.bin {
-        let manifest_bin_name = bin
-            .name
-            .as_ref()
-            .or(manifest.package.as_ref().map(|p| &p.name));
-        if let Some(name) = manifest_bin_name
-            && (name == bin_name.as_str() || name.replace('-', "_") == bin_name.as_str())
-        {
-            let bin_path = target_dir.join(name);
-            if bin_path.exists() {
-                return Ok(vec![bin_path]);
-            }
-        }
-    }
-
-    // Check if it matches the package name (default binary)
-    if let Some(pkg) = &manifest.package
-        && (pkg.name == bin_name.as_str() || pkg.name.replace('-', "_") == bin_name.as_str())
-    {
-        let bin_path = target_dir.join(&pkg.name);
-        if bin_path.exists() {
-            return Ok(vec![bin_path]);
-        }
+    // Check if this binary name matches any [[bin]] target or package name
+    if let Some(bin_path) = find_bin_in_manifest(bin_name, &manifest, &target_dir) {
+        return Ok(vec![bin_path]);
     }
 
     // If this is a workspace, search workspace members
@@ -822,7 +848,7 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         if let Ok(workspace_binaries) = find_workspace_binaries(&manifest) {
             for bin_path in workspace_binaries {
                 if let Some(name) = bin_path.file_name().and_then(|n| n.to_str()) {
-                    if name == bin_name.as_str() || name.replace('-', "_") == bin_name.as_str() {
+                    if name == bin_name || name.replace('-', "_") == bin_name {
                         return Ok(vec![bin_path]);
                     }
                 }
@@ -836,11 +862,14 @@ fn parse_bin_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
     ))
 }
 
-/// Parse --lib [path_to_library_object]
-/// If a path is provided, use it directly.
-/// Otherwise, find the library target from Cargo.toml
-fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
-    // Find the --lib flag position
+/// Extract the optional library path argument from --lib flag.
+///
+/// Returns Ok(Some(path)) if --lib has a path argument
+/// Returns Ok(None) if --lib is used without a path (use Cargo.toml lookup)
+/// Returns Err if --lib flag not found or there are unexpected trailing args
+///
+/// This is a pure function that only examines the args slice.
+fn extract_lib_arg<'a>(args: &[&'a String]) -> Result<Option<&'a str>, String> {
     let lib_arg_idx = args
         .iter()
         .position(|a| *a == "--lib")
@@ -861,8 +890,49 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
         }
     }
 
+    Ok(lib_path_arg.map(|s| s.as_str()))
+}
+
+/// Determine the library name from a manifest.
+///
+/// Returns the library name from [lib] section if present,
+/// otherwise derives it from package name (replacing hyphens with underscores).
+fn get_lib_name(manifest: &Manifest) -> Option<String> {
+    manifest
+        .lib
+        .as_ref()
+        .and_then(|l| l.name.clone())
+        .or_else(|| manifest.package.as_ref().map(|p| p.name.replace('-', "_")))
+}
+
+/// Find a library file by name in the target directory.
+///
+/// Checks for .dylib, .rlib, and .a files in order.
+/// Returns the first existing library path, or None if not found.
+fn find_lib_in_target(lib_name: &str, target_dir: &Path) -> Option<PathBuf> {
+    let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
+    let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
+    let staticlib_path = target_dir.join(format!("lib{}.a", lib_name));
+
+    if dylib_path.exists() {
+        Some(dylib_path)
+    } else if rlib_path.exists() {
+        Some(rlib_path)
+    } else if staticlib_path.exists() {
+        Some(staticlib_path)
+    } else {
+        None
+    }
+}
+
+/// Parse --lib [path_to_library_object]
+/// If a path is provided, use it directly.
+/// Otherwise, find the library target from Cargo.toml
+fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
+    let lib_path_arg = extract_lib_arg(args)?;
+
     if let Some(path_str) = lib_path_arg {
-        let binary_path = PathBuf::from(path_str.as_str());
+        let binary_path = PathBuf::from(path_str);
         if !binary_path.exists() {
             return Err(format!(
                 "Library shared object not found at {:?}",
@@ -898,29 +968,847 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
 
     let target_dir = find_target_dir()?;
 
-    // Library name defaults to package name with hyphens replaced by underscores
-    let lib_name = manifest
-        .lib
-        .as_ref()
-        .and_then(|l| l.name.clone())
-        .or_else(|| manifest.package.as_ref().map(|p| p.name.replace('-', "_")))
-        .ok_or("Cannot determine library name")?;
+    let lib_name = get_lib_name(&manifest).ok_or("Cannot determine library name")?;
 
-    // On macOS, look for .dylib, .rlib, or .a (staticlib)
-    let dylib_path = target_dir.join(format!("lib{}.dylib", lib_name));
-    let rlib_path = target_dir.join(format!("lib{}.rlib", lib_name));
-    let staticlib_path = target_dir.join(format!("lib{}.a", lib_name));
+    find_lib_in_target(&lib_name, &target_dir)
+        .map(|p| vec![p])
+        .ok_or_else(|| {
+            format!(
+                "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
+                lib_name
+            )
+        })
+}
 
-    if dylib_path.exists() {
-        Ok(vec![dylib_path])
-    } else if rlib_path.exists() {
-        Ok(vec![rlib_path])
-    } else if staticlib_path.exists() {
-        Ok(vec![staticlib_path])
-    } else {
-        Err(format!(
-            "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
-            lib_name
-        ))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // OutputFormat tests
+    // ========================================================================
+
+    #[test]
+    fn test_output_format_default() {
+        let format = OutputFormat::default();
+        assert!(format.is_text());
+        assert!(!format.is_json());
+        assert!(!format.is_html());
+        assert!(format.show_progress());
+        assert!(!format.is_summary_only());
+        assert!(!format.show_tree());
+        assert!(format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_text_constructor() {
+        let format = OutputFormat::text(true, true, true, false);
+        assert!(format.is_text());
+        assert!(format.show_tree());
+        assert!(format.is_summary_only());
+        assert!(!format.show_progress()); // quiet=true means no progress
+        assert!(!format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_json_constructor() {
+        let format = OutputFormat::json(true, false);
+        assert!(format.is_json());
+        assert!(!format.is_text());
+        assert!(!format.is_html());
+        assert!(format.show_tree());
+        assert!(!format.is_summary_only());
+        assert!(!format.show_progress()); // JSON never shows progress
+        assert!(!format.use_hyperlinks()); // JSON never uses hyperlinks
+    }
+
+    #[test]
+    fn test_output_format_html_constructor() {
+        let format = OutputFormat::html(false, true);
+        assert!(format.is_html());
+        assert!(!format.is_text());
+        assert!(!format.is_json());
+        assert!(!format.show_tree());
+        assert!(format.is_summary_only());
+        assert!(!format.show_progress()); // HTML never shows progress
+        assert!(!format.use_hyperlinks()); // HTML never uses hyperlinks
+    }
+
+    #[test]
+    fn test_output_format_quiet() {
+        let format = OutputFormat::quiet();
+        assert!(format.is_text());
+        assert!(!format.show_progress());
+        assert!(!format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_show_progress_logic() {
+        // Progress shown when text, not quiet, not summary_only
+        let format = OutputFormat::text(false, false, false, true);
+        assert!(format.show_progress());
+
+        // No progress when quiet
+        let format = OutputFormat::text(false, false, true, true);
+        assert!(!format.show_progress());
+
+        // No progress when summary_only
+        let format = OutputFormat::text(false, true, false, true);
+        assert!(!format.show_progress());
+
+        // No progress when both
+        let format = OutputFormat::text(false, true, true, true);
+        assert!(!format.show_progress());
+    }
+
+    // ========================================================================
+    // parse_max_threads tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_max_threads_default() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_max_threads(&args).unwrap();
+        // Default should be at least 1
+        assert!(result >= 1);
+    }
+
+    #[test]
+    fn test_parse_max_threads_explicit() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "4".to_string(),
+        ];
+        let result = parse_max_threads(&args).unwrap();
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    fn test_parse_max_threads_one() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "1".to_string(),
+        ];
+        let result = parse_max_threads(&args).unwrap();
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_parse_max_threads_zero_error() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "0".to_string(),
+        ];
+        let result = parse_max_threads(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 1"));
+    }
+
+    #[test]
+    fn test_parse_max_threads_missing_value() {
+        let args = vec!["jonesy".to_string(), "--max-threads".to_string()];
+        let result = parse_max_threads(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a number"));
+    }
+
+    #[test]
+    fn test_parse_max_threads_invalid_value() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--max-threads".to_string(),
+            "abc".to_string(),
+        ];
+        let result = parse_max_threads(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    // ========================================================================
+    // parse_output_format tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_output_format_default() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_text());
+        assert!(result.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_parse_output_format_text_explicit() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "text".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_text());
+    }
+
+    #[test]
+    fn test_parse_output_format_json() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        let result = parse_output_format(&args, true, false, false, false).unwrap();
+        assert!(result.is_json());
+        assert!(result.show_tree());
+    }
+
+    #[test]
+    fn test_parse_output_format_html() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "html".to_string(),
+        ];
+        let result = parse_output_format(&args, false, true, false, false).unwrap();
+        assert!(result.is_html());
+        assert!(result.is_summary_only());
+    }
+
+    #[test]
+    fn test_parse_output_format_case_insensitive() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "JSON".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_json());
+    }
+
+    #[test]
+    fn test_parse_output_format_invalid() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "xml".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid format"));
+    }
+
+    #[test]
+    fn test_parse_output_format_missing_value() {
+        let args = vec!["jonesy".to_string(), "--format".to_string()];
+        let result = parse_output_format(&args, false, false, false, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires an argument"));
+    }
+
+    #[test]
+    fn test_parse_output_format_no_hyperlinks() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_output_format(&args, false, false, false, true).unwrap();
+        assert!(result.is_text());
+        assert!(!result.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_parse_output_format_with_flags() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_output_format(&args, true, true, true, true).unwrap();
+        assert!(result.is_text());
+        assert!(result.show_tree());
+        assert!(result.is_summary_only());
+        assert!(!result.show_progress()); // quiet + summary_only
+        assert!(!result.use_hyperlinks());
+    }
+
+    // ========================================================================
+    // usage tests
+    // ========================================================================
+
+    #[test]
+    fn test_usage_contains_version() {
+        let help = usage();
+        assert!(help.contains(VERSION));
+    }
+
+    #[test]
+    fn test_usage_contains_key_options() {
+        let help = usage();
+        assert!(help.contains("--bin"));
+        assert!(help.contains("--lib"));
+        assert!(help.contains("--tree"));
+        assert!(help.contains("--quiet"));
+        assert!(help.contains("--format"));
+        assert!(help.contains("--config"));
+        assert!(help.contains("--max-threads"));
+        assert!(help.contains("lsp"));
+    }
+
+    #[test]
+    fn test_usage_contains_format_options() {
+        let help = usage();
+        assert!(help.contains("text"));
+        assert!(help.contains("json"));
+        assert!(help.contains("html"));
+    }
+
+    // ========================================================================
+    // extract_bin_arg tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_bin_arg_valid() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "my-binary");
+    }
+
+    #[test]
+    fn test_extract_bin_arg_with_path() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "/path/to/binary".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "/path/to/binary");
+    }
+
+    #[test]
+    fn test_extract_bin_arg_missing_value() {
+        let args = vec!["jonesy".to_string(), "--bin".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a binary name"));
+    }
+
+    #[test]
+    fn test_extract_bin_arg_no_flag() {
+        let args = vec!["jonesy".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("flag not found"));
+    }
+
+    #[test]
+    fn test_extract_bin_arg_extra_positional() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+            "extra-arg".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unexpected extra argument"));
+    }
+
+    #[test]
+    fn test_extract_bin_arg_allows_trailing_flags() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+            "--quiet".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "my-binary");
+    }
+
+    // ========================================================================
+    // extract_lib_arg tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_lib_arg_with_path() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "/path/to/lib.rlib".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, Some("/path/to/lib.rlib"));
+    }
+
+    #[test]
+    fn test_extract_lib_arg_without_path() {
+        let args = vec!["jonesy".to_string(), "--lib".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_lib_arg_followed_by_flag() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "--quiet".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, None); // --quiet is not a path
+    }
+
+    #[test]
+    fn test_extract_lib_arg_no_flag() {
+        let args = vec!["jonesy".to_string()];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("flag not found"));
+    }
+
+    #[test]
+    fn test_extract_lib_arg_extra_positional() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "/path/to/lib.rlib".to_string(),
+            "extra-arg".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unexpected extra argument"));
+    }
+
+    // ========================================================================
+    // get_lib_name tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_lib_name_from_lib_section() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+
+            [lib]
+            name = "custom_lib_name"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        assert_eq!(result, Some("custom_lib_name".to_string()));
+    }
+
+    #[test]
+    fn test_get_lib_name_from_package() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        assert_eq!(result, Some("my_package".to_string())); // hyphen -> underscore
+    }
+
+    #[test]
+    fn test_get_lib_name_no_package() {
+        let content = r#"
+            [workspace]
+            members = ["crate_a"]
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        assert_eq!(result, None);
+    }
+
+    // ========================================================================
+    // find_lib_in_target tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_lib_in_target_nonexistent() {
+        let result = find_lib_in_target("nonexistent", Path::new("/tmp"));
+        assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // find_bin_in_manifest tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_bin_in_manifest_no_bins() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = find_bin_in_manifest("nonexistent", &manifest, Path::new("/tmp"));
+        assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // parse_config_path tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_config_path_none() {
+        let args = vec!["jonesy".to_string()];
+        let result = parse_config_path(&args).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_config_path_missing_value() {
+        let args = vec!["jonesy".to_string(), "--config".to_string()];
+        let result = parse_config_path(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a path"));
+    }
+
+    #[test]
+    fn test_parse_config_path_file_not_found() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--config".to_string(),
+            "/nonexistent/path/config.toml".to_string(),
+        ];
+        let result = parse_config_path(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_parse_config_path_valid_file() {
+        // Use Cargo.toml as a config file that exists
+        let args = vec![
+            "jonesy".to_string(),
+            "--config".to_string(),
+            "Cargo.toml".to_string(),
+        ];
+
+        // This test depends on running from the jonesy directory
+        if PathBuf::from("Cargo.toml").exists() {
+            let result = parse_config_path(&args).unwrap();
+            assert!(result.is_some());
+            assert!(result.unwrap().ends_with("Cargo.toml"));
+        }
+    }
+
+    // ========================================================================
+    // Additional OutputFormat tests
+    // ========================================================================
+
+    #[test]
+    fn test_output_format_text_with_all_options() {
+        let format = OutputFormat::text(true, true, true, true);
+        assert!(format.is_text());
+        assert!(format.show_tree());
+        assert!(format.is_summary_only());
+        assert!(!format.show_progress()); // quiet=true
+        assert!(format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_json_no_hyperlinks() {
+        // JSON format should never use hyperlinks
+        let format = OutputFormat::json(false, false);
+        assert!(!format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_html_no_hyperlinks() {
+        // HTML format should never use hyperlinks (they're embedded differently)
+        let format = OutputFormat::html(false, false);
+        assert!(!format.use_hyperlinks());
+    }
+
+    #[test]
+    fn test_output_format_json_no_progress() {
+        // JSON format should never show progress
+        let format = OutputFormat::json(false, false);
+        assert!(!format.show_progress());
+    }
+
+    #[test]
+    fn test_output_format_html_no_progress() {
+        // HTML format should never show progress
+        let format = OutputFormat::html(false, false);
+        assert!(!format.show_progress());
+    }
+
+    // ========================================================================
+    // Additional parse_output_format tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_output_format_html_case_insensitive() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "HTML".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_html());
+    }
+
+    #[test]
+    fn test_parse_output_format_text_case_insensitive() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--format".to_string(),
+            "TEXT".to_string(),
+        ];
+        let result = parse_output_format(&args, false, false, false, false).unwrap();
+        assert!(result.is_text());
+    }
+
+    // ========================================================================
+    // collect_binaries_from_manifest tests (with temp dir)
+    // ========================================================================
+
+    #[test]
+    fn test_collect_binaries_no_bins() {
+        // Create manifest with package but no [[bin]] or [lib] sections
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let target_dir = PathBuf::from("/tmp");
+
+        let binaries = collect_binaries_from_manifest(&manifest, "my-package", &target_dir);
+
+        // No binaries exist in /tmp, so should be empty
+        assert!(binaries.is_empty());
+    }
+
+    // ========================================================================
+    // WorkspaceMember struct tests
+    // ========================================================================
+
+    #[test]
+    fn test_workspace_member_debug() {
+        let member = WorkspaceMember {
+            name: "test-crate".to_string(),
+            path: PathBuf::from("crates/test-crate"),
+            binaries: vec![PathBuf::from("target/debug/test-crate")],
+        };
+
+        // Test Debug trait
+        let debug_str = format!("{:?}", member);
+        assert!(debug_str.contains("test-crate"));
+        assert!(debug_str.contains("crates/test-crate"));
+    }
+
+    // ========================================================================
+    // Args struct tests
+    // ========================================================================
+
+    #[test]
+    fn test_args_default_values() {
+        // Test that we can construct Args with expected default-like values
+        let args = Args {
+            binaries: vec![],
+            workspace_members: None,
+            show_timings: false,
+            max_threads: 1,
+            config_path: None,
+            output: OutputFormat::default(),
+            lsp_mode: false,
+        };
+
+        assert!(args.binaries.is_empty());
+        assert!(args.workspace_members.is_none());
+        assert!(!args.show_timings);
+        assert!(!args.lsp_mode);
+        assert!(args.output.is_text());
+    }
+
+    // ========================================================================
+    // VERSION constant test
+    // ========================================================================
+
+    #[test]
+    fn test_version_not_empty() {
+        assert!(!VERSION.is_empty());
+        // Version should be a valid semver-ish string
+        assert!(
+            VERSION.contains('.'),
+            "Version should contain dots: {}",
+            VERSION
+        );
+    }
+
+    // ========================================================================
+    // Additional extract_bin_arg edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_extract_bin_arg_at_end() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--quiet".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "my-binary");
+    }
+
+    #[test]
+    fn test_extract_bin_arg_with_multiple_flags_after() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--bin".to_string(),
+            "my-binary".to_string(),
+            "--quiet".to_string(),
+            "--tree".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_bin_arg(&refs).unwrap();
+        assert_eq!(result, "my-binary");
+    }
+
+    // ========================================================================
+    // Additional extract_lib_arg edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_extract_lib_arg_at_end_no_path() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--quiet".to_string(),
+            "--lib".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_lib_arg_with_path_and_trailing_flags() {
+        let args = vec![
+            "jonesy".to_string(),
+            "--lib".to_string(),
+            "/path/to/lib.rlib".to_string(),
+            "--quiet".to_string(),
+        ];
+        let refs: Vec<&String> = args.iter().collect();
+        let result = extract_lib_arg(&refs).unwrap();
+        assert_eq!(result, Some("/path/to/lib.rlib"));
+    }
+
+    // ========================================================================
+    // find_lib_in_target with temp directory
+    // ========================================================================
+
+    #[test]
+    fn test_find_lib_in_target_dylib() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_lib_dylib");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create a fake dylib
+        let dylib_path = temp_dir.join("libtest.dylib");
+        std::fs::write(&dylib_path, "fake dylib").unwrap();
+
+        let result = find_lib_in_target("test", &temp_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("libtest.dylib"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_lib_in_target_rlib() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_lib_rlib");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create a fake rlib (no dylib)
+        let rlib_path = temp_dir.join("libtest.rlib");
+        std::fs::write(&rlib_path, "fake rlib").unwrap();
+
+        let result = find_lib_in_target("test", &temp_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("libtest.rlib"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_lib_in_target_staticlib() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_lib_static");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create a fake staticlib (no dylib or rlib)
+        let static_path = temp_dir.join("libtest.a");
+        std::fs::write(&static_path, "fake staticlib").unwrap();
+
+        let result = find_lib_in_target("test", &temp_dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("libtest.a"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_lib_in_target_prefers_dylib() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_lib_prefer");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Create all three types
+        std::fs::write(temp_dir.join("libtest.dylib"), "dylib").unwrap();
+        std::fs::write(temp_dir.join("libtest.rlib"), "rlib").unwrap();
+        std::fs::write(temp_dir.join("libtest.a"), "staticlib").unwrap();
+
+        let result = find_lib_in_target("test", &temp_dir);
+        assert!(result.is_some());
+        // Should prefer dylib
+        assert!(result.unwrap().ends_with("libtest.dylib"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // get_lib_name edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_get_lib_name_lib_section_no_name() {
+        let content = r#"
+            [package]
+            name = "my-package"
+            version = "0.1.0"
+
+            [lib]
+            path = "src/lib.rs"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        // Falls back to package name with hyphen replacement
+        assert_eq!(result, Some("my_package".to_string()));
+    }
+
+    #[test]
+    fn test_get_lib_name_underscore_preserved() {
+        let content = r#"
+            [package]
+            name = "my_package"
+            version = "0.1.0"
+        "#;
+        let manifest = Manifest::from_slice(content.as_bytes()).unwrap();
+        let result = get_lib_name(&manifest);
+        // Underscores should be preserved
+        assert_eq!(result, Some("my_package".to_string()));
     }
 }

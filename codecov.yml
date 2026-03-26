@@ -1,0 +1,16 @@
+coverage:
+  status:
+    project:
+      default:
+        # Don't fail if coverage drops slightly
+        threshold: 1%
+    patch:
+      default:
+        # Maintain the overall level of coverage prior to a change
+        target: auto
+
+ignore:
+  - "examples/**/*"
+  - "jonesy/tests/**/*"
+  - "jonesy/benches/**/*"
+  - "target/**/*"

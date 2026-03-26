@@ -72,13 +72,13 @@ Last updated: 2026-03-25
 |-------|------------------|---------------------------|--------------------------------|--------------------------------------------------------------------------------------|
 | JP001 | `panic`          | Explicit panic!()         | `test_panic_example`           | `test_detect_panic_cause_panic_display`                                              |
 | JP002 | `bounds`         | Index out of bounds       | `test_panic_example`           | `test_detect_panic_cause_bounds_check`, `test_detect_panic_cause_index_bounds`       |
-| JP003 | `div_overflow`   | Division overflow         | —                              | `test_detect_panic_cause_arithmetic_overflow`                                        |
-| JP004 | `rem_overflow`   | Remainder overflow        | —                              | `test_detect_panic_cause_arithmetic_overflow`                                        |
-| JP005 | `shift_overflow` | Shift overflow            | —                              | `test_detect_panic_cause_shift_overflow`                                             |
+| JP003 | `div_overflow`   | Division overflow         | `test_panic_example`           | `test_detect_panic_cause_arithmetic_overflow`                                        |
+| JP004 | `rem_overflow`   | Remainder overflow        | `test_panic_example`           | `test_detect_panic_cause_arithmetic_overflow`                                        |
+| JP005 | `shift_overflow` | Shift overflow            | `test_panic_example`           | `test_detect_panic_cause_shift_overflow`                                             |
 | JP006 | `unwrap` (None)  | unwrap() on None          | `test_panic_example`           | `test_detect_panic_cause_unwrap_failed_option`                                       |
-| JP007 | `unwrap` (Err)   | unwrap() on Err           | —                              | `test_detect_panic_cause_unwrap_failed_result`                                       |
+| JP007 | `unwrap` (Err)   | unwrap() on Err           | `test_panic_example`           | `test_detect_panic_cause_unwrap_failed_result`                                       |
 | JP008 | `expect` (None)  | expect() on None          | `test_panic_example`           | `test_detect_panic_cause_expect_failed`                                              |
-| JP009 | `expect` (Err)   | expect() on Err           | —                              | `test_detect_panic_cause_result_expect`                                              |
+| JP009 | `expect` (Err)   | expect() on Err           | `test_panic_example`           | `test_detect_panic_cause_result_expect`                                              |
 | JP010 | `assert`         | assert!() failure         | `test_panic_example`           | `test_detect_panic_cause_assert_failed`                                              |
 | JP011 | `debug_assert`   | debug_assert!() failure   | `test_panic_example`           | `test_detect_panic_cause_assert_failed`                                              |
 | JP012 | `unreachable`    | unreachable!() reached    | `test_panic_example`           | `test_detect_panic_cause_unreachable`                                                |
@@ -87,12 +87,12 @@ Last updated: 2026-03-25
 | JP015 | `drop`           | Panic during drop         | —                              | `test_detect_panic_cause_panic_in_cleanup`                                           |
 | JP016 | `unwind`         | Panic in no-unwind        | —                              | `test_detect_panic_cause_panic_cannot_unwind`                                        |
 | JP017 | `format`         | Formatting error          | —                              | `test_detect_panic_cause_formatting`                                                 |
-| JP018 | `capacity`       | Capacity overflow         | —                              | `test_detect_panic_cause_capacity_overflow`                                          |
+| JP018 | `capacity`       | Capacity overflow         | `test_panic_example`           | `test_detect_panic_cause_capacity_overflow`                                          |
 | JP019 | `oom`            | Out of memory             | `test_oom_detection_via_abort` | `test_detect_panic_cause_out_of_memory`                                              |
-| JP020 | `str_slice`      | String/slice error        | —                              | `test_detect_panic_cause_string_slice_error`, `test_detect_panic_cause_index_string` |
-| JP021 | `invalid_enum`   | Invalid enum discriminant | —                              | `test_detect_panic_cause_invalid_enum`                                               |
-| JP022 | `misaligned_ptr` | Misaligned pointer        | —                              | `test_detect_panic_cause_misaligned_pointer`                                         |
-| —     | `div_zero`       | Division by zero          | —                              | `test_detect_panic_cause_division_by_zero`                                           |
+| JP020 | `str_slice`      | String/slice error        | `test_panic_example`           | `test_detect_panic_cause_string_slice_error`, `test_detect_panic_cause_index_string` |
+| JP021 | `invalid_enum`   | Invalid enum discriminant | `test_panic_example`           | `test_detect_panic_cause_invalid_enum`                                               |
+| JP022 | `misaligned_ptr` | Misaligned pointer        | `test_panic_example`           | `test_detect_panic_cause_misaligned_pointer`                                         |
+| —     | `div_zero`       | Division by zero          | `test_panic_example`           | `test_detect_panic_cause_division_by_zero`                                           |
 | —     | `unknown`        | Unknown cause             | —                              | `test_detect_panic_cause_unknown`                                                    |
 
 ### 8. DWARF Handling
@@ -175,24 +175,16 @@ These features have zero test coverage:
 
 These features have unit test coverage but no end-to-end integration tests:
 
-| Feature                            | Unit Tests Present                                              |
-|------------------------------------|-----------------------------------------------------------------|
-| HTML output format                 | `test_generate_html_output_*`                                   |
-| `--summary-only` flag              | `test_write_text_output_summary_only`, `test_generate_json_output_summary_only` |
-| `filter_phantom_async` config      | `test_filter_phantom_async_*`                                   |
-| Function-scoped rules              | `test_scoped_rule_function_matching`, `test_function_rule_more_specific_than_path` |
-| Division overflow (JP003)          | `test_detect_panic_cause_arithmetic_overflow`                   |
-| Remainder overflow (JP004)         | `test_detect_panic_cause_arithmetic_overflow`                   |
-| Shift overflow (JP005)             | `test_detect_panic_cause_shift_overflow`                        |
-| `expect()` on Err (JP009)          | `test_detect_panic_cause_result_expect`                         |
-| `drop` panic (JP015)               | `test_detect_panic_cause_panic_in_cleanup`                      |
-| `unwind` panic (JP016)             | `test_detect_panic_cause_panic_cannot_unwind`                   |
-| `format` panic (JP017)             | `test_detect_panic_cause_formatting`                            |
-| `capacity` panic (JP018)           | `test_detect_panic_cause_capacity_overflow`                     |
-| `str_slice` panic (JP020)          | `test_detect_panic_cause_string_slice_error`                    |
-| `invalid_enum` panic (JP021)       | `test_detect_panic_cause_invalid_enum`                          |
-| `misaligned_ptr` panic (JP022)     | `test_detect_panic_cause_misaligned_pointer`                    |
-| Inline allow comments              | `test_parse_single_cause`, `test_check_inline_allow_with_file`  |
+| Feature                       | Unit Tests Present                                                              |
+|-------------------------------|---------------------------------------------------------------------------------|
+| HTML output format            | `test_generate_html_output_*`                                                   |
+| `--summary-only` flag         | `test_write_text_output_summary_only`, `test_generate_json_output_summary_only` |
+| `filter_phantom_async` config | `test_filter_phantom_async_*`                                                   |
+| Function-scoped rules         | `test_scoped_rule_function_matching`, `test_function_rule_more_specific_than_path` |
+| `drop` panic (JP015)          | `test_detect_panic_cause_panic_in_cleanup`                                      |
+| `unwind` panic (JP016)        | `test_detect_panic_cause_panic_cannot_unwind`                                   |
+| `format` panic (JP017)        | `test_detect_panic_cause_formatting`                                            |
+| Inline allow comments         | `test_parse_single_cause`, `test_check_inline_allow_with_file`                  |
 
 ---
 

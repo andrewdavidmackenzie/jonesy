@@ -71,4 +71,19 @@ fn main() {
 
     // jonesy: expect panic string slice boundary error
     module::cause_string_index_panic();
+
+    // jonesy: expect panic(overflow)
+    module::cause_division_overflow();
+
+    // jonesy: expect panic(overflow)
+    module::cause_remainder_overflow();
+
+    // jonesy: expect panic(capacity)
+    module::cause_capacity_overflow();
+
+    // jonesy: expect panic(invalid_enum)
+    module::cause_invalid_enum();
+
+    // jonesy: expect panic(misaligned_ptr)
+    module::cause_misaligned_pointer();
 }
