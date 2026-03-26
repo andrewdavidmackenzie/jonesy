@@ -1397,12 +1397,14 @@ fn test_quiet_flag_suppresses_progress() {
     let normal_has_processing = stdout_normal.contains("Processing");
     let quiet_has_processing = stdout_quiet.contains("Processing");
 
-    if normal_has_processing {
-        assert!(
-            !quiet_has_processing,
-            "Quiet output should not contain 'Processing' progress messages"
-        );
-    }
+    assert!(
+        normal_has_processing,
+        "Normal output should contain 'Processing' progress messages to validate --quiet behavior"
+    );
+    assert!(
+        !quiet_has_processing,
+        "Quiet output should not contain 'Processing' progress messages"
+    );
 }
 
 #[test]
