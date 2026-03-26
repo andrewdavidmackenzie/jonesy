@@ -125,11 +125,13 @@ impl PanicCause {
     }
 
     /// Get the parent/generic configuration identifier, if any.
-    /// This allows "overflow" to match specific types like "div_overflow".
+    /// This allows "overflow" to match specific types like "div_overflow",
+    /// and "assert" to match both "assert" and "debug_assert".
     pub fn parent_id(&self) -> Option<&'static str> {
         match self {
             PanicCause::ArithmeticOverflow(_) => Some("overflow"),
             PanicCause::ShiftOverflow(_) => Some("overflow"),
+            PanicCause::DebugAssertFailed => Some("assert"),
             _ => None,
         }
     }
@@ -601,8 +603,30 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         // Only Option has expect_failed; Result::expect() uses unwrap_failed
         return Some(PanicCause::ExpectNone);
     }
-    // Assert macros
+    // Assert macros - distinguish debug_assert from assert based on source location
+    // In stdlib code, debug_assert!() is commonly used for internal invariant checks
+    // that are compiled out in release builds. We detect this heuristically by
+    // checking if the assert comes from stdlib paths.
     if func_name.contains("assert_failed") {
+        // Check if this is likely a debug_assert from stdlib
+        // Stdlib paths typically contain /rustc/, /library/, or similar patterns
+        let is_stdlib = file_path
+            .map(|f| {
+                let normalized = f.replace('\\', "/");
+                normalized.contains("/rustc/")
+                    || normalized.contains("/library/core/src/")
+                    || normalized.contains("/library/std/src/")
+                    || normalized.contains("/library/alloc/src/")
+                    || normalized.contains("/src/libstd/")
+                    || normalized.contains("/src/libcore/")
+                    || normalized.contains("/src/liballoc/")
+            })
+            .unwrap_or(false);
+
+        if is_stdlib {
+            // Stdlib asserts are typically debug_assert!() for internal invariants
+            return Some(PanicCause::DebugAssertFailed);
+        }
         return Some(PanicCause::AssertFailed);
     }
     // panic_display is explicit panic! with a simple message
@@ -745,6 +769,10 @@ mod tests {
             PanicCause::ShiftOverflow("left".to_string()).parent_id(),
             Some("overflow")
         );
+        // DebugAssertFailed has "assert" as parent, so allow = ["assert"] covers both
+        assert_eq!(PanicCause::DebugAssertFailed.parent_id(), Some("assert"));
+        // AssertFailed has no parent (it IS the parent)
+        assert_eq!(PanicCause::AssertFailed.parent_id(), None);
         assert_eq!(PanicCause::ExplicitPanic.parent_id(), None);
         assert_eq!(PanicCause::BoundsCheck.parent_id(), None);
     }
@@ -953,8 +981,52 @@ mod tests {
 
     #[test]
     fn test_detect_panic_cause_assert_failed() {
+        // Assert from user code (no file path) -> AssertFailed
         assert_eq!(
             detect_panic_cause("assert_failed", None),
+            Some(PanicCause::AssertFailed)
+        );
+        // Assert from user code (non-stdlib path) -> AssertFailed
+        assert_eq!(
+            detect_panic_cause("assert_failed", Some("src/main.rs")),
+            Some(PanicCause::AssertFailed)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_debug_assert_stdlib() {
+        // Assert from stdlib paths -> DebugAssertFailed (heuristic)
+        // Stdlib typically uses debug_assert!() for internal invariants
+        assert_eq!(
+            detect_panic_cause(
+                "assert_failed",
+                Some("/rustc/abc123/library/std/src/time.rs")
+            ),
+            Some(PanicCause::DebugAssertFailed)
+        );
+        assert_eq!(
+            detect_panic_cause("assert_failed", Some("/library/core/src/num/mod.rs")),
+            Some(PanicCause::DebugAssertFailed)
+        );
+        // Windows-style paths should also work
+        assert_eq!(
+            detect_panic_cause(
+                "assert_failed",
+                Some("C:\\rustc\\abc\\library\\std\\time.rs")
+            ),
+            Some(PanicCause::DebugAssertFailed)
+        );
+    }
+
+    #[test]
+    fn test_assert_in_user_path_with_library_not_debug_assert() {
+        // A user path that happens to contain "library" should NOT be classified as stdlib
+        assert_eq!(
+            detect_panic_cause("assert_failed", Some("/home/me/library/app/src/main.rs")),
+            Some(PanicCause::AssertFailed)
+        );
+        assert_eq!(
+            detect_panic_cause("assert_failed", Some("/projects/library/core/lib.rs")),
             Some(PanicCause::AssertFailed)
         );
     }
