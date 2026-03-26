@@ -11,5 +11,5 @@ clippy:
 build:
 	cargo build
 
-test:
+test: build
 	cargo test -p jonesy
