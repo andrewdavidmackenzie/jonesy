@@ -2162,6 +2162,12 @@ pub async fn run_lsp_server() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that build and inspect workspace_test artifacts.
+    /// Without this, parallel tests can trigger concurrent cargo builds that
+    /// temporarily remove artifacts during rebuilds (especially under coverage).
+    static WORKSPACE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// Find the workspace root by looking for Cargo.toml with [workspace]
     fn find_workspace_root() -> PathBuf {
@@ -2180,11 +2186,11 @@ mod tests {
         }
     }
 
-    /// Build workspace_test and wait for all expected artifacts to exist.
-    /// This handles race conditions when multiple tests build the same workspace
-    /// concurrently (cargo serializes via locks, but artifacts may briefly disappear
-    /// during rebuilds triggered by different RUSTFLAGS in coverage runs).
-    fn build_workspace_test(workspace_test_dir: &Path) {
+    /// Build workspace_test, holding WORKSPACE_TEST_LOCK to prevent parallel
+    /// tests from interfering with each other's build artifacts.
+    fn build_workspace_test(workspace_test_dir: &Path) -> std::sync::MutexGuard<'static, ()> {
+        let guard = WORKSPACE_TEST_LOCK.lock().unwrap();
+
         let status = std::process::Command::new("cargo")
             .arg("build")
             .current_dir(workspace_test_dir)
@@ -2192,9 +2198,7 @@ mod tests {
             .expect("Failed to build workspace_test");
         assert!(status.success(), "Failed to build workspace_test");
 
-        // Wait for all expected artifacts to appear on disk.
-        // Under coverage instrumentation, a parallel test's cargo build may
-        // temporarily remove artifacts during a rebuild.
+        // Verify all expected artifacts exist (CI builds take ~2s, wait up to 4s)
         let target_debug = workspace_test_dir.join("target/debug");
         let expected = [
             "crate_a",
@@ -2203,15 +2207,15 @@ mod tests {
             "libcrate_c.rlib",
         ];
 
-        for _ in 0..10 {
+        for _ in 0..8 {
             let all_exist = expected.iter().all(|name| target_debug.join(name).exists());
             if all_exist {
-                return;
+                return guard;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
-        // One final check with diagnostic output
+        // Final check with diagnostic output
         let missing: Vec<_> = expected
             .iter()
             .filter(|name| !target_debug.join(name).exists())
@@ -2228,6 +2232,7 @@ mod tests {
                     .unwrap_or_default()
             );
         }
+        guard
     }
 
     #[test]
@@ -2236,7 +2241,8 @@ mod tests {
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-        build_workspace_test(&workspace_test_dir);
+        // Hold the lock through assertions so no parallel test can rebuild artifacts
+        let _guard = build_workspace_test(&workspace_test_dir);
 
         // Find targets
         let targets =
@@ -2285,7 +2291,8 @@ mod tests {
         let workspace_root = find_workspace_root();
         let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-        build_workspace_test(&workspace_test_dir);
+        // Hold the lock through the entire test so no parallel test can rebuild artifacts
+        let _guard = build_workspace_test(&workspace_test_dir);
 
         // Run CLI and capture panic points
         let cli_output = std::process::Command::new(workspace_root.join("target/debug/jonesy"))
