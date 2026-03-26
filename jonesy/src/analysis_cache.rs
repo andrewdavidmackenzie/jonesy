@@ -673,4 +673,310 @@ mod tests {
         assert!(changes.has_changes());
         assert!(!changes.needs_full_reanalysis());
     }
+
+    // ========================================================================
+    // Cache load/save tests with temp directories
+    // ========================================================================
+
+    #[test]
+    fn test_cache_load_nonexistent() {
+        let temp_dir = std::env::temp_dir().join(format!("jonesy_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir); // Clean up any previous run
+
+        let cache = AnalysisCache::load(&temp_dir);
+
+        // Should return default with current version
+        assert_eq!(cache.version, AnalysisCache::VERSION);
+        assert!(cache.targets.is_empty());
+        assert!(cache.configs.is_empty());
+    }
+
+    #[test]
+    fn test_cache_save_and_load() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_save_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a cache with some data
+        let mut cache = AnalysisCache {
+            version: AnalysisCache::VERSION,
+            ..Default::default()
+        };
+        cache.update_workspace(WorkspaceState {
+            members: vec!["test_member".to_string()],
+            binaries: HashMap::new(),
+            libraries: HashMap::new(),
+        });
+
+        // Save it
+        cache.save(&temp_dir).unwrap();
+
+        // Verify file exists
+        let cache_file = temp_dir.join("target/jonesy/cache.json");
+        assert!(cache_file.exists());
+
+        // Load it back
+        let loaded = AnalysisCache::load(&temp_dir);
+        assert_eq!(loaded.version, AnalysisCache::VERSION);
+        assert_eq!(loaded.workspace.members, vec!["test_member"]);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cache_load_invalid_json() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_invalid_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        let cache_dir = temp_dir.join("target/jonesy");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        // Write invalid JSON
+        fs::write(cache_dir.join("cache.json"), "not valid json").unwrap();
+
+        // Should return default cache
+        let cache = AnalysisCache::load(&temp_dir);
+        assert_eq!(cache.version, AnalysisCache::VERSION);
+        assert!(cache.targets.is_empty());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cache_load_wrong_version() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_version_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        let cache_dir = temp_dir.join("target/jonesy");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        // Write cache with old version
+        let old_cache = r#"{"version": 0, "targets": {}, "configs": {}, "workspace": {"members": [], "binaries": {}, "libraries": {}}}"#;
+        fs::write(cache_dir.join("cache.json"), old_cache).unwrap();
+
+        // Should return fresh cache since version doesn't match
+        let cache = AnalysisCache::load(&temp_dir);
+        assert_eq!(cache.version, AnalysisCache::VERSION);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Target analysis with real files
+    // ========================================================================
+
+    #[test]
+    fn test_target_needs_analysis_with_real_file() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_target_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let target_file = temp_dir.join("test_binary");
+        fs::write(&target_file, "test content").unwrap();
+
+        let mut cache = AnalysisCache::default();
+
+        // First time - needs analysis
+        assert!(cache.target_needs_analysis(&target_file));
+
+        // Update cache
+        cache.update_target(&target_file, 5);
+
+        // Should not need analysis now (mtime matches)
+        assert!(!cache.target_needs_analysis(&target_file));
+
+        // Modify the file
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&target_file, "modified content").unwrap();
+
+        // Now needs analysis again
+        assert!(cache.target_needs_analysis(&target_file));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_config_changed_with_real_file() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_config_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let config_file = temp_dir.join("jonesy.toml");
+        fs::write(&config_file, "allow = [\"unwrap\"]").unwrap();
+
+        let mut cache = AnalysisCache::default();
+
+        // First time - changed (not in cache)
+        assert!(cache.config_changed(&config_file));
+
+        // Update cache
+        cache.update_config(&config_file);
+
+        // Should not be changed now
+        assert!(!cache.config_changed(&config_file));
+
+        // Modify content
+        fs::write(&config_file, "allow = [\"panic\"]").unwrap();
+
+        // Now changed
+        assert!(cache.config_changed(&config_file));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Build workspace state tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_workspace_state_no_cargo_toml() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_no_cargo_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let state = build_workspace_state(&temp_dir);
+
+        assert!(state.members.is_empty());
+        assert!(state.binaries.is_empty());
+        assert!(state.libraries.is_empty());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_build_workspace_state_simple_crate() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_simple_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a simple Cargo.toml
+        let cargo_toml = r#"
+[package]
+name = "my-app"
+version = "0.1.0"
+"#;
+        fs::write(temp_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+        // Create src/main.rs
+        fs::create_dir_all(temp_dir.join("src")).unwrap();
+        fs::write(temp_dir.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let state = build_workspace_state(&temp_dir);
+
+        // Should find the binary
+        assert!(state.binaries.contains_key("my-app"));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_build_workspace_state_with_lib() {
+        let temp_dir = std::env::temp_dir().join(format!("jonesy_test_lib_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a library Cargo.toml
+        let cargo_toml = r#"
+[package]
+name = "my-lib"
+version = "0.1.0"
+"#;
+        fs::write(temp_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+        // Create src/lib.rs
+        fs::create_dir_all(temp_dir.join("src")).unwrap();
+        fs::write(temp_dir.join("src/lib.rs"), "pub fn hello() {}").unwrap();
+
+        let state = build_workspace_state(&temp_dir);
+
+        // Should find the library
+        assert!(state.libraries.contains_key("my-lib"));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_build_workspace_state_with_bin_dir() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_bin_dir_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create Cargo.toml
+        let cargo_toml = r#"
+[package]
+name = "multi-bin"
+version = "0.1.0"
+"#;
+        fs::write(temp_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+        // Create src/bin/foo.rs and src/bin/bar/main.rs
+        fs::create_dir_all(temp_dir.join("src/bin/bar")).unwrap();
+        fs::write(temp_dir.join("src/bin/foo.rs"), "fn main() {}").unwrap();
+        fs::write(temp_dir.join("src/bin/bar/main.rs"), "fn main() {}").unwrap();
+
+        let state = build_workspace_state(&temp_dir);
+
+        // Should find both binaries
+        assert!(state.binaries.contains_key("foo"));
+        assert!(state.binaries.contains_key("bar"));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Helper function tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_mtime_nonexistent() {
+        let result = get_mtime(Path::new("/nonexistent/path/to/file"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_hash_file_content_nonexistent() {
+        let result = hash_file_content(Path::new("/nonexistent/path/to/file"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_hash_file_content_consistent() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("jonesy_test_hash_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let test_file = temp_dir.join("test.txt");
+        fs::write(&test_file, "hello world").unwrap();
+
+        let hash1 = hash_file_content(&test_file);
+        let hash2 = hash_file_content(&test_file);
+
+        assert!(hash1.is_some());
+        assert_eq!(hash1, hash2);
+
+        // Different content should have different hash
+        fs::write(&test_file, "goodbye world").unwrap();
+        let hash3 = hash_file_content(&test_file);
+
+        assert_ne!(hash1, hash3);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }

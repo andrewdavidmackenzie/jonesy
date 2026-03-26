@@ -637,3 +637,203 @@ pub fn analyze_archive(
         code_points: deduped,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panic_cause::PanicCause;
+
+    // ========================================================================
+    // is_stdlib_function tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_stdlib_function_core() {
+        assert!(is_stdlib_function("core::option::Option::unwrap"));
+        assert!(is_stdlib_function("core::result::Result::unwrap"));
+        assert!(is_stdlib_function("core::panicking::panic_fmt"));
+    }
+
+    #[test]
+    fn test_is_stdlib_function_std() {
+        assert!(is_stdlib_function("std::io::Read::read"));
+        assert!(is_stdlib_function("std::panic::panic_any"));
+        assert!(is_stdlib_function("std::process::abort"));
+    }
+
+    #[test]
+    fn test_is_stdlib_function_alloc() {
+        assert!(is_stdlib_function("alloc::vec::Vec::push"));
+        assert!(is_stdlib_function("alloc::string::String::new"));
+    }
+
+    #[test]
+    fn test_is_stdlib_function_generic_bounds() {
+        assert!(is_stdlib_function("<core::option::Option<T>>::unwrap"));
+        assert!(is_stdlib_function("<std::vec::Vec<T>>::push"));
+        assert!(is_stdlib_function("<alloc::string::String>::new"));
+    }
+
+    #[test]
+    fn test_is_stdlib_function_nested() {
+        assert!(is_stdlib_function("foo::bar::core::baz"));
+        assert!(is_stdlib_function("my_crate::std::helper"));
+        assert!(is_stdlib_function("wrapper::alloc::allocate"));
+    }
+
+    #[test]
+    fn test_is_stdlib_function_with_space() {
+        assert!(is_stdlib_function("impl core::fmt::Debug"));
+        assert!(is_stdlib_function("impl std::fmt::Display"));
+        assert!(is_stdlib_function("impl alloc::fmt::Write"));
+    }
+
+    #[test]
+    fn test_is_stdlib_function_user_code() {
+        assert!(!is_stdlib_function("my_crate::module::function"));
+        assert!(!is_stdlib_function("app::main"));
+        assert!(!is_stdlib_function("lib::panic_handler"));
+        assert!(!is_stdlib_function("corey::something")); // Contains "core" but not "core::"
+        assert!(!is_stdlib_function("standard::library")); // Contains "std" but not "std::"
+    }
+
+    // ========================================================================
+    // BinaryAnalysisResult tests
+    // ========================================================================
+
+    #[test]
+    fn test_binary_analysis_result_empty() {
+        let result = BinaryAnalysisResult::empty();
+        assert!(result.code_points.is_empty());
+        assert_eq!(result.summary.panic_points(), 0);
+        assert_eq!(result.summary.files_affected(), 0);
+    }
+
+    fn make_code_point(file: &str, line: u32, cause: PanicCause) -> CrateCodePoint {
+        let mut causes = HashSet::new();
+        causes.insert(cause);
+        CrateCodePoint {
+            name: "test_func".to_string(),
+            file: file.to_string(),
+            line,
+            column: None,
+            causes,
+            children: Vec::new(),
+            is_direct_panic: true,
+            called_function: None,
+        }
+    }
+
+    #[test]
+    fn test_binary_analysis_result_merge_disjoint() {
+        let mut result1 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![make_code_point("src/a.rs", 10, PanicCause::UnwrapNone)],
+        };
+
+        let result2 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![make_code_point("src/b.rs", 20, PanicCause::UnwrapErr)],
+        };
+
+        result1.merge(result2);
+
+        assert_eq!(result1.code_points.len(), 2);
+        assert_eq!(result1.summary.panic_points(), 2);
+        assert_eq!(result1.summary.files_affected(), 2);
+    }
+
+    #[test]
+    fn test_binary_analysis_result_merge_same_location() {
+        let mut result1 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::UnwrapNone)],
+        };
+
+        let result2 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::ExpectNone)],
+        };
+
+        result1.merge(result2);
+
+        // Same file:line should be merged, causes combined
+        assert_eq!(result1.code_points.len(), 1);
+        assert_eq!(result1.code_points[0].causes.len(), 2);
+        assert!(
+            result1.code_points[0]
+                .causes
+                .contains(&PanicCause::UnwrapNone)
+        );
+        assert!(
+            result1.code_points[0]
+                .causes
+                .contains(&PanicCause::ExpectNone)
+        );
+    }
+
+    #[test]
+    fn test_binary_analysis_result_merge_sorted() {
+        let mut result1 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![make_code_point("src/z.rs", 100, PanicCause::UnwrapNone)],
+        };
+
+        let result2 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![
+                make_code_point("src/a.rs", 10, PanicCause::UnwrapErr),
+                make_code_point("src/a.rs", 5, PanicCause::ExplicitPanic),
+            ],
+        };
+
+        result1.merge(result2);
+
+        // Should be sorted by file, then line
+        assert_eq!(result1.code_points.len(), 3);
+        assert_eq!(result1.code_points[0].file, "src/a.rs");
+        assert_eq!(result1.code_points[0].line, 5);
+        assert_eq!(result1.code_points[1].file, "src/a.rs");
+        assert_eq!(result1.code_points[1].line, 10);
+        assert_eq!(result1.code_points[2].file, "src/z.rs");
+        assert_eq!(result1.code_points[2].line, 100);
+    }
+
+    #[test]
+    fn test_binary_analysis_result_merge_empty() {
+        let mut result1 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::UnwrapNone)],
+        };
+
+        let result2 = BinaryAnalysisResult::empty();
+
+        result1.merge(result2);
+
+        assert_eq!(result1.code_points.len(), 1);
+    }
+
+    // ========================================================================
+    // Constants tests
+    // ========================================================================
+
+    #[test]
+    fn test_panic_symbol_patterns_not_empty() {
+        assert!(!PANIC_SYMBOL_PATTERNS.is_empty());
+        assert!(PANIC_SYMBOL_PATTERNS.contains(&"rust_panic$"));
+    }
+
+    #[test]
+    fn test_abort_symbol_patterns_not_empty() {
+        assert!(!ABORT_SYMBOL_PATTERNS.is_empty());
+        assert!(ABORT_SYMBOL_PATTERNS.contains(&"std::process::abort"));
+    }
+
+    #[test]
+    fn test_library_panic_patterns_comprehensive() {
+        // Should cover key panic functions
+        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("panic")));
+        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("unwrap")));
+        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("expect")));
+    }
+}
