@@ -36,6 +36,7 @@ jobs:
         run: cargo build
 
       - name: Generate dSYM for panic example
+        working-directory: examples/panic
         run: dsymutil target/debug/panic
 
       # Test 1: Basic analysis with local jonesy binary
