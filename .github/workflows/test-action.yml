@@ -69,8 +69,9 @@ jobs:
 
       # Test 2: JSON output format
       - name: Test JSON output
+        working-directory: examples/panic
         run: |
-          output=$(./target/debug/jonesy --bin target/debug/panic --format json 2>&1) || true
+          output=$(../../target/debug/jonesy --format json 2>&1) || true
 
           # Verify JSON is valid and contains expected fields
           if echo "$output" | jq -e '.summary.panic_points' >/dev/null 2>&1; then
@@ -84,8 +85,9 @@ jobs:
 
       # Test 3: Extra args functionality
       - name: Test extra args (--tree flag)
+        working-directory: examples/panic
         run: |
-          output=$(./target/debug/jonesy --bin target/debug/panic --tree --no-hyperlinks 2>&1) || true
+          output=$(../../target/debug/jonesy --tree --no-hyperlinks 2>&1) || true
 
           # --tree should show call hierarchy with indentation
           if echo "$output" | grep -qE "^[[:space:]]+└──|^[[:space:]]+├──"; then
@@ -98,9 +100,9 @@ jobs:
 
       # Test 4: Working directory functionality
       - name: Test working directory
+        working-directory: examples/panic
         run: |
           # Run from examples/panic directory (it should auto-discover the binary)
-          cd examples/panic
           output=$(../../target/debug/jonesy --no-hyperlinks 2>&1) || true
           echo "$output"
 
