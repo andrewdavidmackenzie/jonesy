@@ -614,9 +614,12 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
             .map(|f| {
                 let normalized = f.replace('\\', "/");
                 normalized.contains("/rustc/")
-                    || normalized.contains("/library/")
+                    || normalized.contains("/library/core/src/")
+                    || normalized.contains("/library/std/src/")
+                    || normalized.contains("/library/alloc/src/")
                     || normalized.contains("/src/libstd/")
                     || normalized.contains("/src/libcore/")
+                    || normalized.contains("/src/liballoc/")
             })
             .unwrap_or(false);
 
@@ -1012,6 +1015,25 @@ mod tests {
                 Some("C:\\rustc\\abc\\library\\std\\time.rs")
             ),
             Some(PanicCause::DebugAssertFailed)
+        );
+    }
+
+    #[test]
+    fn test_assert_in_user_path_with_library_not_debug_assert() {
+        // A user path that happens to contain "library" should NOT be classified as stdlib
+        assert_eq!(
+            detect_panic_cause(
+                "assert_failed",
+                Some("/home/me/library/app/src/main.rs")
+            ),
+            Some(PanicCause::AssertFailed)
+        );
+        assert_eq!(
+            detect_panic_cause(
+                "assert_failed",
+                Some("/projects/library/core/lib.rs")
+            ),
+            Some(PanicCause::AssertFailed)
         );
     }
 
