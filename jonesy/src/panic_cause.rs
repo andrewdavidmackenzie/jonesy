@@ -1022,17 +1022,11 @@ mod tests {
     fn test_assert_in_user_path_with_library_not_debug_assert() {
         // A user path that happens to contain "library" should NOT be classified as stdlib
         assert_eq!(
-            detect_panic_cause(
-                "assert_failed",
-                Some("/home/me/library/app/src/main.rs")
-            ),
+            detect_panic_cause("assert_failed", Some("/home/me/library/app/src/main.rs")),
             Some(PanicCause::AssertFailed)
         );
         assert_eq!(
-            detect_panic_cause(
-                "assert_failed",
-                Some("/projects/library/core/lib.rs")
-            ),
+            detect_panic_cause("assert_failed", Some("/projects/library/core/lib.rs")),
             Some(PanicCause::AssertFailed)
         );
     }
