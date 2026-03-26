@@ -1323,3 +1323,84 @@ fn test_dsym_auto_generation() {
     // Clean up
     let _ = fs::remove_dir_all(&dsym_path);
 }
+
+#[test]
+fn test_quiet_flag_suppresses_progress() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+    let jonesy_bin = workspace_root
+        .join("target")
+        .join("debug")
+        .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX));
+
+    // Run without --quiet to confirm progress messages appear
+    let mut child = Command::new(&jonesy_bin)
+        .args(["--no-hyperlinks"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jonesy");
+
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(_) => {}
+        None => {
+            child.kill().expect("Failed to kill");
+            let _ = child.wait();
+            panic!("Jonesy timed out (no quiet)");
+        }
+    }
+    let output = child.wait_with_output().expect("Failed to get output");
+    let stdout_normal = String::from_utf8_lossy(&output.stdout);
+
+    // Run with --quiet
+    let mut child = Command::new(&jonesy_bin)
+        .args(["--quiet", "--no-hyperlinks"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn jonesy");
+
+    match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
+        Some(_) => {}
+        None => {
+            child.kill().expect("Failed to kill");
+            let _ = child.wait();
+            panic!("Jonesy timed out (quiet)");
+        }
+    }
+    let output = child.wait_with_output().expect("Failed to get output");
+    let stdout_quiet = String::from_utf8_lossy(&output.stdout);
+
+    // Both should still report panic points (--quiet suppresses progress, not results)
+    assert!(
+        stdout_normal.contains("Panic points:"),
+        "Normal output should contain 'Panic points:'"
+    );
+    assert!(
+        stdout_quiet.contains("Panic points:"),
+        "Quiet output should still contain 'Panic points:'"
+    );
+
+    // Quiet output should be shorter (no progress lines)
+    assert!(
+        stdout_quiet.lines().count() <= stdout_normal.lines().count(),
+        "Quiet output ({} lines) should not be longer than normal output ({} lines)",
+        stdout_quiet.lines().count(),
+        stdout_normal.lines().count()
+    );
+
+    // Normal output should contain progress indicator like "Processing"
+    // Quiet output should not
+    let normal_has_processing = stdout_normal.contains("Processing");
+    let quiet_has_processing = stdout_quiet.contains("Processing");
+
+    if normal_has_processing {
+        assert!(
+            !quiet_has_processing,
+            "Quiet output should not contain 'Processing' progress messages"
+        );
+    }
+}

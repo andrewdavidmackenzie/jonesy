@@ -1068,3 +1068,197 @@ fn test_lsp_binary_change_triggers_reanalysis() {
 
     client.shutdown();
 }
+
+#[test]
+fn test_lsp_progress_notifications() {
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+
+    // Build the panic example with local target directory
+    let status = Command::new("cargo")
+        .args(["build", "--target-dir", "./target"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build panic example");
+    assert!(status.success());
+
+    // Generate dSYM for macOS debug info
+    let binary_path = panic_example.join("target/debug/panic");
+    let _ = Command::new("dsymutil")
+        .arg(&binary_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&panic_example);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", panic_example.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Wait briefly then drain initial messages
+    thread::sleep(Duration::from_millis(500));
+    let _ = client.collect_notifications(Duration::from_secs(2));
+
+    // Trigger analysis and wait for completion
+    let _ = client.send_request_timeout(
+        "workspace/executeCommand",
+        json!({
+            "command": "jonesy.analyze",
+            "arguments": []
+        }),
+        Duration::from_secs(60),
+    );
+
+    // Collect notifications from analysis
+    let notifications = client.collect_notifications(Duration::from_secs(5));
+
+    // Filter for progress notifications ($/progress)
+    let progress_notifications: Vec<_> = notifications
+        .iter()
+        .filter(|n| {
+            n.get("method")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "$/progress")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Should have at least some progress notifications (begin + end at minimum)
+    assert!(
+        !progress_notifications.is_empty(),
+        "Should have received $/progress notifications during analysis. \
+         Got {} total notifications.",
+        notifications.len()
+    );
+
+    // Verify we have begin and end kinds
+    let has_begin = progress_notifications.iter().any(|n| {
+        n.get("params")
+            .and_then(|p| p.get("value"))
+            .and_then(|v| v.get("kind"))
+            .and_then(|k| k.as_str())
+            == Some("begin")
+    });
+
+    let has_end = progress_notifications.iter().any(|n| {
+        n.get("params")
+            .and_then(|p| p.get("value"))
+            .and_then(|v| v.get("kind"))
+            .and_then(|k| k.as_str())
+            == Some("end")
+    });
+
+    assert!(
+        has_begin,
+        "Should have a progress 'begin' notification. Progress notifications: {:?}",
+        progress_notifications
+    );
+
+    assert!(
+        has_end,
+        "Should have a progress 'end' notification. Progress notifications: {:?}",
+        progress_notifications
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn test_lsp_file_change_watching() {
+    use std::fs;
+
+    let workspace_root = find_workspace_root();
+    let panic_example = workspace_root.join("examples/panic");
+
+    // Build the panic example with local target directory
+    let status = Command::new("cargo")
+        .args(["build", "--target-dir", "./target"])
+        .current_dir(&panic_example)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("Failed to build panic example");
+    assert!(status.success());
+
+    // Generate dSYM for macOS debug info
+    let binary_path = panic_example.join("target/debug/panic");
+    let _ = Command::new("dsymutil")
+        .arg(&binary_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&panic_example);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", panic_example.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Wait for initial analysis to complete and drain notifications
+    let _ = client.collect_notifications(Duration::from_secs(5));
+
+    // Trigger a config file change (jonesy.toml) via didChangeWatchedFiles
+    let config_path = panic_example.join("jonesy.toml");
+    // Create a minimal config file to trigger the watcher
+    fs::write(&config_path, "# jonesy config\n").unwrap_or_default();
+
+    client
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            json!({
+                "changes": [{
+                    "uri": format!("file://{}", config_path.display()),
+                    "type": 2  // Changed
+                }]
+            }),
+        )
+        .expect("Failed to send didChangeWatchedFiles for config");
+
+    // Collect notifications - should see re-analysis triggered
+    let notifications = client.collect_notifications(Duration::from_secs(10));
+
+    // Should have triggered re-analysis (look for publishDiagnostics or progress)
+    let has_response = notifications.iter().any(|n| {
+        let method = n.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        method == "textDocument/publishDiagnostics" || method == "$/progress"
+    });
+
+    assert!(
+        has_response,
+        "Config file change should trigger re-analysis. \
+         Got {} notifications: {:?}",
+        notifications.len(),
+        notifications
+            .iter()
+            .filter_map(|n| n.get("method").and_then(|m| m.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    // Clean up the test config file
+    let _ = fs::remove_file(&config_path);
+
+    client.shutdown();
+}
