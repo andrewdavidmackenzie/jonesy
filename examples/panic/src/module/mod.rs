@@ -263,7 +263,7 @@ pub fn cause_string_index_panic() {
 pub fn cause_division_overflow() {
     // Division overflow: i32::MIN / -1 overflows because the result
     // would be i32::MAX + 1 which doesn't fit in i32
-    // jonesy: expect panic(div_overflow)
+    // jonesy: expect panic(overflow)
     let _ = i32::MIN / -1;
 
     // Panic-free alternative: use checked_div
@@ -273,7 +273,7 @@ pub fn cause_division_overflow() {
 #[allow(arithmetic_overflow, unconditional_panic, clippy::modulo_one)]
 pub fn cause_remainder_overflow() {
     // Remainder overflow: i32::MIN % -1 can overflow on some platforms
-    // jonesy: expect panic(rem_overflow)
+    // jonesy: expect panic(overflow)
     let _ = i32::MIN % -1;
 
     // Panic-free alternative: use checked_rem
