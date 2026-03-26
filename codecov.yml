@@ -12,4 +12,5 @@ coverage:
 ignore:
   - "examples/**/*"
   - "jonesy/tests/**/*"
+  - "jonesy/benches/**/*"
   - "target/**/*"
