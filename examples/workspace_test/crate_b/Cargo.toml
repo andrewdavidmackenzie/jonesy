@@ -13,3 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 crate_c = { path = "../crate_c" }
+rand = "0.9"

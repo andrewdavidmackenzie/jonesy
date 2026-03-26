@@ -7,13 +7,14 @@ pub fn lib_function() {
     panic!("panic from multi_bin_lib");
 }
 
-#[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap on None
 pub fn lib_unwrap_none() {
-    let _: () = None.unwrap();
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let opt: Option<i32> = if rng.random_bool(0.0) { Some(42) } else { None };
+    // jonesy: expect panic unwrap on None
+    opt.unwrap();
 
     // Panic-free alternative: use if let, match, or unwrap_or
-    let opt: Option<i32> = None;
     if let Some(value) = opt {
         println!("Got value: {value}");
     }
@@ -21,13 +22,14 @@ pub fn lib_unwrap_none() {
     let _value = opt.unwrap_or_default();
 }
 
-#[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap on Err
 pub fn lib_unwrap_err() {
-    let _: () = Err("error").unwrap();
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let result: Result<i32, &str> = if rng.random_bool(0.0) { Ok(42) } else { Err("error") };
+    // jonesy: expect panic unwrap on Err
+    result.unwrap();
 
     // Panic-free alternative: use match or the ? operator
-    let result: Result<i32, &str> = Err("error");
     if let Ok(value) = result {
         println!("Got value: {value}");
     }
@@ -35,8 +37,8 @@ pub fn lib_unwrap_err() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect on None
 pub fn lib_expect_none() {
+    // jonesy: expect panic expect on None
     let _: () = None.expect("expected a value");
 
     // Panic-free alternative: use match
@@ -48,8 +50,8 @@ pub fn lib_expect_none() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect on Err
 pub fn lib_expect_err() {
+    // jonesy: expect panic expect on Err
     let _: () = Err("error").expect("expected ok");
 
     // Panic-free alternative: use match
@@ -61,8 +63,8 @@ pub fn lib_expect_err() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap_err on Ok
 pub fn lib_unwrap_err_on_ok() {
+    // jonesy: expect panic unwrap_err on Ok
     let _: &str = Ok::<i32, &str>(42).unwrap_err();
 
     // Panic-free alternative: use match
@@ -74,8 +76,8 @@ pub fn lib_unwrap_err_on_ok() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect_err on Ok
 pub fn lib_expect_err_on_ok() {
+    // jonesy: expect panic expect_err on Ok
     let _: &str = Ok::<i32, &str>(42).expect_err("expected an error");
 
     // Panic-free alternative: use if let
@@ -88,8 +90,8 @@ pub fn lib_expect_err_on_ok() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert failed
 pub fn lib_assert() {
+    // jonesy: expect panic assert failed
     assert!(false);
 
     // Panic-free alternative: use if
@@ -100,8 +102,8 @@ pub fn lib_assert() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert_eq failed
 pub fn lib_assert_eq() {
+    // jonesy: expect panic assert_eq failed
     assert_eq!(1, 2);
 
     // Panic-free alternative: use if
@@ -115,8 +117,8 @@ pub fn lib_assert_eq() {
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// jonesy: expect panic assert_ne failed
 pub fn lib_assert_ne() {
+    // jonesy: expect panic assert_ne failed
     assert_ne!(1, 1);
 
     // Panic-free alternative: use if
@@ -129,8 +131,8 @@ pub fn lib_assert_ne() {
     }
 }
 
-// jonesy: expect panic debug_assert failed (debug builds only)
 pub fn lib_debug_assert() {
+    // jonesy: expect panic debug_assert failed (debug builds only)
     debug_assert!(false);
 
     // Panic-free alternative: use if
@@ -140,8 +142,8 @@ pub fn lib_debug_assert() {
     }
 }
 
-// jonesy: expect panic debug_assert_eq failed
 pub fn lib_debug_assert_eq() {
+    // jonesy: expect panic debug_assert_eq failed
     debug_assert_eq!(1, 2);
 
     // Panic-free alternative: use if
@@ -155,8 +157,8 @@ pub fn lib_debug_assert_eq() {
 }
 
 #[allow(clippy::eq_op)]
-// jonesy: expect panic debug_assert_ne failed
 pub fn lib_debug_assert_ne() {
+    // jonesy: expect panic debug_assert_ne failed
     debug_assert_ne!(1, 1);
 
     // Panic-free alternative: use if
@@ -169,24 +171,24 @@ pub fn lib_debug_assert_ne() {
     }
 }
 
-// jonesy: expect panic unreachable reached
 pub fn lib_unreachable() {
+    // jonesy: expect panic unreachable reached
     unreachable!();
 }
 
-// jonesy: expect panic unimplemented reached
 pub fn lib_unimplemented() {
+    // jonesy: expect panic unimplemented reached
     unimplemented!();
 }
 
-// jonesy: expect panic todo reached
 pub fn lib_todo() {
+    // jonesy: expect panic todo reached
     todo!();
 }
 
 #[allow(unconditional_panic)]
-// jonesy: expect panic division by zero
 pub fn lib_divide_by_zero() {
+    // jonesy: expect panic division by zero
     let _ = 1 / 0;
 
     // Panic-free alternative: check divisor or use checked_div
@@ -213,8 +215,8 @@ pub fn lib_arithmetic_overflow() {
 }
 
 #[allow(arithmetic_overflow)]
-// jonesy: expect panic shift overflow
 pub fn lib_shift_overflow() {
+    // jonesy: expect panic shift overflow
     let _ = 1u32 << 33;
 
     // Panic-free alternative: validate shift amount or use checked_shl

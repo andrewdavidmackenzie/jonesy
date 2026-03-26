@@ -7,3 +7,6 @@ edition = "2024"
 name = "dylib_example"
 path = "src/lib.rs"
 crate-type = ["dylib"]
+
+[dependencies]
+rand = "0.9"

@@ -4,39 +4,39 @@ pub fn cause_a_panic() {
     // No panic-free alternative: explicit panic is intentional
 }
 
-#[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap on None
 pub fn cause_an_unwrap() {
-    let _: () = None.unwrap();
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let opt: Option<i32> = if rng.random_bool(0.0) { Some(42) } else { None };
+    // jonesy: expect panic unwrap on None
+    opt.unwrap();
 
     // Panic-free alternative: use if let, match, or unwrap_or
-    let opt: Option<i32> = None;
     if let Some(value) = opt {
         println!("Got value: {value}");
     }
-    // Or provide a default value
     let _value = opt.unwrap_or(0);
     let _value = opt.unwrap_or_default();
 }
 
-#[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap on Err
 pub fn cause_unwrap_err() {
-    let _: () = Err("error").unwrap();
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let result: Result<i32, &str> = if rng.random_bool(0.0) { Ok(42) } else { Err("error") };
+    // jonesy: expect panic unwrap on Err
+    result.unwrap();
 
     // Panic-free alternative: use if let, match, or the ? operator
-    let result: Result<i32, &str> = Err("error");
     if let Ok(value) = result {
         println!("Got value: {value}");
     }
-    // Or provide a default value
     let _value = result.unwrap_or(0);
     let _value = result.unwrap_or_default();
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect on None
 pub fn cause_expect_none() {
+    // jonesy: expect panic expect on None
     let _: () = None.expect("expected a value");
 
     // Panic-free alternative: use if let, match, or unwrap_or
@@ -48,8 +48,8 @@ pub fn cause_expect_none() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect on Err
 pub fn cause_expect_err() {
+    // jonesy: expect panic expect on Err
     let _: () = Err("error").expect("expected ok");
 
     // Panic-free alternative: use match or the ? operator in functions returning Result
@@ -61,8 +61,8 @@ pub fn cause_expect_err() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert failed
 pub fn cause_assert() {
+    // jonesy: expect panic assert failed
     assert!(false);
 
     // Panic-free alternative: use if/else to handle the condition
@@ -72,8 +72,8 @@ pub fn cause_assert() {
     }
 }
 
-// jonesy: expect panic debug_assert failed (debug builds only)
 pub fn cause_debug_assert() {
+    // jonesy: expect panic debug_assert failed (debug builds only)
     debug_assert!(false);
 
     // Panic-free alternative: use if to check condition (same as assert)
@@ -83,24 +83,24 @@ pub fn cause_debug_assert() {
     }
 }
 
-// jonesy: expect panic unreachable reached
 pub fn cause_unreachable() {
+    // jonesy: expect panic unreachable reached
     unreachable!();
 }
 
-// jonesy: expect panic unimplemented reached
 pub fn cause_unimplemented() {
+    // jonesy: expect panic unimplemented reached
     unimplemented!();
 }
 
-// jonesy: expect panic todo reached
 pub fn cause_todo() {
+    // jonesy: expect panic todo reached
     todo!();
 }
 
 #[allow(unconditional_panic)]
-// jonesy: expect panic division by zero
 pub fn cause_divide_by_zero() {
+    // jonesy: expect panic division by zero
     let _ = 1 / 0;
 
     // Panic-free alternative: check divisor before dividing
@@ -128,8 +128,8 @@ pub fn cause_arithmetic_overflow() {
 }
 
 #[allow(arithmetic_overflow)]
-// jonesy: expect panic shift overflow
 pub fn cause_shift_overflow() {
+    // jonesy: expect panic shift overflow
     let _ = 1u32 << 33;
 
     // Panic-free alternative: validate shift amount or use checked_shl
@@ -143,8 +143,8 @@ pub fn cause_shift_overflow() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic unwrap_err on Ok
 pub fn cause_unwrap_err_on_ok() {
+    // jonesy: expect panic unwrap_err on Ok
     let _: &str = Ok::<i32, &str>(42).unwrap_err();
 
     // Panic-free alternative: use match to handle both cases
@@ -156,8 +156,8 @@ pub fn cause_unwrap_err_on_ok() {
 }
 
 #[allow(clippy::unnecessary_literal_unwrap)]
-// jonesy: expect panic expect_err on Ok
 pub fn cause_expect_err_on_ok() {
+    // jonesy: expect panic expect_err on Ok
     let _: &str = Ok::<i32, &str>(42).expect_err("expected an error");
 
     // Panic-free alternative: use if let or match
@@ -170,8 +170,8 @@ pub fn cause_expect_err_on_ok() {
 }
 
 #[allow(clippy::assertions_on_constants)]
-// jonesy: expect panic assert_eq! failed
 pub fn cause_assert_eq() {
+    // jonesy: expect panic assert_eq! failed
     assert_eq!(1, 2);
 
     // Panic-free alternative: use if to check equality
@@ -185,8 +185,8 @@ pub fn cause_assert_eq() {
 }
 
 #[allow(clippy::assertions_on_constants, clippy::eq_op)]
-// jonesy: expect panic assert_ne! failed
 pub fn cause_assert_ne() {
+    // jonesy: expect panic assert_ne! failed
     assert_ne!(1, 1);
 
     // Panic-free alternative: use if to check inequality
@@ -199,8 +199,8 @@ pub fn cause_assert_ne() {
     }
 }
 
-// jonesy: expect panic debug_assert_eq! failed
 pub fn cause_debug_assert_eq() {
+    // jonesy: expect panic debug_assert_eq! failed
     debug_assert_eq!(1, 2);
 
     // Panic-free alternative: use if to check equality (same as assert_eq)
@@ -214,8 +214,8 @@ pub fn cause_debug_assert_eq() {
 }
 
 #[allow(clippy::eq_op)]
-// jonesy: expect panic debug_assert_ne! failed
 pub fn cause_debug_assert_ne() {
+    // jonesy: expect panic debug_assert_ne! failed
     debug_assert_ne!(1, 1);
 
     // Panic-free alternative: use if to check inequality (same as assert_ne)
@@ -230,6 +230,7 @@ pub fn cause_debug_assert_ne() {
 
 #[allow(clippy::useless_vec)]
 pub fn cause_slice_index_oob() {
+    // jonesy: expect panic capacity overflow from allocation
     let v = vec![1, 2, 3];
     // jonesy: expect panic index out of bounds
     let _ = v[10];

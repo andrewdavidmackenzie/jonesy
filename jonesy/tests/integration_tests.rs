@@ -120,12 +120,12 @@ fn paths_match(detected_path: &str, marker_path: &str) -> bool {
 }
 
 /// Check if a detected panic point has an expected marker nearby
-/// The marker comment can be on the same line, previous line, or up to 2 lines before
+/// The marker comment must be on the same line or the line immediately before the detection
 /// If the marker specifies a cause, it must match the detected cause
 fn has_nearby_marker(detected: &PanicPoint, markers: &[ExpectedMarker]) -> bool {
     markers.iter().any(|marker| {
         let location_matches = paths_match(&detected.file, &marker.file)
-            && (detected.line >= marker.line && detected.line <= marker.line + 2);
+            && (detected.line >= marker.line && detected.line <= marker.line + 1);
 
         if !location_matches {
             return false;
@@ -140,10 +140,11 @@ fn has_nearby_marker(detected: &PanicPoint, markers: &[ExpectedMarker]) -> bool 
 }
 
 /// Check if a marker has a nearby detected panic with matching cause
+/// Detection must be on the same line as the marker or the line immediately after it
 fn has_nearby_detection(marker: &ExpectedMarker, detected: &HashSet<PanicPoint>) -> bool {
     detected.iter().any(|p| {
         let location_matches = paths_match(&p.file, &marker.file)
-            && (p.line >= marker.line && p.line <= marker.line + 2);
+            && (p.line >= marker.line && p.line <= marker.line + 1);
 
         if !location_matches {
             return false;

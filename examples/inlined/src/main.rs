@@ -2,19 +2,21 @@
 // for inlined functions. When `run()` is inlined into `main()`, the
 // panic point should still report `run` as the function name, not `main`.
 
-// jonesy: expect panic
-#[allow(clippy::unnecessary_literal_unwrap)]
 #[inline(always)]
 fn run() {
-    let x: Option<i32> = None;
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let x: Option<i32> = if rng.random_bool(0.0) { Some(42) } else { None };
+    // jonesy: expect panic
     x.unwrap();
 }
 
-// jonesy: expect panic
-#[allow(clippy::unnecessary_literal_unwrap)]
 #[inline(always)]
 fn helper() {
-    let result: Result<i32, &str> = Err("error");
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let result: Result<i32, &str> = if rng.random_bool(0.0) { Ok(42) } else { Err("error") };
+    // jonesy: expect panic
     result.expect("should not fail");
 }
 

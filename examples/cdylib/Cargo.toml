@@ -7,3 +7,6 @@ edition = "2024"
 name = "cdylib_example"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+rand = "0.9"

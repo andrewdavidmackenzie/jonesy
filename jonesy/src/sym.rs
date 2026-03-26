@@ -214,6 +214,8 @@ fn is_dependency_path(file_path: &str) -> bool {
 
     // Rust stdlib and compiler-generated paths
     if file_path.contains("/rustc/")
+        || file_path.contains("/.rustup/toolchains/")
+        || file_path.contains("/rustlib/src/")
         || file_path.starts_with("/rust/deps/")
         || file_path.starts_with("library/")
     {
@@ -484,6 +486,13 @@ impl FullLineTable {
 
             if let Some(program) = &unit.line_program {
                 let mut rows = program.clone().rows();
+                // Track last crate entry to carry forward at crate→stdlib transitions.
+                // When inlined stdlib code (e.g., unwrap) appears, the DWARF line table
+                // switches from crate source to stdlib source. We emit a synthetic crate
+                // entry at the transition address so get_line() resolves to the call site
+                // rather than falling back to the function start.
+                let mut last_crate_line: Option<(u32, Option<u32>)> = None;
+                let mut last_was_crate = false;
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
@@ -539,6 +548,21 @@ impl FullLineTable {
                                 line,
                                 column,
                             });
+                            last_crate_line = Some((line, column));
+                            last_was_crate = true;
+                        } else {
+                            // Transition from crate to non-crate (stdlib): emit synthetic
+                            // crate entry at this address with the last crate line info
+                            if last_was_crate {
+                                if let Some((prev_line, prev_col)) = last_crate_line {
+                                    crate_entries.push(CrateLineEntry {
+                                        address: row.address(),
+                                        line: prev_line,
+                                        column: prev_col,
+                                    });
+                                }
+                            }
+                            last_was_crate = false;
                         }
                     }
                 }
@@ -3069,6 +3093,16 @@ mod tests {
         ));
         assert!(is_dependency_path("/rust/deps/std/src/lib.rs"));
         assert!(is_dependency_path("library/core/src/panicking.rs"));
+    }
+
+    #[test]
+    fn test_is_dependency_path_rustup_toolchain() {
+        assert!(is_dependency_path(
+            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs"
+        ));
+        assert!(is_dependency_path(
+            "/home/user/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs"
+        ));
     }
 
     #[test]

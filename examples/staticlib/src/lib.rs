@@ -11,9 +11,9 @@
 ///
 /// This function uses `#[no_mangle]` so it can be called from C code.
 /// The linker preserves it, and jonesy detects its panic points.
-// jonesy: expect panic
 #[no_mangle]
 pub extern "C" fn exported_function() {
+    // jonesy: expect panic
     panic!("exported panic - this WILL be detected");
 }
 
