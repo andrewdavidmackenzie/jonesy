@@ -173,6 +173,17 @@ impl ValidSourceFiles {
             }
         }
 
+        // Check if file_path ends with any of our valid files
+        // This handles paths like "examples/panic/src/main.rs" when we have "src/main.rs"
+        // The check requires matching on "/" boundary to avoid partial filename matches
+        for valid_file in &self.files {
+            // Build suffix to match: "/" + valid_file (e.g., "/src/main.rs")
+            let suffix = format!("/{}", valid_file);
+            if file_path.ends_with(&suffix) {
+                return true;
+            }
+        }
+
         // For absolute paths, check if they resolve to a file in our project
         // Use canonical path comparison to avoid false positives from suffix matching
         if let Some(project_root) = &self.project_root {
@@ -3164,4 +3175,113 @@ mod tests {
         let target = decode_branch_target(insn, 0x1000);
         assert_eq!(target, 0x1000);
     }
+
+    // ========================================================================
+    // Tests for dSYM detection and staleness
+    // ========================================================================
+
+    #[test]
+    fn test_is_dsym_stale_binary_newer() {
+        use std::fs;
+        use std::thread;
+        use std::time::Duration;
+
+        let temp_dir = std::env::temp_dir().join("jonesy_test_dsym_stale");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let binary_path = temp_dir.join("test_binary");
+        let dsym_path = temp_dir.join("test_binary.dSYM");
+
+        // Create dSYM first (older)
+        fs::write(&dsym_path, "fake dsym").unwrap();
+
+        // Wait a bit to ensure different timestamps
+        thread::sleep(Duration::from_millis(50));
+
+        // Create binary second (newer)
+        fs::write(&binary_path, "fake binary").unwrap();
+
+        // Binary is newer than dSYM, so dSYM is stale
+        assert!(
+            is_dsym_stale(&binary_path, &dsym_path),
+            "dSYM should be stale when binary is newer"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_is_dsym_stale_dsym_newer() {
+        use std::fs;
+        use std::thread;
+        use std::time::Duration;
+
+        let temp_dir = std::env::temp_dir().join("jonesy_test_dsym_fresh");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let binary_path = temp_dir.join("test_binary");
+        let dsym_path = temp_dir.join("test_binary.dSYM");
+
+        // Create binary first (older)
+        fs::write(&binary_path, "fake binary").unwrap();
+
+        // Wait a bit to ensure different timestamps
+        thread::sleep(Duration::from_millis(50));
+
+        // Create dSYM second (newer)
+        fs::write(&dsym_path, "fake dsym").unwrap();
+
+        // dSYM is newer than binary, so dSYM is not stale
+        assert!(
+            !is_dsym_stale(&binary_path, &dsym_path),
+            "dSYM should not be stale when dSYM is newer"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_is_dsym_stale_binary_not_found() {
+        use std::fs;
+
+        let temp_dir = std::env::temp_dir().join("jonesy_test_dsym_no_binary");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let binary_path = temp_dir.join("nonexistent_binary");
+        let dsym_path = temp_dir.join("test.dSYM");
+
+        // Create dSYM but not binary
+        fs::write(&dsym_path, "fake dsym").unwrap();
+
+        // When binary doesn't exist, function returns false (can't check)
+        assert!(
+            !is_dsym_stale(&binary_path, &dsym_path),
+            "Should return false when binary doesn't exist"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_is_dsym_stale_dsym_not_found() {
+        use std::fs;
+
+        let temp_dir = std::env::temp_dir().join("jonesy_test_dsym_no_dsym");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let binary_path = temp_dir.join("test_binary");
+        let dsym_path = temp_dir.join("nonexistent.dSYM");
+
+        // Create binary but not dSYM
+        fs::write(&binary_path, "fake binary").unwrap();
+
+        // When dSYM doesn't exist, function returns true (needs regeneration)
+        assert!(
+            is_dsym_stale(&binary_path, &dsym_path),
+            "Should return true when dSYM doesn't exist"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
 }
