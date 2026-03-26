@@ -41,10 +41,10 @@ jobs:
       # Test 1: Basic analysis with local jonesy binary
       - name: Test basic analysis
         id: basic-test
-        working-directory: .
+        working-directory: examples/panic
         run: |
-          # Run jonesy on the panic example
-          output=$(./target/debug/jonesy --bin target/debug/panic --no-hyperlinks 2>&1) || true
+          # Run jonesy on the panic example (auto-discovers binary in target/debug/)
+          output=$(../../target/debug/jonesy --no-hyperlinks 2>&1) || true
           echo "$output"
 
           # Verify we found panic points
