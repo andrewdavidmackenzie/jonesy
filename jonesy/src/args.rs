@@ -777,11 +777,7 @@ fn extract_bin_arg<'a>(args: &[&'a String]) -> Result<&'a str, String> {
 ///
 /// Returns the binary path if found, None otherwise.
 /// Handles hyphen/underscore normalization (e.g., "my-bin" matches "my_bin").
-fn find_bin_in_manifest(
-    bin_name: &str,
-    manifest: &Manifest,
-    target_dir: &Path,
-) -> Option<PathBuf> {
+fn find_bin_in_manifest(bin_name: &str, manifest: &Manifest, target_dir: &Path) -> Option<PathBuf> {
     // Check [[bin]] targets
     for bin in &manifest.bin {
         let manifest_bin_name = bin
@@ -974,12 +970,14 @@ fn parse_lib_args(args: &[&String]) -> Result<Vec<PathBuf>, String> {
 
     let lib_name = get_lib_name(&manifest).ok_or("Cannot determine library name")?;
 
-    find_lib_in_target(&lib_name, &target_dir).map(|p| vec![p]).ok_or_else(|| {
-        format!(
-            "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
-            lib_name
-        )
-    })
+    find_lib_in_target(&lib_name, &target_dir)
+        .map(|p| vec![p])
+        .ok_or_else(|| {
+            format!(
+                "Library 'lib{}' not found in target/debug/. Run 'cargo build' first.",
+                lib_name
+            )
+        })
 }
 
 #[cfg(test)]

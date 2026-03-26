@@ -2693,9 +2693,7 @@ mod tests {
         let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
 
         assert_eq!(result.len(), 2);
-        assert!(result
-            .keys()
-            .all(|uri| !uri.path().contains("/target/")));
+        assert!(result.keys().all(|uri| !uri.path().contains("/target/")));
     }
 
     #[test]
