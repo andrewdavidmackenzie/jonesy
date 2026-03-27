@@ -875,12 +875,13 @@ impl JonesyLspServer {
     /// This is for indirect panics where the panic originates in a called function.
     fn create_called_function_allow_action(
         called_function: &str,
+        cause: &str,
         workspace_root: &Path,
         diagnostic: &Diagnostic,
     ) -> Option<CodeAction> {
-        let title = format!("Allow panics on calls to '{called_function}()'");
+        let title = format!("Allow '{cause}' on calls to '{called_function}()'");
         let rule_text =
-            format!("\n[[rules]]\nfunction = \"*::{called_function}\"\nallow = [\"*\"]\n");
+            format!("\n[[rules]]\nfunction = \"*::{called_function}\"\nallow = [\"{cause}\"]\n");
 
         let jonesy_toml_path = workspace_root.join("jonesy.toml");
         let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
@@ -1446,7 +1447,16 @@ impl LanguageServer for JonesyLspServer {
                             }
                         }
 
-                        // Action 4: Allow in module (tests, benches, examples)
+                        // Action 4: Allow this cause on calls to called function
+                        if let Some(ref called_fn) = called_function {
+                            if let Some(action) = Self::create_called_function_allow_action(
+                                called_fn, cause, root, diag,
+                            ) {
+                                actions.push(CodeActionOrCommand::CodeAction(action));
+                            }
+                        }
+
+                        // Action 5: Allow in module (tests, benches, examples)
                         if let Some(action) = Self::create_module_allow_action(
                             &params.text_document.uri,
                             cause,
@@ -1456,20 +1466,8 @@ impl LanguageServer for JonesyLspServer {
                             actions.push(CodeActionOrCommand::CodeAction(action));
                         }
 
-                        // Action 5: Allow in this crate (global allow)
+                        // Action 6: Allow in this crate (global allow)
                         if let Some(action) = Self::create_crate_allow_action(cause, root, diag) {
-                            actions.push(CodeActionOrCommand::CodeAction(action));
-                        }
-                    }
-                }
-
-                // Action 6: Allow all panics on calls to called function
-                // (outside cause loop since it uses wildcard allow, not cause-specific)
-                if let Some(ref root) = workspace_root {
-                    if let Some(ref called_fn) = called_function {
-                        if let Some(action) =
-                            Self::create_called_function_allow_action(called_fn, root, diag)
-                        {
                             actions.push(CodeActionOrCommand::CodeAction(action));
                         }
                     }
@@ -2593,13 +2591,40 @@ mod tests {
 
         let action = JonesyLspServer::create_called_function_allow_action(
             "Config::parse",
+            "expect",
             &workspace_root,
             &diagnostic,
         )
         .unwrap();
 
-        assert_eq!(action.title, "Allow panics on calls to 'Config::parse()'");
+        assert_eq!(action.title, "Allow 'expect' on calls to 'Config::parse()'");
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+        // Verify the generated config rule uses the specific cause, not wildcard
+        let edit = action.edit.unwrap();
+        let changes = edit.document_changes.unwrap();
+        if let DocumentChanges::Operations(ops) = changes {
+            let has_correct_rule = ops.iter().any(|op| {
+                if let DocumentChangeOperation::Edit(text_edit) = op {
+                    text_edit.edits.iter().any(|e| {
+                        if let OneOf::Left(te) = e {
+                            te.new_text.contains("function = \"*::Config::parse\"")
+                                && te.new_text.contains("allow = [\"expect\"]")
+                        } else {
+                            false
+                        }
+                    })
+                } else {
+                    false
+                }
+            });
+            assert!(
+                has_correct_rule,
+                "Rule should use specific cause 'expect', not wildcard"
+            );
+        } else {
+            panic!("Expected Operations variant");
+        }
     }
 
     #[test]

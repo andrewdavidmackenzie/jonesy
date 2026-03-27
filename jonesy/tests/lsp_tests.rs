@@ -725,35 +725,45 @@ fn test_lsp_code_action_called_function_allow() {
     let result = response.get("result").expect("No result");
     let actions = result.as_array().expect("Result is not an array");
 
-    // Should have the called-function allow action
-    let has_called_fn_action = actions.iter().any(|action| {
+    // Should have the called-function allow action with specific cause
+    let called_fn_action = actions.iter().find(|action| {
         action
             .get("title")
             .and_then(|t| t.as_str())
-            .map(|t| t.contains("Allow panics on calls to 'Config::parse()'"))
+            .map(|t| t.contains("Config::parse"))
             .unwrap_or(false)
     });
 
     assert!(
-        has_called_fn_action,
-        "Should have 'Allow panics on calls to Config::parse()' action. Actions: {actions:?}",
+        called_fn_action.is_some(),
+        "Should have called-function allow action. Actions: {actions:?}",
     );
 
-    // Verify there's exactly one such action (not duplicated per cause)
-    let called_fn_count = actions
-        .iter()
-        .filter(|action| {
-            action
-                .get("title")
-                .and_then(|t| t.as_str())
-                .map(|t| t.contains("Config::parse"))
-                .unwrap_or(false)
-        })
-        .count();
-
+    let action = called_fn_action.unwrap();
+    let title = action["title"].as_str().unwrap();
     assert_eq!(
-        called_fn_count, 1,
-        "Called-function action should appear exactly once, found {called_fn_count}"
+        title, "Allow 'unwrap' on calls to 'Config::parse()'",
+        "Title should include the specific cause, not wildcard"
+    );
+
+    // Verify the generated config rule uses the specific cause
+    let edit = &action["edit"]["documentChanges"];
+    let edit_ops = edit.as_array().unwrap();
+    let has_correct_rule = edit_ops.iter().any(|op| {
+        op.get("edits")
+            .and_then(|e| e.as_array())
+            .map(|edits| {
+                edits.iter().any(|e| {
+                    let text = e.get("newText").and_then(|t| t.as_str()).unwrap_or("");
+                    text.contains("function = \"*::Config::parse\"")
+                        && text.contains("allow = [\"unwrap\"]")
+                })
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        has_correct_rule,
+        "Config rule should allow specific cause 'unwrap', not wildcard"
     );
 
     client.shutdown();
