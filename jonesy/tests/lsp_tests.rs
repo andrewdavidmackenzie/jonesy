@@ -660,6 +660,106 @@ fn test_lsp_code_action_with_diagnostic() {
 }
 
 #[test]
+fn test_lsp_code_action_called_function_allow() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Create a mock diagnostic for an indirect panic (called_function present)
+    let main_rs = workspace_root.join("jonesy/src/main.rs");
+    let mock_diagnostic = json!({
+        "range": {
+            "start": {"line": 10, "character": 0},
+            "end": {"line": 10, "character": 20}
+        },
+        "severity": 2,
+        "source": "jonesy",
+        "message": "panic point: unwrap() on None",
+        "data": {
+            "causes": ["unwrap"],
+            "function": "run",
+            "file": "src/main.rs",
+            "called_function": "parse_config",
+            "is_direct_panic": false
+        }
+    });
+
+    // Request code actions with the diagnostic
+    let response = client
+        .send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {
+                    "uri": format!("file://{}", main_rs.display())
+                },
+                "range": {
+                    "start": {"line": 10, "character": 0},
+                    "end": {"line": 10, "character": 20}
+                },
+                "context": {
+                    "diagnostics": [mock_diagnostic]
+                }
+            }),
+        )
+        .expect("Code action request failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Code action failed: {:?}",
+        response
+    );
+
+    let result = response.get("result").expect("No result");
+    let actions = result.as_array().expect("Result is not an array");
+
+    // Should have the called-function allow action
+    let has_called_fn_action = actions.iter().any(|action| {
+        action
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(|t| t.contains("Allow panics on calls to 'parse_config()'"))
+            .unwrap_or(false)
+    });
+
+    assert!(
+        has_called_fn_action,
+        "Should have 'Allow panics on calls to parse_config()' action. Actions: {actions:?}",
+    );
+
+    // Verify there's exactly one such action (not duplicated per cause)
+    let called_fn_count = actions
+        .iter()
+        .filter(|action| {
+            action
+                .get("title")
+                .and_then(|t| t.as_str())
+                .map(|t| t.contains("parse_config"))
+                .unwrap_or(false)
+        })
+        .count();
+
+    assert_eq!(
+        called_fn_count, 1,
+        "Called-function action should appear exactly once, found {called_fn_count}"
+    );
+
+    client.shutdown();
+}
+
+#[test]
 fn test_lsp_execute_command_analyze() {
     let workspace_root = find_workspace_root();
     let panic_example = workspace_root.join("examples/panic");
