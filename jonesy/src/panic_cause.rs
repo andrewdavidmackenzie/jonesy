@@ -316,6 +316,8 @@ impl PanicCause {
         }
 
         let func = called_function.unwrap();
+        // Extract just the last segment for try_ suggestions (e.g., "my_crate::foo" -> "foo")
+        let short_func = func.rsplit("::").next().unwrap_or(func);
         match self {
             PanicCause::ExplicitPanic => {
                 format!("This calls `{func}` which may panic. Review `{func}` or handle errors")
@@ -338,12 +340,12 @@ impl PanicCause {
             }
             PanicCause::UnwrapNone | PanicCause::UnwrapErr => {
                 format!(
-                    "This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{func})"
+                    "This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{short_func})"
                 )
             }
             PanicCause::ExpectNone | PanicCause::ExpectErr => {
                 format!(
-                    "This calls `{func}` which may call expect(). Consider a fallible alternative (e.g., try_{func})"
+                    "This calls `{func}` which may call expect(). Consider a fallible alternative (e.g., try_{short_func})"
                 )
             }
             PanicCause::AssertFailed => {

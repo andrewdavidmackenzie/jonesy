@@ -2268,6 +2268,7 @@ fn parse_function_die<R: Reader>(
     entry: &DebuggingInformationEntry<R>,
 ) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
     let mut name: Option<String> = None;
+    let mut has_linkage_name = false;
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
     let mut high_pc_is_offset = false;
@@ -2279,14 +2280,18 @@ fn parse_function_die<R: Reader>(
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_name => {
-                if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                // Only use DW_AT_name as fallback if no linkage name was found
+                if !has_linkage_name {
+                    if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
+                        name = Some(s.to_string_lossy()?.into_owned());
+                    }
                 }
             }
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer mangled name if available
+                // Prefer linkage name (mangled) — contains full qualified path
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
                     name = Some(s.to_string_lossy()?.into_owned());
+                    has_linkage_name = true;
                 }
             }
             gimli::DW_AT_low_pc => {

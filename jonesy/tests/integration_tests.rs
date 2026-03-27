@@ -813,19 +813,19 @@ fn test_scoped_rules() {
     // Run without config to get baseline
     let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
-    // Verify baseline actually detects the explicit panic at main.rs:9
+    // Verify baseline actually detects the explicit panic at main.rs:10
     assert!(
         baseline_detected
             .iter()
-            .any(|p| p.file.contains("main.rs") && p.line == 9),
-        "Baseline should include explicit panic!() at main.rs:9"
+            .any(|p| p.file.contains("main.rs") && p.line == 10),
+        "Baseline should include explicit panic!() at main.rs:10"
     );
 
     // Run with scoped config that allows "panic" cause in **/main.rs
     let (scoped_exit_code, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
 
     // The scoped config should result in fewer detected panics
-    // (the explicit panic!() at main.rs:9 should be filtered)
+    // (the explicit panic!() at main.rs:10 should be filtered)
     assert!(
         scoped_exit_code < baseline_exit_code,
         "Scoped rules should filter some panics: baseline={}, with_scoped_rules={}",
@@ -839,13 +839,13 @@ fn test_scoped_rules() {
         "Scoped-filtered panics should be a subset of baseline panics"
     );
 
-    // Verify that main.rs:9 (the explicit panic!) is NOT in the filtered results
+    // Verify that main.rs:10 (the explicit panic!) is NOT in the filtered results
     let explicit_panic_filtered = !scoped_detected
         .iter()
-        .any(|p| p.file.contains("main.rs") && p.line == 9);
+        .any(|p| p.file.contains("main.rs") && p.line == 10);
     assert!(
         explicit_panic_filtered,
-        "Scoped rule should filter explicit panic!() at main.rs:9"
+        "Scoped rule should filter explicit panic!() at main.rs:10"
     );
 
     // Other panic types in main.rs should still be reported
@@ -1539,5 +1539,71 @@ fn test_problem_matcher_regex() {
          Tested {} lines, none matched. Sample: {:?}",
         panic_lines.len(),
         panic_lines.first()
+    );
+}
+
+/// Test that a config rule with a fully qualified function name suppresses panics
+/// for calls to that function, but not calls to an identically named function
+/// in a different module.
+///
+/// Uses `panic::module::cause_expect_none` (allowed by config) and
+/// `panic::module2::cause_expect_none` (NOT allowed, still reported).
+#[test]
+fn test_called_function_allow_distinguishes_modules() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+    let config_path = workspace_root
+        .join("jonesy")
+        .join("tests")
+        .join("test_called_function_allow.toml");
+
+    // Run without config to get baseline
+    let (_, baseline_detected) = run_jones_on_example(&example_dir);
+
+    // Both module::cause_expect_none and module2::cause_expect_none should be in baseline
+    // main.rs:23 calls module::cause_expect_none (expect on None)
+    // main.rs:92 calls module2::cause_expect_none (expect on None)
+    let module1_expect = baseline_detected
+        .iter()
+        .any(|p| p.file.contains("main.rs") && p.line == 23);
+    let module2_expect = baseline_detected
+        .iter()
+        .any(|p| p.file.contains("main.rs") && p.line == 92);
+
+    assert!(
+        module1_expect,
+        "Baseline should include expect panic at main.rs:23 (module::cause_expect_none)"
+    );
+    assert!(
+        module2_expect,
+        "Baseline should include expect panic at main.rs:92 (module2::cause_expect_none)"
+    );
+
+    // Run with config that allows "expect" on panic::module::cause_expect_none
+    let (_, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
+
+    // module::cause_expect_none (main.rs:23): "expect" cause should be removed,
+    // but other causes like "format" may still keep the point present
+    let module1_expect_cause = scoped_detected
+        .iter()
+        .find(|p| p.file.contains("main.rs") && p.line == 23)
+        .map(|p| p.causes.contains(&"expect".to_string()))
+        .unwrap_or(false);
+
+    // module2::cause_expect_none (main.rs:92): "expect" cause should still be there
+    let module2_expect_cause = scoped_detected
+        .iter()
+        .find(|p| p.file.contains("main.rs") && p.line == 92)
+        .map(|p| p.causes.contains(&"expect".to_string()))
+        .unwrap_or(false);
+
+    assert!(
+        !module1_expect_cause,
+        "Config rule for panic::module::cause_expect_none should remove 'expect' cause from main.rs:23"
+    );
+    assert!(
+        module2_expect_cause,
+        "Config rule should NOT remove 'expect' from main.rs:92 (module2::cause_expect_none)"
     );
 }

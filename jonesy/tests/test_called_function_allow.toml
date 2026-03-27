@@ -1,0 +1,8 @@
+# Test config: allow "expect" on calls to panic::module::cause_expect_none
+# This should suppress the expect panic at main.rs:23 (call to module::cause_expect_none)
+# but NOT the expect panic at main.rs:92 (call to module2::cause_expect_none)
+# because the functions have the same simple name but different fully qualified names.
+
+[[rules]]
+function = "panic::module::cause_expect_none"
+allow = ["expect"]
