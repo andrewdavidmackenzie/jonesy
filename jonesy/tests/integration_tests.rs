@@ -982,6 +982,11 @@ fn test_rlib_conditional_panic_detection() {
 /// When stdlib code like unwrap() is inlined, jonesy should still report
 /// the source line where the call was written, not the function definition line.
 /// This tests the "simple" pattern from issue #202.
+///
+/// Uses the standard marker-based test which verifies that every `// jonesy: expect panic`
+/// marker has a detection within ±1 line. This catches the function-start-line bug
+/// because markers are placed on the line before the panic call, so a detection at
+/// the function definition line (several lines away) would not match.
 #[test]
 fn test_simple_panic_line_detection() {
     setup();
