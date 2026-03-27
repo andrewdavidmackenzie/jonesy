@@ -429,6 +429,79 @@ impl FullLineTable {
         }
     }
 
+    /// Find the best crate-source line for a call site where stdlib code is inlined.
+    ///
+    /// When stdlib code (like `unwrap()`) is inlined into a crate function,
+    /// the DWARF line table at the call instruction address points to the stdlib
+    /// source (e.g., `option.rs:1014`), not the crate source line where the call
+    /// was written. This method finds a better line by:
+    ///
+    /// 1. First searching backward from the call site for the nearest crate-source
+    ///    entry (handles cases where there's a crate entry just before the inlined code).
+    /// 2. If backward search only finds the function-start line, searches forward
+    ///    to find the next crate-source entry after the inlined code and reports the
+    ///    line just before it (typically the line containing the actual call expression).
+    ///
+    /// The search is bounded by `func_start`/`func_end` to avoid crossing function
+    /// boundaries.
+    pub fn get_nearest_crate_line(
+        &self,
+        addr: u64,
+        func_start: u64,
+        func_end: u64,
+        func_start_line: Option<u32>,
+        crate_src_path: &str,
+    ) -> (Option<u32>, Option<u32>) {
+        // Find entries up to and including addr
+        let end_idx = self.entries.partition_point(|e| e.address <= addr);
+        if end_idx == 0 {
+            return (None, None);
+        }
+
+        // Search backward from the call site for the nearest crate-source entry
+        for i in (0..end_idx).rev() {
+            let entry = &self.entries[i];
+            if entry.address < func_start {
+                break;
+            }
+            if let Some(file) = self.file_pool.get(entry.file_id as usize) {
+                if matches_crate_pattern(file, crate_src_path) && entry.line > 0 {
+                    // Found a crate entry, but if it's just the function start,
+                    // try searching forward for a better line
+                    if func_start_line.is_some_and(|fl| entry.line == fl) {
+                        break; // Fall through to forward search
+                    }
+                    return (Some(entry.line), entry.column);
+                }
+            }
+        }
+
+        // Backward search only found the function start. Search forward from
+        // the call site to find the next crate-source entry (typically the
+        // function epilogue / closing brace). The line just before that is
+        // likely where the actual call expression is.
+        for i in end_idx..self.entries.len() {
+            let entry = &self.entries[i];
+            if entry.address >= func_end {
+                break;
+            }
+            if let Some(file) = self.file_pool.get(entry.file_id as usize) {
+                if matches_crate_pattern(file, crate_src_path) && entry.line > 0 {
+                    // Found the next crate entry (e.g., closing brace).
+                    // The call is on the line before the epilogue.
+                    if let Some(func_line) = func_start_line {
+                        if entry.line > func_line + 1 {
+                            return (Some(entry.line - 1), None);
+                        }
+                    }
+                    return (Some(entry.line), entry.column);
+                }
+            }
+        }
+
+        (None, None)
+    }
+
     /// Get the number of entries
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -1915,8 +1988,36 @@ fn process_instruction_data_with_crate_table<'a>(
             if let Some(table) = crate_line_table {
                 let (crate_line, crate_column) = table.get_line(func.start_address, data.address);
                 if crate_line.is_some() {
-                    line = crate_line;
-                    column = crate_column;
+                    // If the crate line table only found the function-start line,
+                    // try the full line table as a fallback. When stdlib code is
+                    // inlined (e.g., unwrap()), the DWARF line entries at the call
+                    // address point to stdlib source, so the crate line table only
+                    // has the function definition entry. The full line table can
+                    // find the nearest crate-source line by searching backward.
+                    if crate_line == func_line {
+                        if let Some(crate_path) = crate_src_path {
+                            let (full_line, full_column) = full_line_table.get_nearest_crate_line(
+                                data.address,
+                                func.start_address,
+                                func.end_address,
+                                func_line,
+                                crate_path,
+                            );
+                            if full_line.is_some() && full_line != func_line {
+                                line = full_line;
+                                column = full_column;
+                            } else {
+                                line = crate_line;
+                                column = crate_column;
+                            }
+                        } else {
+                            line = crate_line;
+                            column = crate_column;
+                        }
+                    } else {
+                        line = crate_line;
+                        column = crate_column;
+                    }
                 }
             }
         }
