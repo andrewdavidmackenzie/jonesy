@@ -435,10 +435,14 @@ fn setup() {
             .expect("Failed to build jonesy");
         assert!(status.success(), "Failed to build jonesy");
 
-        // Build all examples
+        // Build all example binaries without coverage instrumentation.
+        // Coverage flags (via RUSTFLAGS) would alter DWARF output and cause
+        // detection differences. We only need coverage on jonesy itself.
         let status = Command::new("cargo")
-            .arg("build")
+            .args(["build", "--workspace", "--exclude", "jonesy"])
             .current_dir(&workspace_root)
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status()
             .expect("Failed to build examples");
         assert!(status.success(), "Failed to build examples");
@@ -632,10 +636,12 @@ fn test_workspace_test_example() {
     let workspace_root = find_workspace_root();
     let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-    // Build the nested workspace first
+    // Build the nested workspace without coverage instrumentation
     let status = Command::new("cargo")
         .arg("build")
         .current_dir(&workspace_test_dir)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .status()
         .expect("Failed to build workspace_test");
     assert!(status.success(), "Failed to build workspace_test");
@@ -1023,10 +1029,12 @@ fn test_inlined_function_names() {
     let workspace_root = find_workspace_root();
     let example_dir = workspace_root.join("examples").join("inlined");
 
-    // Build the example
+    // Build the example without coverage instrumentation
     let build_status = Command::new("cargo")
         .args(["build"])
         .current_dir(&example_dir)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1339,6 +1347,8 @@ fn test_dsym_auto_generation() {
         .args(["build", "--target-dir"])
         .arg(&dsym_target)
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
