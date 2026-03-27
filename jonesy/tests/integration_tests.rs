@@ -193,6 +193,32 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
                 .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
         });
 
+    // Debug: Check if the expected binary exists at the workspace root target dir
+    let workspace_root = find_workspace_root();
+    let ws_target = workspace_root.join("target").join("debug");
+    if let Ok(entries) = std::fs::read_dir(&ws_target) {
+        let bins: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                !name.starts_with('.') && !name.contains('-') && e.path().is_file()
+            })
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        eprintln!(
+            "Debug: workspace target/debug binaries: {:?} (for {})",
+            bins,
+            example_dir.display()
+        );
+    }
+    // Check if example has its own target dir
+    let example_target = example_dir.join("target").join("debug");
+    eprintln!(
+        "Debug: example target/debug exists: {} ({})",
+        example_target.exists(),
+        example_dir.display()
+    );
+
     // Run jonesy from the example directory with timeout
     let mut child = Command::new(&jones_binary)
         .args(extra_args)
