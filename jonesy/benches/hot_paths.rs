@@ -19,8 +19,6 @@ use goblin::mach::Mach::Binary;
 #[cfg(target_os = "macos")]
 use jonesy::analysis::analyze_macho;
 #[cfg(target_os = "macos")]
-use jonesy::heuristics::PANIC_SYMBOL_PATTERNS;
-#[cfg(target_os = "macos")]
 use jonesy::args::OutputFormat;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{
@@ -29,6 +27,8 @@ use jonesy::call_tree::{
 };
 #[cfg(target_os = "macos")]
 use jonesy::config::Config;
+#[cfg(target_os = "macos")]
+use jonesy::heuristics::PANIC_SYMBOL_PATTERNS;
 #[cfg(target_os = "macos")]
 use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
