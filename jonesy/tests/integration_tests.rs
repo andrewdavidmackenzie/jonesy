@@ -208,6 +208,18 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
             let exit_code = status.code().unwrap_or(-1);
             let output = child.wait_with_output().expect("Failed to get output");
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                eprintln!("jonesy stderr ({}):\n{}", example_dir.display(), stderr);
+            }
+            if exit_code == 255 {
+                eprintln!(
+                    "jonesy exited with 255 on {}. stdout ({} bytes):\n{}",
+                    example_dir.display(),
+                    stdout.len(),
+                    &stdout[..stdout.len().min(2000)]
+                );
+            }
             (exit_code, parse_jones_output(&stdout))
         }
         None => {
@@ -251,8 +263,18 @@ fn run_jonesy_raw_output(example_dir: &Path, extra_args: &[&str]) -> String {
         .expect("Failed to spawn jonesy");
 
     match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
-        Some(_status) => {
+        Some(status) => {
+            let exit_code = status.code().unwrap_or(-1);
             let output = child.wait_with_output().expect("Failed to get output");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                eprintln!(
+                    "jonesy raw stderr (exit={}, {}):\n{}",
+                    exit_code,
+                    example_dir.display(),
+                    stderr
+                );
+            }
             String::from_utf8_lossy(&output.stdout).to_string()
         }
         None => {
