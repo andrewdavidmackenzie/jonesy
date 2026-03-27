@@ -2592,13 +2592,13 @@ mod tests {
         let workspace_root = PathBuf::from("/workspace");
 
         let action = JonesyLspServer::create_called_function_allow_action(
-            "parse_config",
+            "Config::parse",
             &workspace_root,
             &diagnostic,
         )
         .unwrap();
 
-        assert_eq!(action.title, "Allow panics on calls to 'parse_config()'");
+        assert_eq!(action.title, "Allow panics on calls to 'Config::parse()'");
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
     }
 

@@ -692,7 +692,7 @@ fn test_lsp_code_action_called_function_allow() {
             "causes": ["unwrap"],
             "function": "run",
             "file": "src/main.rs",
-            "called_function": "parse_config",
+            "called_function": "Config::parse",
             "is_direct_panic": false
         }
     });
@@ -730,13 +730,13 @@ fn test_lsp_code_action_called_function_allow() {
         action
             .get("title")
             .and_then(|t| t.as_str())
-            .map(|t| t.contains("Allow panics on calls to 'parse_config()'"))
+            .map(|t| t.contains("Allow panics on calls to 'Config::parse()'"))
             .unwrap_or(false)
     });
 
     assert!(
         has_called_fn_action,
-        "Should have 'Allow panics on calls to parse_config()' action. Actions: {actions:?}",
+        "Should have 'Allow panics on calls to Config::parse()' action. Actions: {actions:?}",
     );
 
     // Verify there's exactly one such action (not duplicated per cause)
@@ -746,7 +746,7 @@ fn test_lsp_code_action_called_function_allow() {
             action
                 .get("title")
                 .and_then(|t| t.as_str())
-                .map(|t| t.contains("parse_config"))
+                .map(|t| t.contains("Config::parse"))
                 .unwrap_or(false)
         })
         .count();
