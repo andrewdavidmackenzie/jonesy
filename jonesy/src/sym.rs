@@ -1,6 +1,7 @@
 #![allow(unused_variables)] // TODO Just for now
 #![allow(dead_code)] // TODO Just for now
 
+use crate::heuristics::is_dependency_path;
 use capstone::arch::BuildsCapstone;
 use capstone::{Capstone, Insn, arch};
 use dashmap::DashMap;
@@ -202,36 +203,6 @@ impl ValidSourceFiles {
 
         false
     }
-}
-
-/// Check if a file path is from a dependency or stdlib, not user code.
-/// These paths should never be reported as user crate panic points.
-fn is_dependency_path(file_path: &str) -> bool {
-    // Cargo registry dependencies (absolute paths)
-    if file_path.contains(".cargo/registry/") || file_path.contains(".cargo\\registry\\") {
-        return true;
-    }
-
-    // Rust stdlib and compiler-generated paths
-    if file_path.contains("/rustc/")
-        || file_path.contains("/.rustup/toolchains/")
-        || file_path.contains("/rustlib/src/")
-        || file_path.starts_with("/rust/deps/")
-        || file_path.starts_with("library/")
-    {
-        return true;
-    }
-
-    // Internal/generated paths from dependencies (common patterns)
-    // These use relative src/ paths that would match "src/" pattern for single-crate projects
-    // The __ prefixes are used by macro-generated code in crates like objc2
-    // Use segment-boundary checks to avoid false positives on user dirs like /Users/__myuser__/
-    if file_path.contains("/__/") || file_path.starts_with("__") || file_path.starts_with("src/__")
-    {
-        return true;
-    }
-
-    false
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -3072,51 +3043,6 @@ mod tests {
         assert!(!matches_crate_pattern("src/main.rs", ""));
         // Pattern with empty segments should work
         assert!(matches_crate_pattern("src/main.rs", "|src/|"));
-    }
-
-    // Tests for is_dependency_path
-    #[test]
-    fn test_is_dependency_path_cargo_registry() {
-        assert!(is_dependency_path(
-            "/home/user/.cargo/registry/src/crate/lib.rs"
-        ));
-        assert!(is_dependency_path(
-            "C:\\Users\\user\\.cargo\\registry\\src\\crate\\lib.rs"
-        ));
-    }
-
-    #[test]
-    fn test_is_dependency_path_rustc() {
-        assert!(is_dependency_path(
-            "/rustc/abc123/library/core/src/option.rs"
-        ));
-        assert!(is_dependency_path("/rust/deps/std/src/lib.rs"));
-        assert!(is_dependency_path("library/core/src/panicking.rs"));
-    }
-
-    #[test]
-    fn test_is_dependency_path_rustup_toolchain() {
-        assert!(is_dependency_path(
-            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs"
-        ));
-        assert!(is_dependency_path(
-            "/home/user/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs"
-        ));
-    }
-
-    #[test]
-    fn test_is_dependency_path_generated() {
-        assert!(is_dependency_path("/__/generated/code.rs"));
-        assert!(is_dependency_path("__framework/src/lib.rs"));
-        assert!(is_dependency_path("src/__generated.rs"));
-    }
-
-    #[test]
-    fn test_is_dependency_path_user_code() {
-        // User code should not be detected as dependency
-        assert!(!is_dependency_path("src/main.rs"));
-        assert!(!is_dependency_path("/home/user/project/src/lib.rs"));
-        assert!(!is_dependency_path("crate_a/src/module.rs"));
     }
 
     // Tests for ValidSourceFiles

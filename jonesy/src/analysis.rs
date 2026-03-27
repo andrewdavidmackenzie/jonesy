@@ -10,6 +10,10 @@ use crate::call_tree::{
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
+use crate::heuristics::{
+    ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS,
+    is_library_dependency_path, is_stdlib_function,
+};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
     find_all_symbols_matching, find_symbol_address, find_symbol_containing, load_debug_info,
@@ -24,50 +28,6 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-
-/// Panic symbol patterns to search for, in order of preference.
-/// For binaries, rust_panic$ is the root. For libraries, we look for
-/// the functions that call into the panic runtime.
-pub const PANIC_SYMBOL_PATTERNS: &[&str] = &[
-    "rust_panic$",        // Main panic entry point (binaries)
-    "panic_fmt$",         // Core panic formatting (libraries)
-    "panic_display",      // Panic display helper
-    "slice_index_fail",   // Slice indexing panics (vec[i] where i >= len)
-    "str_index_overflow", // String slice boundary panics
-];
-
-/// Abort symbol patterns to search for.
-/// Some error paths (like OOM) go through abort() instead of panic.
-pub const ABORT_SYMBOL_PATTERNS: &[&str] = &[
-    "std::process::abort", // Main abort function (demangled name)
-];
-
-/// Panic symbol name patterns to search for in library call graphs.
-/// These are the demangled names of functions that indicate panic.
-pub const LIBRARY_PANIC_PATTERNS: &[&str] = &[
-    // Direct panic functions
-    "core::panicking::panic",
-    "core::panicking::panic_fmt",
-    "core::panicking::panic_display",
-    "core::panicking::panic_in_cleanup",
-    "core::panicking::panic_const",
-    "core::panicking::panic_bounds_check",
-    "core::panicking::panic_nounwind_fmt",
-    "core::panicking::panic_cannot_unwind",
-    "core::panicking::assert_failed",
-    "std::panicking::begin_panic",
-    "std::panicking::begin_panic_fmt",
-    // Option panic functions
-    "core::option::Option<T>::unwrap",
-    "core::option::Option<T>::expect",
-    "core::option::unwrap_failed",
-    // Result panic functions
-    "core::result::Result<T,E>::unwrap",
-    "core::result::Result<T,E>::expect",
-    "core::result::Result<T,E>::unwrap_err",
-    "core::result::Result<T,E>::expect_err",
-    "core::result::unwrap_failed",
-];
 
 /// Create a spinner for long-running operations.
 /// Returns None if progress display is disabled or stderr is not a terminal.
@@ -155,23 +115,6 @@ struct PanicCaller {
     column: Option<u32>,
     /// The panic symbol being called (e.g., "core::option::unwrap_failed")
     target: String,
-}
-
-/// Check if a function name belongs to the standard library.
-/// Used to filter out stdlib functions from panic analysis results.
-fn is_stdlib_function(name: &str) -> bool {
-    name.starts_with("core::")
-        || name.starts_with("std::")
-        || name.starts_with("alloc::")
-        || name.starts_with("<core::")
-        || name.starts_with("<std::")
-        || name.starts_with("<alloc::")
-        || name.contains(" core::")
-        || name.contains(" std::")
-        || name.contains(" alloc::")
-        || name.contains("::core::")
-        || name.contains("::std::")
-        || name.contains("::alloc::")
 }
 
 /// Analyze a single MachO binary/object for panic points.
@@ -508,17 +451,10 @@ pub fn analyze_archive(
             }
 
             // Get file from DWARF info, filtering out library code paths
-            let dwarf_file = caller_info.caller_file.as_ref().filter(|f| {
-                // Skip standard library and dependency paths
-                !f.starts_with("/rustc/")
-                    && !f.starts_with("/rust/")
-                    && !f.starts_with("library/")
-                    && !f.starts_with("src/arch/")
-                    && !f.starts_with("src/raw/")
-                    && !f.contains("/.cargo/")
-                    && !f.contains("/.rustup/")
-                    && !f.contains("/deps/")
-            });
+            let dwarf_file = caller_info
+                .caller_file
+                .as_ref()
+                .filter(|f| !is_library_dependency_path(f));
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)
@@ -645,60 +581,6 @@ mod tests {
     use crate::panic_cause::PanicCause;
 
     // ========================================================================
-    // is_stdlib_function tests
-    // ========================================================================
-
-    #[test]
-    fn test_is_stdlib_function_core() {
-        assert!(is_stdlib_function("core::option::Option::unwrap"));
-        assert!(is_stdlib_function("core::result::Result::unwrap"));
-        assert!(is_stdlib_function("core::panicking::panic_fmt"));
-    }
-
-    #[test]
-    fn test_is_stdlib_function_std() {
-        assert!(is_stdlib_function("std::io::Read::read"));
-        assert!(is_stdlib_function("std::panic::panic_any"));
-        assert!(is_stdlib_function("std::process::abort"));
-    }
-
-    #[test]
-    fn test_is_stdlib_function_alloc() {
-        assert!(is_stdlib_function("alloc::vec::Vec::push"));
-        assert!(is_stdlib_function("alloc::string::String::new"));
-    }
-
-    #[test]
-    fn test_is_stdlib_function_generic_bounds() {
-        assert!(is_stdlib_function("<core::option::Option<T>>::unwrap"));
-        assert!(is_stdlib_function("<std::vec::Vec<T>>::push"));
-        assert!(is_stdlib_function("<alloc::string::String>::new"));
-    }
-
-    #[test]
-    fn test_is_stdlib_function_nested() {
-        assert!(is_stdlib_function("foo::bar::core::baz"));
-        assert!(is_stdlib_function("my_crate::std::helper"));
-        assert!(is_stdlib_function("wrapper::alloc::allocate"));
-    }
-
-    #[test]
-    fn test_is_stdlib_function_with_space() {
-        assert!(is_stdlib_function("impl core::fmt::Debug"));
-        assert!(is_stdlib_function("impl std::fmt::Display"));
-        assert!(is_stdlib_function("impl alloc::fmt::Write"));
-    }
-
-    #[test]
-    fn test_is_stdlib_function_user_code() {
-        assert!(!is_stdlib_function("my_crate::module::function"));
-        assert!(!is_stdlib_function("app::main"));
-        assert!(!is_stdlib_function("lib::panic_handler"));
-        assert!(!is_stdlib_function("corey::something")); // Contains "core" but not "core::"
-        assert!(!is_stdlib_function("standard::library")); // Contains "std" but not "std::"
-    }
-
-    // ========================================================================
     // BinaryAnalysisResult tests
     // ========================================================================
 
@@ -812,29 +694,5 @@ mod tests {
         result1.merge(result2);
 
         assert_eq!(result1.code_points.len(), 1);
-    }
-
-    // ========================================================================
-    // Constants tests
-    // ========================================================================
-
-    #[test]
-    fn test_panic_symbol_patterns_not_empty() {
-        assert!(!PANIC_SYMBOL_PATTERNS.is_empty());
-        assert!(PANIC_SYMBOL_PATTERNS.contains(&"rust_panic$"));
-    }
-
-    #[test]
-    fn test_abort_symbol_patterns_not_empty() {
-        assert!(!ABORT_SYMBOL_PATTERNS.is_empty());
-        assert!(ABORT_SYMBOL_PATTERNS.contains(&"std::process::abort"));
-    }
-
-    #[test]
-    fn test_library_panic_patterns_comprehensive() {
-        // Should cover key panic functions
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("panic")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("unwrap")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("expect")));
     }
 }
