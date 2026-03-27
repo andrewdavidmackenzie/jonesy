@@ -10,7 +10,7 @@ title: "JP010: Assert Failed"
 
 ## Description
 
-An `assert!()` or `assert_eq!()`/`assert_ne!()` macro evaluates to false.
+An `assert!()`, `assert_eq!()`, `assert_ne!()`, `debug_assert!()`, `debug_assert_eq!()`, or `debug_assert_ne!()` macro evaluates to false. Both `assert!()` and `debug_assert!()` compile to the same `assert_failed` function, so jonesy reports them identically.
 
 ## Example
 
@@ -78,5 +78,4 @@ fn binary_search(sorted: &[i32], target: i32) -> Option<usize> {
 
 ## Related
 
-- [JP011 - Debug Assert](/panics/JP011-debug-assert-failed): Debug-only assertions
 - [JP001 - Explicit Panic](/panics/JP001-explicit-panic): Direct panic call

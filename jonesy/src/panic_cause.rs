@@ -12,7 +12,6 @@
 //! |-------------|----------------------|-------------------------|
 //! | Arithmetic overflow | Panics | Wraps (configurable via `overflow-checks`) |
 //! | Shift overflow | Panics | Wraps (configurable via `overflow-checks`) |
-//! | `debug_assert!()` | Runs check | Omitted (configurable via `debug-assertions`) |
 //! | Division by zero | Panics | Panics |
 //! | Index out of bounds | Panics | Panics |
 //! | All other causes | Panics | Panics |
@@ -52,10 +51,8 @@ pub enum PanicCause {
     ExpectNone,
     /// Expect on Err
     ExpectErr,
-    /// Assert failed
+    /// Assert failed (includes both assert!() and debug_assert!())
     AssertFailed,
-    /// Debug assert failed
-    DebugAssertFailed,
     /// Unreachable code reached
     Unreachable,
     /// Unimplemented code reached
@@ -108,7 +105,6 @@ impl PanicCause {
             PanicCause::ExpectNone => "expect",
             PanicCause::ExpectErr => "expect",
             PanicCause::AssertFailed => "assert",
-            PanicCause::DebugAssertFailed => "debug_assert",
             PanicCause::Unreachable => "unreachable",
             PanicCause::Unimplemented => "unimplemented",
             PanicCause::Todo => "todo",
@@ -126,12 +122,11 @@ impl PanicCause {
 
     /// Get the parent/generic configuration identifier, if any.
     /// This allows "overflow" to match specific types like "div_overflow",
-    /// and "assert" to match both "assert" and "debug_assert".
+    /// and "assert" to match specific overflow types.
     pub fn parent_id(&self) -> Option<&'static str> {
         match self {
             PanicCause::ArithmeticOverflow(_) => Some("overflow"),
             PanicCause::ShiftOverflow(_) => Some("overflow"),
-            PanicCause::DebugAssertFailed => Some("assert"),
             _ => None,
         }
     }
@@ -149,7 +144,6 @@ impl PanicCause {
             "unwrap",
             "expect",
             "assert",
-            "debug_assert",
             "unreachable",
             "unimplemented",
             "todo",
@@ -178,7 +172,6 @@ impl PanicCause {
             PanicCause::ExpectNone => "expect() on None",
             PanicCause::ExpectErr => "expect() on Err",
             PanicCause::AssertFailed => "assertion failed",
-            PanicCause::DebugAssertFailed => "debug assertion failed",
             PanicCause::Unreachable => "unreachable!() reached",
             PanicCause::Unimplemented => "unimplemented!() reached",
             PanicCause::Todo => "todo!() reached",
@@ -225,7 +218,6 @@ impl PanicCause {
             PanicCause::ExpectNone => "Use if let, match, unwrap_or, or ? operator instead",
             PanicCause::ExpectErr => "Use if let, match, unwrap_or, or ? operator instead",
             PanicCause::AssertFailed => "Review assertion condition",
-            PanicCause::DebugAssertFailed => "Review debug assertion condition",
             PanicCause::Unreachable => "Ensure code path is truly unreachable",
             PanicCause::Unimplemented => "Implement the missing functionality",
             PanicCause::Todo => "Complete the TODO implementation",
@@ -285,9 +277,6 @@ impl PanicCause {
             }
             PanicCause::AssertFailed => {
                 "This calls a function with an assertion. Review preconditions"
-            }
-            PanicCause::DebugAssertFailed => {
-                "This calls a function with a debug assertion. Review preconditions"
             }
             PanicCause::Unreachable => {
                 "This calls a function that may reach unreachable code. Review control flow"
@@ -360,9 +349,6 @@ impl PanicCause {
             PanicCause::AssertFailed => {
                 format!("This calls `{func}` which has an assertion. Review preconditions")
             }
-            PanicCause::DebugAssertFailed => {
-                format!("This calls `{func}` which has a debug assertion. Review preconditions")
-            }
             PanicCause::Unreachable => {
                 format!("This calls `{func}` which may reach unreachable code. Review control flow")
             }
@@ -418,7 +404,6 @@ impl PanicCause {
             PanicCause::ExpectNone => "JP008",
             PanicCause::ExpectErr => "JP009",
             PanicCause::AssertFailed => "JP010",
-            PanicCause::DebugAssertFailed => "JP011",
             PanicCause::Unreachable => "JP012",
             PanicCause::Unimplemented => "JP013",
             PanicCause::Todo => "JP014",
@@ -448,7 +433,6 @@ impl PanicCause {
             PanicCause::ExpectNone => "JP008-expect-none",
             PanicCause::ExpectErr => "JP009-expect-err",
             PanicCause::AssertFailed => "JP010-assert-failed",
-            PanicCause::DebugAssertFailed => "JP011-debug-assert-failed",
             PanicCause::Unreachable => "JP012-unreachable",
             PanicCause::Unimplemented => "JP013-unimplemented",
             PanicCause::Todo => "JP014-todo",
@@ -484,9 +468,6 @@ impl PanicCause {
     /// - **Arithmetic/shift overflow**: Controlled by `overflow-checks`
     ///   - `true` (dev default): panics on overflow
     ///   - `false` (release default): wraps silently
-    /// - **`debug_assert!()`**: Controlled by `debug-assertions`
-    ///   - `true` (dev default): runs the assertion
-    ///   - `false` (release default): compiled out entirely
     ///
     /// Division by zero and bounds checking panic in BOTH debug and release builds.
     /// Safe Rust never has undefined behavior.
@@ -498,9 +479,7 @@ impl PanicCause {
     pub fn is_debug_only(&self) -> bool {
         matches!(
             self,
-            PanicCause::ArithmeticOverflow(_)
-                | PanicCause::ShiftOverflow(_)
-                | PanicCause::DebugAssertFailed
+            PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_)
         )
     }
 
@@ -512,8 +491,6 @@ impl PanicCause {
     /// These causes have different behavior based on Cargo profile settings:
     /// - **Arithmetic/shift overflow**: Controlled by `overflow-checks` in Cargo profiles.
     ///   Panics when enabled (dev default), wraps when disabled (release default).
-    /// - **`debug_assert!()`**: Controlled by `debug-assertions` in Cargo profiles.
-    ///   Runs when enabled (dev default), compiled out when disabled (release default).
     ///
     /// The following panic in BOTH debug and release builds regardless of settings:
     /// - **Division by zero**: Always panics (safe Rust has no UB)
@@ -526,9 +503,6 @@ impl PanicCause {
         match self {
             PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_) => {
                 Some("With default release settings (overflow-checks=false), this wraps silently")
-            }
-            PanicCause::DebugAssertFailed => {
-                Some("With default release settings (debug-assertions=false), this is not compiled")
             }
             _ => None,
         }
@@ -611,30 +585,9 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         // Only Option has expect_failed; Result::expect() uses unwrap_failed
         return Some(PanicCause::ExpectNone);
     }
-    // Assert macros - distinguish debug_assert from assert based on source location
-    // In stdlib code, debug_assert!() is commonly used for internal invariant checks
-    // that are compiled out in release builds. We detect this heuristically by
-    // checking if the assert comes from stdlib paths.
+    // Assert macros - both assert!() and debug_assert!() compile to the same
+    // assert_failed function, so we cannot distinguish them at the binary level.
     if func_name.contains("assert_failed") {
-        // Check if this is likely a debug_assert from stdlib
-        // Stdlib paths typically contain /rustc/, /library/, or similar patterns
-        let is_stdlib = file_path
-            .map(|f| {
-                let normalized = f.replace('\\', "/");
-                normalized.contains("/rustc/")
-                    || normalized.contains("/library/core/src/")
-                    || normalized.contains("/library/std/src/")
-                    || normalized.contains("/library/alloc/src/")
-                    || normalized.contains("/src/libstd/")
-                    || normalized.contains("/src/libcore/")
-                    || normalized.contains("/src/liballoc/")
-            })
-            .unwrap_or(false);
-
-        if is_stdlib {
-            // Stdlib asserts are typically debug_assert!() for internal invariants
-            return Some(PanicCause::DebugAssertFailed);
-        }
         return Some(PanicCause::AssertFailed);
     }
     // panic_display is explicit panic! with a simple message
@@ -777,9 +730,6 @@ mod tests {
             PanicCause::ShiftOverflow("left".to_string()).parent_id(),
             Some("overflow")
         );
-        // DebugAssertFailed has "assert" as parent, so allow = ["assert"] covers both
-        assert_eq!(PanicCause::DebugAssertFailed.parent_id(), Some("assert"));
-        // AssertFailed has no parent (it IS the parent)
         assert_eq!(PanicCause::AssertFailed.parent_id(), None);
         assert_eq!(PanicCause::ExplicitPanic.parent_id(), None);
         assert_eq!(PanicCause::BoundsCheck.parent_id(), None);
@@ -841,7 +791,7 @@ mod tests {
     fn test_panic_cause_is_debug_only() {
         assert!(PanicCause::ArithmeticOverflow("add".to_string()).is_debug_only());
         assert!(PanicCause::ShiftOverflow("left".to_string()).is_debug_only());
-        assert!(PanicCause::DebugAssertFailed.is_debug_only());
+        assert!(!PanicCause::AssertFailed.is_debug_only());
         assert!(!PanicCause::BoundsCheck.is_debug_only());
         assert!(!PanicCause::DivisionByZero.is_debug_only());
         assert!(!PanicCause::UnwrapNone.is_debug_only());
@@ -859,7 +809,7 @@ mod tests {
                 .release_warning()
                 .is_some()
         );
-        assert!(PanicCause::DebugAssertFailed.release_warning().is_some());
+        assert!(PanicCause::AssertFailed.release_warning().is_none());
         assert!(PanicCause::BoundsCheck.release_warning().is_none());
         assert!(PanicCause::UnwrapNone.release_warning().is_none());
     }
@@ -1002,33 +952,28 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_panic_cause_debug_assert_stdlib() {
-        // Assert from stdlib paths -> DebugAssertFailed (heuristic)
-        // Stdlib typically uses debug_assert!() for internal invariants
+    fn test_assert_failed_always_assert_regardless_of_path() {
+        // assert_failed is always classified as AssertFailed regardless of source path,
+        // since we cannot distinguish assert!() from debug_assert!() at the binary level
         assert_eq!(
             detect_panic_cause(
                 "assert_failed",
                 Some("/rustc/abc123/library/std/src/time.rs")
             ),
-            Some(PanicCause::DebugAssertFailed)
+            Some(PanicCause::AssertFailed)
         );
         assert_eq!(
             detect_panic_cause("assert_failed", Some("/library/core/src/num/mod.rs")),
-            Some(PanicCause::DebugAssertFailed)
+            Some(PanicCause::AssertFailed)
         );
-        // Windows-style paths should also work
         assert_eq!(
-            detect_panic_cause(
-                "assert_failed",
-                Some("C:\\rustc\\abc\\library\\std\\time.rs")
-            ),
-            Some(PanicCause::DebugAssertFailed)
+            detect_panic_cause("assert_failed", Some("src/main.rs")),
+            Some(PanicCause::AssertFailed)
         );
     }
 
     #[test]
-    fn test_assert_in_user_path_with_library_not_debug_assert() {
-        // A user path that happens to contain "library" should NOT be classified as stdlib
+    fn test_assert_in_user_path_with_library() {
         assert_eq!(
             detect_panic_cause("assert_failed", Some("/home/me/library/app/src/main.rs")),
             Some(PanicCause::AssertFailed)
@@ -1170,7 +1115,6 @@ mod tests {
             PanicCause::ExpectNone,
             PanicCause::ExpectErr,
             PanicCause::AssertFailed,
-            PanicCause::DebugAssertFailed,
             PanicCause::Unreachable,
             PanicCause::Unimplemented,
             PanicCause::Todo,
@@ -1241,11 +1185,6 @@ mod tests {
             PanicCause::AssertFailed
                 .direct_suggestion()
                 .contains("assertion")
-        );
-        assert!(
-            PanicCause::DebugAssertFailed
-                .direct_suggestion()
-                .contains("debug assertion")
         );
         assert!(
             PanicCause::Unreachable
@@ -1347,11 +1286,6 @@ mod tests {
                 .contains("assertion")
         );
         assert!(
-            PanicCause::DebugAssertFailed
-                .indirect_suggestion()
-                .contains("debug assertion")
-        );
-        assert!(
             PanicCause::Unreachable
                 .indirect_suggestion()
                 .contains("unreachable")
@@ -1419,7 +1353,6 @@ mod tests {
             PanicCause::ExpectNone,
             PanicCause::ExpectErr,
             PanicCause::AssertFailed,
-            PanicCause::DebugAssertFailed,
             PanicCause::Unreachable,
             PanicCause::Unimplemented,
             PanicCause::Todo,
@@ -1465,10 +1398,6 @@ mod tests {
         assert_eq!(PanicCause::ExpectNone.docs_slug(), "JP008-expect-none");
         assert_eq!(PanicCause::ExpectErr.docs_slug(), "JP009-expect-err");
         assert_eq!(PanicCause::AssertFailed.docs_slug(), "JP010-assert-failed");
-        assert_eq!(
-            PanicCause::DebugAssertFailed.docs_slug(),
-            "JP011-debug-assert-failed"
-        );
         assert_eq!(PanicCause::Unreachable.docs_slug(), "JP012-unreachable");
         assert_eq!(PanicCause::Unimplemented.docs_slug(), "JP013-unimplemented");
         assert_eq!(PanicCause::Todo.docs_slug(), "JP014-todo");

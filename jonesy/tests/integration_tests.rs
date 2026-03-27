@@ -362,11 +362,8 @@ fn description_to_cause_id(description: &str) -> String {
     if description.contains("division by zero") || description.contains("remainder by zero") {
         return "div_zero".to_string();
     }
-    if description.contains("assertion failed") && !description.contains("debug") {
+    if description.contains("assertion failed") {
         return "assert".to_string();
-    }
-    if description.contains("debug assertion") || description.contains("debug_assert") {
-        return "debug_assert".to_string();
     }
     if description.contains("unreachable") {
         return "unreachable".to_string();

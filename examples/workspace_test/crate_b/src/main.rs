@@ -21,7 +21,7 @@ fn main() {
         Some("c_expect_err_ok") => crate_c::expect_err_on_ok(),
         // jonesy: expect panic crate_c assert failed
         Some("c_assert") => crate_c::assert_false(),
-        // jonesy: expect panic crate_c debug_assert failed
+        // jonesy: expect panic crate_c assert failed
         Some("c_debug_assert") => crate_c::debug_assert_false(),
         // jonesy: expect panic crate_c unreachable
         Some("c_unreachable") => crate_c::unreachable_code(),
@@ -55,7 +55,7 @@ fn main() {
         Some("b_lib_expect_err_ok") => crate_b_lib::lib_expect_err_on_ok(),
         // jonesy: expect panic crate_b_lib assert failed
         Some("b_lib_assert") => crate_b_lib::lib_assert_false(),
-        // jonesy: expect panic crate_b_lib debug_assert failed
+        // jonesy: expect panic crate_b_lib assert failed
         Some("b_lib_debug_assert") => crate_b_lib::lib_debug_assert_false(),
         // jonesy: expect panic crate_b_lib unreachable
         Some("b_lib_unreachable") => crate_b_lib::lib_unreachable_code(),
@@ -163,18 +163,18 @@ fn bin_assert_ne_fail() {
 }
 
 fn bin_debug_assert_false() {
-    // jonesy: expect panic debug_assert failed (debug builds only)
+    // jonesy: expect panic assert failed (debug builds only)
     debug_assert!(false);
 }
 
 fn bin_debug_assert_eq_fail() {
-    // jonesy: expect panic debug_assert_eq failed
+    // jonesy: expect panic assert_eq failed
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
 fn bin_debug_assert_ne_fail() {
-    // jonesy: expect panic debug_assert_ne failed
+    // jonesy: expect panic assert_ne failed
     debug_assert_ne!(1, 1);
 }
 

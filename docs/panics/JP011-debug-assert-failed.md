@@ -1,63 +1,11 @@
 ---
 layout: default
-title: "JP011: Debug Assert Failed"
+title: "JP011: Debug Assert Failed (Removed)"
+redirect_to: /panics/JP010-assert-failed
 ---
 
-# JP011: Debug Assert Failed
+# JP011: Debug Assert Failed (Removed)
 
-**Severity**: Low (debug only)
-**Category**: Explicit Panics
+This error code has been merged into [JP010 - Assert Failed](/panics/JP010-assert-failed).
 
-## Description
-
-A `debug_assert!()`, `debug_assert_eq!()`, or `debug_assert_ne!()` macro evaluates to false. These only run in debug builds.
-
-## Example
-
-```rust
-fn get_cached_value(cache: &Cache, key: &str) -> &Value {
-    debug_assert!(cache.contains(key), "Key should be pre-loaded");  // JP011
-    cache.get(key).unwrap()
-}
-```
-
-## Behavior
-
-| Build Mode | Assertion Checked? |
-|------------|-------------------|
-| Debug (`cargo build`) | Yes |
-| Release (`cargo build --release`) | No |
-| Test (`cargo test`) | Yes |
-
-## Why It Happens
-
-- Precondition violated during development
-- Helps catch bugs early without runtime cost in production
-
-## How to Avoid
-
-### Verify the condition is always true
-
-Debug assertions should check invariants, not handle expected cases.
-
-### Use regular assert for critical checks
-
-```rust
-// If this must be checked in production too:
-assert!(index < len, "index out of bounds");
-```
-
-### Remove if the check is obsolete
-
-If the assertion no longer makes sense, remove it rather than leaving dead code.
-
-## Jonesy Output
-
-```text
- --> src/lib.rs:3:5 [debug assertion failed]
-     = help: Review assertion condition
-```
-
-## Related
-
-- [JP010 - Assert Failed](/panics/JP010-assert-failed): Always-on assertions
+Both `assert!()` and `debug_assert!()` compile to the same `assert_failed` function, so they cannot be distinguished at the binary level. All assertion failures are now reported as JP010.

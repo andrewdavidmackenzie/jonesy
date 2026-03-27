@@ -258,9 +258,7 @@ pub fn is_stdlib_function(name: &str) -> bool {
 
 /// Paths in DWARF that indicate standard library source code.
 ///
-/// Used by [`crate::panic_cause::detect_panic_cause`] to identify when the
-/// current file is from the Rust standard library, which helps distinguish
-/// `debug_assert!()` (stdlib-generated code) from `assert!()` (user code).
+/// Used to identify when a file path points to Rust standard library source.
 ///
 /// These cover both the modern Rust source layout (`/library/core/src/`) and
 /// the legacy layout (`/src/libcore/`).
@@ -283,9 +281,7 @@ pub const STDLIB_SOURCE_PREFIXES: &[&str] = &[
 /// Check if a file path points to standard library source code.
 ///
 /// This is a narrower check than [`is_dependency_path`] — it specifically
-/// identifies Rust stdlib source files, not all dependencies. Used for
-/// distinguishing `assert!()` (user code) from `debug_assert!()` (expands
-/// to stdlib code with assert_failed).
+/// identifies Rust stdlib source files, not all dependencies.
 pub fn is_stdlib_source(file_path: &str) -> bool {
     STDLIB_SOURCE_PREFIXES
         .iter()

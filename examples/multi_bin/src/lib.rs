@@ -136,7 +136,7 @@ pub fn lib_assert_ne() {
 }
 
 pub fn lib_debug_assert() {
-    // jonesy: expect panic debug_assert failed (debug builds only)
+    // jonesy: expect panic assert failed (debug builds only)
     debug_assert!(false);
 
     // Panic-free alternative: use if
@@ -147,7 +147,7 @@ pub fn lib_debug_assert() {
 }
 
 pub fn lib_debug_assert_eq() {
-    // jonesy: expect panic debug_assert_eq failed
+    // jonesy: expect panic assert_eq failed
     debug_assert_eq!(1, 2);
 
     // Panic-free alternative: use if
@@ -162,7 +162,7 @@ pub fn lib_debug_assert_eq() {
 
 #[allow(clippy::eq_op)]
 pub fn lib_debug_assert_ne() {
-    // jonesy: expect panic debug_assert_ne failed
+    // jonesy: expect panic assert_ne failed
     debug_assert_ne!(1, 1);
 
     // Panic-free alternative: use if

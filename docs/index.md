@@ -46,8 +46,7 @@ Jonesy detects and classifies panics with unique error codes. Click on any code 
 | [JP007](/panics/JP007-unwrap-err) | Unwrap Err | `unwrap()` on `Result::Err` |
 | [JP008](/panics/JP008-expect-none) | Expect None | `expect()` on `Option::None` |
 | [JP009](/panics/JP009-expect-err) | Expect Err | `expect()` on `Result::Err` |
-| [JP010](/panics/JP010-assert-failed) | Assert Failed | `assert!()` condition false |
-| [JP011](/panics/JP011-debug-assert-failed) | Debug Assert Failed | `debug_assert!()` condition false |
+| [JP010](/panics/JP010-assert-failed) | Assert Failed | `assert!()` / `debug_assert!()` condition false |
 | [JP012](/panics/JP012-unreachable) | Unreachable | `unreachable!()` macro reached |
 | [JP013](/panics/JP013-unimplemented) | Unimplemented | `unimplemented!()` macro reached |
 | [JP014](/panics/JP014-todo) | Todo | `todo!()` macro reached |
