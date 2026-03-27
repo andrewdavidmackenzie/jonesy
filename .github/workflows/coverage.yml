@@ -20,6 +20,9 @@ jobs:
       - name: Install grcov
         run: cargo install grcov
 
+      - name: Build example binaries without coverage
+        run: cargo build --workspace --exclude jonesy
+
       - name: Run tests with coverage
         env:
           CARGO_INCREMENTAL: '0'
