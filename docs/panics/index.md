@@ -17,8 +17,7 @@ Jonesy detects and classifies panics using unique error codes (/panics/JP001-JP0
 ### Explicit Panics
 Panics intentionally triggered by the programmer:
 - [JP001 - Explicit Panic](/panics/JP001-explicit-panic): Direct `panic!()` call
-- [JP010 - Assert Failed](/panics/JP010-assert-failed): `assert!()` condition false
-- [JP011 - Debug Assert Failed](/panics/JP011-debug-assert-failed): `debug_assert!()` in debug builds
+- [JP010 - Assert Failed](/panics/JP010-assert-failed): `assert!()` or `debug_assert!()` condition false
 - [JP012 - Unreachable](/panics/JP012-unreachable): Code marked as unreachable
 - [JP013 - Unimplemented](/panics/JP013-unimplemented): Unfinished implementation
 - [JP014 - Todo](/panics/JP014-todo): Placeholder for future code

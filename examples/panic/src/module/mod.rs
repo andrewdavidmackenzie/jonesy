@@ -77,7 +77,7 @@ pub fn cause_assert() {
 }
 
 pub fn cause_debug_assert() {
-    // jonesy: expect panic debug_assert failed (debug builds only)
+    // jonesy: expect panic assert failed (debug builds only)
     debug_assert!(false);
 
     // Panic-free alternative: use if to check condition (same as assert)
@@ -204,7 +204,7 @@ pub fn cause_assert_ne() {
 }
 
 pub fn cause_debug_assert_eq() {
-    // jonesy: expect panic debug_assert_eq! failed
+    // jonesy: expect panic assert_eq! failed (debug builds only)
     debug_assert_eq!(1, 2);
 
     // Panic-free alternative: use if to check equality (same as assert_eq)
@@ -219,7 +219,7 @@ pub fn cause_debug_assert_eq() {
 
 #[allow(clippy::eq_op)]
 pub fn cause_debug_assert_ne() {
-    // jonesy: expect panic debug_assert_ne! failed
+    // jonesy: expect panic assert_ne! failed (debug builds only)
     debug_assert_ne!(1, 1);
 
     // Panic-free alternative: use if to check inequality (same as assert_ne)

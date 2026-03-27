@@ -782,8 +782,8 @@ mod tests {
     }
 
     #[test]
-    fn test_assert_parent_id_allows_debug_assert() {
-        // allow = ["assert"] should match both assert and debug_assert
+    fn test_assert_allow_config() {
+        // allow = ["assert"] should match AssertFailed
         let mut config = Config::with_defaults();
         let toml_config = TomlConfig {
             allow: vec!["assert".to_string()],
@@ -793,30 +793,9 @@ mod tests {
         };
         config.apply_toml_config(&toml_config);
 
-        // AssertFailed should be allowed directly via "assert" id
         assert!(!config.is_denied(&PanicCause::AssertFailed));
-        // DebugAssertFailed should be allowed via parent "assert"
-        assert!(!config.is_denied(&PanicCause::DebugAssertFailed));
         // Other causes should still be denied
         assert!(config.is_denied(&PanicCause::UnwrapNone));
-    }
-
-    #[test]
-    fn test_specific_debug_assert_id() {
-        // allow = ["debug_assert"] should only match debug_assert, not assert
-        let mut config = Config::with_defaults();
-        let toml_config = TomlConfig {
-            allow: vec!["debug_assert".to_string()],
-            deny: vec![],
-            rules: vec![],
-            filter_phantom_async: None,
-        };
-        config.apply_toml_config(&toml_config);
-
-        // DebugAssertFailed should be allowed
-        assert!(!config.is_denied(&PanicCause::DebugAssertFailed));
-        // AssertFailed should NOT be allowed (it's the parent, not matched by child id)
-        assert!(config.is_denied(&PanicCause::AssertFailed));
     }
 
     #[test]

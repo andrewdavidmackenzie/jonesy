@@ -40,13 +40,13 @@ pub fn library_function() {
     // jonesy: expect panic assert_ne failed
     module::cause_assert_ne();
 
-    // jonesy: expect panic debug_assert failed
+    // jonesy: expect panic assert failed
     module::cause_debug_assert();
 
-    // jonesy: expect panic debug_assert_eq failed
+    // jonesy: expect panic assert_eq failed (debug builds only)
     module::cause_debug_assert_eq();
 
-    // jonesy: expect panic debug_assert_ne failed
+    // jonesy: expect panic assert_ne failed (debug builds only)
     module::cause_debug_assert_ne();
 
     // jonesy: expect panic unreachable

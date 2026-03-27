@@ -27,7 +27,7 @@ fn main() {
     // jonesy: expect panic assert failed
     module::cause_assert();
 
-    // jonesy: expect panic debug_assert failed
+    // jonesy: expect panic assert failed
     module::cause_debug_assert();
 
     // jonesy: expect panic unreachable
@@ -60,10 +60,10 @@ fn main() {
     // jonesy: expect panic assert_ne! failed
     module::cause_assert_ne();
 
-    // jonesy: expect panic debug_assert_eq! failed
+    // jonesy: expect panic assert_eq! failed
     module::cause_debug_assert_eq();
 
-    // jonesy: expect panic debug_assert_ne! failed
+    // jonesy: expect panic assert_ne! failed
     module::cause_debug_assert_ne();
 
     // jonesy: expect panic index out of bounds

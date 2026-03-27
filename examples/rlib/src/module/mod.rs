@@ -66,18 +66,18 @@ pub fn cause_assert_ne() {
 }
 
 pub fn cause_debug_assert() {
-    // jonesy: expect panic debug_assert failed (debug builds only)
+    // jonesy: expect panic assert failed (debug builds only)
     debug_assert!(false);
 }
 
 pub fn cause_debug_assert_eq() {
-    // jonesy: expect panic debug_assert_eq failed (debug builds only)
+    // jonesy: expect panic assert_eq failed (debug builds only)
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
 pub fn cause_debug_assert_ne() {
-    // jonesy: expect panic debug_assert_ne failed (debug builds only)
+    // jonesy: expect panic assert_ne failed (debug builds only)
     debug_assert_ne!(1, 1);
 }
 
