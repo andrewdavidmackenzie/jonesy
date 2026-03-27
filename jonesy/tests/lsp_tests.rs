@@ -692,7 +692,7 @@ fn test_lsp_code_action_called_function_allow() {
             "causes": ["unwrap"],
             "function": "run",
             "file": "src/main.rs",
-            "called_function": "Config::parse",
+            "called_function": "my_crate::config::Config::parse",
             "is_direct_panic": false
         }
     });
@@ -742,7 +742,7 @@ fn test_lsp_code_action_called_function_allow() {
     let action = called_fn_action.unwrap();
     let title = action["title"].as_str().unwrap();
     assert_eq!(
-        title, "Allow 'unwrap' on calls to 'Config::parse()'",
+        title, "Allow 'unwrap' on calls to 'my_crate::config::Config::parse()'",
         "Title should include the specific cause, not wildcard"
     );
 
@@ -755,7 +755,7 @@ fn test_lsp_code_action_called_function_allow() {
             .map(|edits| {
                 edits.iter().any(|e| {
                     let text = e.get("newText").and_then(|t| t.as_str()).unwrap_or("");
-                    text.contains("function = \"*::Config::parse\"")
+                    text.contains("function = \"my_crate::config::Config::parse\"")
                         && text.contains("allow = [\"unwrap\"]")
                 })
             })

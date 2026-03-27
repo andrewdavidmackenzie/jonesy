@@ -527,19 +527,31 @@ pub fn analyze_archive(
     // Use is_denied_at to support scoped rules based on file/function patterns
     code_points.retain(|point| {
         // Keep points with any denied cause
-        point
-            .causes
-            .iter()
-            .any(|c| config.is_denied_at(c, Some(&point.file), Some(&point.name)))
+        // Check both the containing function and the called function (for indirect panics)
+        point.causes.iter().any(|c| {
+            let denied_in_func = config.is_denied_at(c, Some(&point.file), Some(&point.name));
+            let denied_in_called = point
+                .called_function
+                .as_ref()
+                .map(|cf| config.is_denied_at(c, Some(&point.file), Some(cf)))
+                .unwrap_or(true);
+            denied_in_func && denied_in_called
+        })
     });
 
     // Remove allowed causes, keeping only denied ones
     for point in &mut code_points {
         let file = point.file.clone();
         let name = point.name.clone();
-        point
-            .causes
-            .retain(|c| config.is_denied_at(c, Some(&file), Some(&name)));
+        let called = point.called_function.clone();
+        point.causes.retain(|c| {
+            let denied_in_func = config.is_denied_at(c, Some(&file), Some(&name));
+            let denied_in_called = called
+                .as_ref()
+                .map(|cf| config.is_denied_at(c, Some(&file), Some(cf)))
+                .unwrap_or(true);
+            denied_in_func && denied_in_called
+        });
     }
 
     // Deduplicate by (file, line)

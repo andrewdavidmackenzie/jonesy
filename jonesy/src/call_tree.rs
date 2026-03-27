@@ -262,12 +262,11 @@ pub type CodePointInfo = (
 /// Map of code points: key -> info
 pub type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
 
-/// Extract a qualified function name like "Type::method" from a potentially mangled name.
-/// Demangles Rust symbols first, strips generics, then returns the last two meaningful
-/// path segments. Used for `called_function` in config rules and display.
-/// E.g., "my_crate::TimeStamp::now" -> "TimeStamp::now"
-///       "std::collections::HashMap::new" -> "HashMap::new"
-///       "my_crate::module::init" -> "module::init"
+/// Extract the full qualified function name from a potentially mangled name.
+/// Demangles Rust symbols first, strips generics and hash suffixes.
+/// Returns the full path for use in config rules (exact match).
+/// E.g., "my_crate::module::TimeStamp::now" -> "my_crate::module::TimeStamp::now"
+///       "_ZN3std11collections4hash3set16HashSet$LT$T$GT$3new17h..." -> "std::collections::hash::set::HashSet::new"
 ///       "simple_function" -> "simple_function"
 fn extract_qualified_function_name(full_name: &str) -> String {
     // Demangle the name first
@@ -297,14 +296,10 @@ fn extract_qualified_function_name(full_name: &str) -> String {
         })
         .collect();
 
-    match segments.len() {
-        0 => cleaned.trim().to_string(),
-        1 => segments[0].to_string(),
-        _ => {
-            // Return last two meaningful segments: "Type::method"
-            let len = segments.len();
-            format!("{}::{}", segments[len - 2], segments[len - 1])
-        }
+    if segments.is_empty() {
+        cleaned.trim().to_string()
+    } else {
+        segments.join("::")
     }
 }
 
@@ -639,8 +634,19 @@ pub fn filter_allowed_causes(
                 return false; // Not denied (allowed by inline comment)
             }
 
-            // Then check config rules
-            config.is_denied_at(cause, Some(&point.file), Some(&point.name))
+            // Then check config rules against the containing function
+            if !config.is_denied_at(cause, Some(&point.file), Some(&point.name)) {
+                return false; // Allowed by rule on containing function
+            }
+
+            // Also check config rules against the called function (for indirect panics)
+            if let Some(ref called_fn) = point.called_function {
+                if !config.is_denied_at(cause, Some(&point.file), Some(called_fn)) {
+                    return false; // Allowed by rule on the called function
+                }
+            }
+
+            true // Denied (no rule allows it)
         });
 
         // Keep if originally empty (conservative) or if any denied causes remain
@@ -924,36 +930,114 @@ mod tests {
 
     #[test]
     fn test_extract_qualified_function_name() {
-        // Type::method pattern
+        // Full path preserved
         assert_eq!(
             extract_qualified_function_name("my_crate::TimeStamp::now"),
-            "TimeStamp::now"
+            "my_crate::TimeStamp::now"
         );
         assert_eq!(
             extract_qualified_function_name("std::collections::HashMap::new"),
-            "HashMap::new"
+            "std::collections::HashMap::new"
         );
-        // module::function pattern
         assert_eq!(
             extract_qualified_function_name("my_crate::module::init"),
-            "module::init"
+            "my_crate::module::init"
         );
         // Simple function (no ::)
         assert_eq!(
             extract_qualified_function_name("simple_function"),
             "simple_function"
         );
-        // Mangled Rust symbol
+        // Mangled Rust symbol - full demangled path
         assert_eq!(
             extract_qualified_function_name(
                 "_ZN3std11collections4hash3set16HashSet$LT$T$GT$3new17ha7a7fdf7dbcd659dE"
             ),
-            "HashSet::new"
+            "std::collections::hash::set::HashSet::new"
         );
-        // With generics
+        // Short qualified name preserved as-is
         assert_eq!(
             extract_qualified_function_name("Option::unwrap"),
             "Option::unwrap"
+        );
+    }
+
+    #[test]
+    fn test_filter_allows_called_function_rule() {
+        use crate::config::Config;
+        use std::io::Write;
+
+        // Create a temp jonesy.toml with a rule allowing unwrap on my_crate::time::TimeStamp::now
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("jonesy.toml");
+        let mut f = std::fs::File::create(&toml_path).unwrap();
+        writeln!(
+            f,
+            "[[rules]]\nfunction = \"my_crate::time::TimeStamp::now\"\nallow = [\"unwrap\"]"
+        )
+        .unwrap();
+
+        let mut config = Config::with_defaults();
+        config.load_from_jones_toml(&toml_path);
+
+        // Code point in "app::run" that calls "my_crate::time::TimeStamp::now" which may unwrap
+        let mut points = vec![CrateCodePoint {
+            name: "app::run".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 42,
+            column: Some(5),
+            causes: vec![PanicCause::UnwrapNone].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: false,
+            called_function: Some("my_crate::time::TimeStamp::now".to_string()),
+        }];
+
+        filter_allowed_causes(&mut points, &config, None);
+
+        // The point should be filtered out because the rule allows unwrap on that function
+        assert!(
+            points.is_empty(),
+            "Point should be filtered out by called-function allow rule, but found: {points:?}"
+        );
+    }
+
+    #[test]
+    fn test_filter_keeps_non_matching_called_function() {
+        use crate::config::Config;
+        use std::io::Write;
+
+        // Rule allows "unwrap" on calls to "my_crate::time::TimeStamp::now"
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("jonesy.toml");
+        let mut f = std::fs::File::create(&toml_path).unwrap();
+        writeln!(
+            f,
+            "[[rules]]\nfunction = \"my_crate::time::TimeStamp::now\"\nallow = [\"unwrap\"]"
+        )
+        .unwrap();
+
+        let mut config = Config::with_defaults();
+        config.load_from_jones_toml(&toml_path);
+
+        // Code point calling a DIFFERENT function - should NOT be filtered
+        let mut points = vec![CrateCodePoint {
+            name: "app::run".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 42,
+            column: Some(5),
+            causes: vec![PanicCause::UnwrapNone].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: false,
+            called_function: Some("other_crate::Config::parse".to_string()),
+        }];
+
+        filter_allowed_causes(&mut points, &config, None);
+
+        // The point should be kept because the rule doesn't match Config::parse
+        assert_eq!(
+            points.len(),
+            1,
+            "Point should be kept - rule doesn't match different called function"
         );
     }
 }

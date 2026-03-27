@@ -881,7 +881,7 @@ impl JonesyLspServer {
     ) -> Option<CodeAction> {
         let title = format!("Allow '{cause}' on calls to '{called_function}()'");
         let rule_text =
-            format!("\n[[rules]]\nfunction = \"*::{called_function}\"\nallow = [\"{cause}\"]\n");
+            format!("\n[[rules]]\nfunction = \"{called_function}\"\nallow = [\"{cause}\"]\n");
 
         let jonesy_toml_path = workspace_root.join("jonesy.toml");
         let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
@@ -2590,14 +2590,17 @@ mod tests {
         let workspace_root = PathBuf::from("/workspace");
 
         let action = JonesyLspServer::create_called_function_allow_action(
-            "Config::parse",
+            "my_crate::config::Config::parse",
             "expect",
             &workspace_root,
             &diagnostic,
         )
         .unwrap();
 
-        assert_eq!(action.title, "Allow 'expect' on calls to 'Config::parse()'");
+        assert_eq!(
+            action.title,
+            "Allow 'expect' on calls to 'my_crate::config::Config::parse()'"
+        );
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
 
         // Verify the generated config rule uses the specific cause, not wildcard
@@ -2608,7 +2611,8 @@ mod tests {
                 if let DocumentChangeOperation::Edit(text_edit) = op {
                     text_edit.edits.iter().any(|e| {
                         if let OneOf::Left(te) = e {
-                            te.new_text.contains("function = \"*::Config::parse\"")
+                            te.new_text
+                                .contains("function = \"my_crate::config::Config::parse\"")
                                 && te.new_text.contains("allow = [\"expect\"]")
                         } else {
                             false
