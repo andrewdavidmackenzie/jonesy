@@ -648,11 +648,12 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
 
     // Bounds checking domain - detect from Index trait implementations
     // These are called from user code when indexing slices/vecs
-    // Function names like "index<T, usize>" or "Index::index"
-    // Note: function name might be just "index<...>" without module prefix
+    // Matches both simple names ("index<T, usize>") and fully qualified demangled
+    // linkage names ("<impl Index<I> for str>::index")
     if func_name.starts_with("index<")
         || func_name.contains("::index<")
         || func_name.contains("Index::index")
+        || func_name.contains(">::index")
     {
         // Check if it's for str (string slice) vs array/vec (bounds check)
         // String slicing can be detected via:

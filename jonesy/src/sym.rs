@@ -2288,9 +2288,11 @@ fn parse_function_die<R: Reader>(
                 }
             }
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer linkage name (mangled) — contains full qualified path
+                // Prefer linkage name — contains full qualified path after demangling
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                    let mangled = s.to_string_lossy()?.into_owned();
+                    let stripped = mangled.strip_prefix('_').unwrap_or(&mangled);
+                    name = Some(format!("{:#}", demangle(stripped)));
                     has_linkage_name = true;
                 }
             }
@@ -2468,9 +2470,11 @@ fn resolve_abstract_origin_name<R: Reader>(
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer mangled name if available
+                // Prefer linkage name — contains full qualified path after demangling
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                    let mangled = s.to_string_lossy()?.into_owned();
+                    let stripped = mangled.strip_prefix('_').unwrap_or(&mangled);
+                    name = Some(format!("{:#}", demangle(stripped)));
                 }
             }
             gimli::DW_AT_name => {
@@ -2533,9 +2537,11 @@ fn resolve_specification<R: Reader>(
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer mangled name if available
+                // Prefer linkage name — contains full qualified path after demangling
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                    let mangled = s.to_string_lossy()?.into_owned();
+                    let stripped = mangled.strip_prefix('_').unwrap_or(&mangled);
+                    name = Some(format!("{:#}", demangle(stripped)));
                 }
             }
             gimli::DW_AT_name => {
