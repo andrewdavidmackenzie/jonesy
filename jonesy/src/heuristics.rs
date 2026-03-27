@@ -266,9 +266,15 @@ pub fn is_stdlib_function(name: &str) -> bool {
 /// the legacy layout (`/src/libcore/`).
 pub const STDLIB_SOURCE_PREFIXES: &[&str] = &[
     "/rustc/",
+    // Modern layout (absolute)
     "/library/core/src/",
     "/library/std/src/",
     "/library/alloc/src/",
+    // Modern layout (relative — DWARF sometimes omits leading slash)
+    "library/core/src/",
+    "library/std/src/",
+    "library/alloc/src/",
+    // Legacy layout
     "/src/libstd/",
     "/src/libcore/",
     "/src/liballoc/",
@@ -364,16 +370,10 @@ pub fn is_panic_triggering_function(func_name: &str) -> bool {
 /// are reported.
 ///
 /// This is a superset of the checks in [`is_dependency_path`], also covering
-/// relative paths that appear in library DWARF info.
+/// additional paths that appear in library DWARF info (e.g., `/rust/` CI paths,
+/// `/deps/` subdirectories).
 pub fn is_library_dependency_path(file_path: &str) -> bool {
-    file_path.starts_with("/rustc/")
-        || file_path.starts_with("/rust/")
-        || file_path.starts_with("library/")
-        || file_path.starts_with("src/arch/")
-        || file_path.starts_with("src/raw/")
-        || file_path.contains("/.cargo/")
-        || file_path.contains("/.rustup/")
-        || file_path.contains("/deps/")
+    is_dependency_path(file_path) || file_path.starts_with("/rust/") || file_path.contains("/deps/")
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +498,11 @@ mod tests {
         assert!(is_stdlib_source("/rustc/abc123/library/core/src/option.rs"));
         assert!(is_stdlib_source("/library/core/src/panicking.rs"));
         assert!(is_stdlib_source("/library/std/src/io/mod.rs"));
+        // Relative paths (DWARF sometimes omits leading slash)
+        assert!(is_stdlib_source("library/core/src/panicking.rs"));
+        assert!(is_stdlib_source("library/std/src/io/mod.rs"));
+        assert!(is_stdlib_source("library/alloc/src/vec/mod.rs"));
+        // User code and dependencies should not match
         assert!(!is_stdlib_source("src/main.rs"));
         assert!(!is_stdlib_source(
             "/Users/user/.cargo/registry/src/serde/lib.rs"
@@ -508,6 +513,7 @@ mod tests {
 
     #[test]
     fn test_library_dependency_paths() {
+        // Inherits all is_dependency_path checks
         assert!(is_library_dependency_path("/rustc/abc/core.rs"));
         assert!(is_library_dependency_path("library/core/src/option.rs"));
         assert!(is_library_dependency_path(
@@ -516,8 +522,13 @@ mod tests {
         assert!(is_library_dependency_path(
             "/home/user/.rustup/toolchains/stable/lib.rs"
         ));
-        assert!(is_library_dependency_path("src/arch/arm64/mod.rs"));
+        // Additional library-specific checks
+        assert!(is_library_dependency_path("/rust/deps/std/src/lib.rs"));
+        assert!(is_library_dependency_path("target/debug/deps/serde.rs"));
+        // User code should not be filtered
         assert!(!is_library_dependency_path("src/main.rs"));
+        assert!(!is_library_dependency_path("src/arch/arm64/mod.rs"));
+        assert!(!is_library_dependency_path("src/raw/mod.rs"));
     }
 
     // -- pattern constant tests --
