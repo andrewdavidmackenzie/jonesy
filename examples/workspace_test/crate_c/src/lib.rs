@@ -74,13 +74,13 @@ pub fn debug_assert_false() {
 }
 
 pub fn debug_assert_eq_fail() {
-    // jonesy: expect panic assert_eq failed
+    // jonesy: expect panic assert_eq failed (debug builds only)
     debug_assert_eq!(1, 2);
 }
 
 #[allow(clippy::eq_op)]
 pub fn debug_assert_ne_fail() {
-    // jonesy: expect panic assert_ne failed
+    // jonesy: expect panic assert_ne failed (debug builds only)
     debug_assert_ne!(1, 1);
 }
 

@@ -121,8 +121,8 @@ impl PanicCause {
     }
 
     /// Get the parent/generic configuration identifier, if any.
-    /// This allows "overflow" to match specific types like "div_overflow",
-    /// and "assert" to match specific overflow types.
+    /// This allows "overflow" in config to match specific types like
+    /// "div_overflow" and "shift_overflow".
     pub fn parent_id(&self) -> Option<&'static str> {
         match self {
             PanicCause::ArithmeticOverflow(_) => Some("overflow"),
