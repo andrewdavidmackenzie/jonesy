@@ -284,17 +284,23 @@ fn extract_qualified_function_name(full_name: &str) -> String {
         }
     }
 
-    // Collect meaningful segments (skip empty and hash suffixes)
-    let segments: Vec<&str> = cleaned
+    // Collect non-empty segments, only dropping a trailing Rust hash suffix
+    let mut segments: Vec<&str> = cleaned
         .split("::")
         .map(|s| s.trim())
-        .filter(|s| {
-            !(s.is_empty()
-                || s.starts_with('h')
-                    && s.len() > 1
-                    && s[1..].chars().all(|c| c.is_ascii_hexdigit()))
-        })
+        .filter(|s| !s.is_empty())
         .collect();
+
+    // Only strip the last segment if it looks like a Rust hash (e.g., "h1234abcdef")
+    // This preserves legitimate names like "h2::send"
+    if let Some(last) = segments.last() {
+        if last.starts_with('h')
+            && last.len() > 1
+            && last[1..].chars().all(|c| c.is_ascii_hexdigit())
+        {
+            segments.pop();
+        }
+    }
 
     if segments.is_empty() {
         cleaned.trim().to_string()
@@ -959,6 +965,11 @@ mod tests {
         assert_eq!(
             extract_qualified_function_name("Option::unwrap"),
             "Option::unwrap"
+        );
+        // Legitimate crate names starting with 'h' are preserved (not stripped as hash)
+        assert_eq!(
+            extract_qualified_function_name("h2::client::send"),
+            "h2::client::send"
         );
     }
 

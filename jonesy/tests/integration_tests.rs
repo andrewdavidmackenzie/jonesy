@@ -813,19 +813,26 @@ fn test_scoped_rules() {
     // Run without config to get baseline
     let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
-    // Verify baseline actually detects the explicit panic at main.rs:10
+    // Verify baseline actually detects the explicit panic near main.rs:10
+    // DWARF may report line 8, 9, or 10 depending on platform
+    let panic_line = baseline_detected
+        .iter()
+        .find(|p| {
+            p.file.contains("main.rs")
+                && (8..=10).contains(&p.line)
+                && p.causes.iter().any(|c| c == "panic")
+        })
+        .map(|p| p.line);
     assert!(
-        baseline_detected
-            .iter()
-            .any(|p| p.file.contains("main.rs") && p.line == 10),
-        "Baseline should include explicit panic!() at main.rs:10"
+        panic_line.is_some(),
+        "Baseline should include explicit panic!() near main.rs:10"
     );
+    let panic_line = panic_line.unwrap();
 
     // Run with scoped config that allows "panic" cause in **/main.rs
     let (scoped_exit_code, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
 
     // The scoped config should result in fewer detected panics
-    // (the explicit panic!() at main.rs:10 should be filtered)
     assert!(
         scoped_exit_code < baseline_exit_code,
         "Scoped rules should filter some panics: baseline={}, with_scoped_rules={}",
@@ -839,13 +846,13 @@ fn test_scoped_rules() {
         "Scoped-filtered panics should be a subset of baseline panics"
     );
 
-    // Verify that main.rs:10 (the explicit panic!) is NOT in the filtered results
+    // Verify that the explicit panic! is NOT in the filtered results
     let explicit_panic_filtered = !scoped_detected
         .iter()
-        .any(|p| p.file.contains("main.rs") && p.line == 10);
+        .any(|p| p.file.contains("main.rs") && p.line == panic_line);
     assert!(
         explicit_panic_filtered,
-        "Scoped rule should filter explicit panic!() at main.rs:10"
+        "Scoped rule should filter explicit panic!() at main.rs:{panic_line}"
     );
 
     // Other panic types in main.rs should still be reported
@@ -1561,23 +1568,27 @@ fn test_called_function_allow_distinguishes_modules() {
     // Run without config to get baseline
     let (_, baseline_detected) = run_jones_on_example(&example_dir);
 
-    // Both module::cause_expect_none and module2::cause_expect_none should be in baseline
-    // main.rs:23 calls module::cause_expect_none (expect on None)
-    // main.rs:92 calls module2::cause_expect_none (expect on None)
-    let module1_expect = baseline_detected
+    // Both module::cause_expect_none and module2::cause_expect_none should have "expect"
+    // cause in the baseline. main.rs:23 calls module::cause_expect_none,
+    // main.rs:92 calls module2::cause_expect_none.
+    let module1_has_expect = baseline_detected
         .iter()
-        .any(|p| p.file.contains("main.rs") && p.line == 23);
-    let module2_expect = baseline_detected
+        .find(|p| p.file.contains("main.rs") && p.line == 23)
+        .map(|p| p.causes.iter().any(|c| c == "expect"))
+        .unwrap_or(false);
+    let module2_has_expect = baseline_detected
         .iter()
-        .any(|p| p.file.contains("main.rs") && p.line == 92);
+        .find(|p| p.file.contains("main.rs") && p.line == 92)
+        .map(|p| p.causes.iter().any(|c| c == "expect"))
+        .unwrap_or(false);
 
     assert!(
-        module1_expect,
-        "Baseline should include expect panic at main.rs:23 (module::cause_expect_none)"
+        module1_has_expect,
+        "Baseline should include 'expect' cause at main.rs:23 (module::cause_expect_none)"
     );
     assert!(
-        module2_expect,
-        "Baseline should include expect panic at main.rs:92 (module2::cause_expect_none)"
+        module2_has_expect,
+        "Baseline should include 'expect' cause at main.rs:92 (module2::cause_expect_none)"
     );
 
     // Run with config that allows "expect" on panic::module::cause_expect_none
