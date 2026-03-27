@@ -2,6 +2,7 @@
 const PANIC_STR: &str = "panic";
 
 mod module;
+mod module2;
 
 fn main() {
     if std::env::args().len() > 1 {
@@ -86,4 +87,7 @@ fn main() {
 
     // jonesy: expect panic(misaligned_ptr)
     module::cause_misaligned_pointer();
+
+    // jonesy: expect panic expect on None
+    module2::cause_expect_none();
 }

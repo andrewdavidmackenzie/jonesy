@@ -660,6 +660,116 @@ fn test_lsp_code_action_with_diagnostic() {
 }
 
 #[test]
+fn test_lsp_code_action_called_function_allow() {
+    let workspace_root = find_workspace_root();
+    ensure_jonesy_built(&workspace_root);
+
+    let mut client = TestLspClient::start(&workspace_root);
+
+    // Initialize
+    let _ = client.send_request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", workspace_root.display()),
+            "capabilities": {}
+        }),
+    );
+
+    client.send_notification("initialized", json!({})).unwrap();
+
+    // Create a mock diagnostic for an indirect panic (called_function present)
+    let main_rs = workspace_root.join("jonesy/src/main.rs");
+    let mock_diagnostic = json!({
+        "range": {
+            "start": {"line": 10, "character": 0},
+            "end": {"line": 10, "character": 20}
+        },
+        "severity": 2,
+        "source": "jonesy",
+        "message": "panic point: unwrap() on None",
+        "data": {
+            "causes": ["unwrap"],
+            "function": "run",
+            "file": "src/main.rs",
+            "called_function": "my_crate::config::Config::parse",
+            "is_direct_panic": false
+        }
+    });
+
+    // Request code actions with the diagnostic
+    let response = client
+        .send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {
+                    "uri": format!("file://{}", main_rs.display())
+                },
+                "range": {
+                    "start": {"line": 10, "character": 0},
+                    "end": {"line": 10, "character": 20}
+                },
+                "context": {
+                    "diagnostics": [mock_diagnostic]
+                }
+            }),
+        )
+        .expect("Code action request failed");
+
+    assert!(
+        response.get("error").is_none(),
+        "Code action failed: {:?}",
+        response
+    );
+
+    let result = response.get("result").expect("No result");
+    let actions = result.as_array().expect("Result is not an array");
+
+    // Should have the called-function allow action with specific cause
+    let called_fn_action = actions.iter().find(|action| {
+        action
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(|t| t.contains("Config::parse"))
+            .unwrap_or(false)
+    });
+
+    assert!(
+        called_fn_action.is_some(),
+        "Should have called-function allow action. Actions: {actions:?}",
+    );
+
+    let action = called_fn_action.unwrap();
+    let title = action["title"].as_str().unwrap();
+    assert_eq!(
+        title, "Allow 'unwrap' on calls to 'my_crate::config::Config::parse()'",
+        "Title should include the specific cause, not wildcard"
+    );
+
+    // Verify the generated config rule uses the specific cause
+    let edit = &action["edit"]["documentChanges"];
+    let edit_ops = edit.as_array().unwrap();
+    let has_correct_rule = edit_ops.iter().any(|op| {
+        op.get("edits")
+            .and_then(|e| e.as_array())
+            .map(|edits| {
+                edits.iter().any(|e| {
+                    let text = e.get("newText").and_then(|t| t.as_str()).unwrap_or("");
+                    text.contains("function = \"my_crate::config::Config::parse\"")
+                        && text.contains("allow = [\"unwrap\"]")
+                })
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        has_correct_rule,
+        "Config rule should allow specific cause 'unwrap', not wildcard"
+    );
+
+    client.shutdown();
+}
+
+#[test]
 fn test_lsp_execute_command_analyze() {
     let workspace_root = find_workspace_root();
     let panic_example = workspace_root.join("examples/panic");

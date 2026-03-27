@@ -2268,6 +2268,7 @@ fn parse_function_die<R: Reader>(
     entry: &DebuggingInformationEntry<R>,
 ) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
     let mut name: Option<String> = None;
+    let mut has_linkage_name = false;
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
     let mut high_pc_is_offset = false;
@@ -2279,14 +2280,20 @@ fn parse_function_die<R: Reader>(
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_name => {
-                if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                // Only use DW_AT_name as fallback if no linkage name was found
+                if !has_linkage_name {
+                    if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
+                        name = Some(s.to_string_lossy()?.into_owned());
+                    }
                 }
             }
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer mangled name if available
+                // Prefer linkage name — contains full qualified path after demangling
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                    let mangled = s.to_string_lossy()?.into_owned();
+                    let stripped = mangled.strip_prefix('_').unwrap_or(&mangled);
+                    name = Some(format!("{:#}", demangle(stripped)));
+                    has_linkage_name = true;
                 }
             }
             gimli::DW_AT_low_pc => {
@@ -2463,9 +2470,11 @@ fn resolve_abstract_origin_name<R: Reader>(
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer mangled name if available
+                // Prefer linkage name — contains full qualified path after demangling
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                    let mangled = s.to_string_lossy()?.into_owned();
+                    let stripped = mangled.strip_prefix('_').unwrap_or(&mangled);
+                    name = Some(format!("{:#}", demangle(stripped)));
                 }
             }
             gimli::DW_AT_name => {
@@ -2528,9 +2537,11 @@ fn resolve_specification<R: Reader>(
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_linkage_name | gimli::DW_AT_MIPS_linkage_name => {
-                // Prefer mangled name if available
+                // Prefer linkage name — contains full qualified path after demangling
                 if let Ok(s) = dwarf.attr_string(unit, attr.value()) {
-                    name = Some(s.to_string_lossy()?.into_owned());
+                    let mangled = s.to_string_lossy()?.into_owned();
+                    let stripped = mangled.strip_prefix('_').unwrap_or(&mangled);
+                    name = Some(format!("{:#}", demangle(stripped)));
                 }
             }
             gimli::DW_AT_name => {

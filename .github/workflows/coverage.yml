@@ -20,18 +20,8 @@ jobs:
       - name: Install grcov
         run: cargo install grcov
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-coverage-
+      - name: Build example binaries without coverage
+        run: cargo build --workspace --exclude jonesy
 
       - name: Run tests with coverage
         env:

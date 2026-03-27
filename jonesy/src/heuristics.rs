@@ -353,9 +353,12 @@ pub fn is_panic_triggering_function(func_name: &str) -> bool {
         || func_name.contains("slice_error_fail")
         || func_name.contains("str_index_overflow_fail")
         // Index trait - direct bounds check
+        // Matches both simple names ("index<T>") and fully qualified demangled
+        // linkage names ("<impl Index<I> for str>::index")
         || func_name.starts_with("index<")
         || func_name.contains("::index<")
         || func_name.contains("Index::index")
+        || func_name.contains(">::index")
 }
 
 /// File path filter for library analysis DWARF entries.

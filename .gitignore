@@ -1,8 +1,7 @@
 **/target
+**/target_dsym_test
 *.iml
 *.xml
 modules.xml
 vcs.xml
-examples/workspace_test/target
-
-**/*.profrawexamples/panic/target/
+**/*.profraw

@@ -208,6 +208,10 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
             let exit_code = status.code().unwrap_or(-1);
             let output = child.wait_with_output().expect("Failed to get output");
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                eprintln!("jonesy stderr ({}):\n{}", example_dir.display(), stderr);
+            }
             (exit_code, parse_jones_output(&stdout))
         }
         None => {
@@ -251,8 +255,18 @@ fn run_jonesy_raw_output(example_dir: &Path, extra_args: &[&str]) -> String {
         .expect("Failed to spawn jonesy");
 
     match child.wait_timeout(JONES_TIMEOUT).expect("Failed to wait") {
-        Some(_status) => {
+        Some(status) => {
+            let exit_code = status.code().unwrap_or(-1);
             let output = child.wait_with_output().expect("Failed to get output");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                eprintln!(
+                    "jonesy raw stderr (exit={}, {}):\n{}",
+                    exit_code,
+                    example_dir.display(),
+                    stderr
+                );
+            }
             String::from_utf8_lossy(&output.stdout).to_string()
         }
         None => {
@@ -421,10 +435,14 @@ fn setup() {
             .expect("Failed to build jonesy");
         assert!(status.success(), "Failed to build jonesy");
 
-        // Build all examples
+        // Build all example binaries without coverage instrumentation.
+        // Coverage flags (via RUSTFLAGS) would alter DWARF output and cause
+        // detection differences. We only need coverage on jonesy itself.
         let status = Command::new("cargo")
-            .arg("build")
+            .args(["build", "--workspace", "--exclude", "jonesy"])
             .current_dir(&workspace_root)
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status()
             .expect("Failed to build examples");
         assert!(status.success(), "Failed to build examples");
@@ -618,10 +636,12 @@ fn test_workspace_test_example() {
     let workspace_root = find_workspace_root();
     let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-    // Build the nested workspace first
+    // Build the nested workspace without coverage instrumentation
     let status = Command::new("cargo")
         .arg("build")
         .current_dir(&workspace_test_dir)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .status()
         .expect("Failed to build workspace_test");
     assert!(status.success(), "Failed to build workspace_test");
@@ -813,19 +833,26 @@ fn test_scoped_rules() {
     // Run without config to get baseline
     let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
-    // Verify baseline actually detects the explicit panic at main.rs:9
+    // Verify baseline actually detects the explicit panic near main.rs:10
+    // DWARF may report line 8, 9, or 10 depending on platform
+    let panic_line = baseline_detected
+        .iter()
+        .find(|p| {
+            p.file.contains("main.rs")
+                && (8..=10).contains(&p.line)
+                && p.causes.iter().any(|c| c == "panic")
+        })
+        .map(|p| p.line);
     assert!(
-        baseline_detected
-            .iter()
-            .any(|p| p.file.contains("main.rs") && p.line == 9),
-        "Baseline should include explicit panic!() at main.rs:9"
+        panic_line.is_some(),
+        "Baseline should include explicit panic!() near main.rs:10"
     );
+    let panic_line = panic_line.unwrap();
 
     // Run with scoped config that allows "panic" cause in **/main.rs
     let (scoped_exit_code, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
 
     // The scoped config should result in fewer detected panics
-    // (the explicit panic!() at main.rs:9 should be filtered)
     assert!(
         scoped_exit_code < baseline_exit_code,
         "Scoped rules should filter some panics: baseline={}, with_scoped_rules={}",
@@ -839,13 +866,13 @@ fn test_scoped_rules() {
         "Scoped-filtered panics should be a subset of baseline panics"
     );
 
-    // Verify that main.rs:9 (the explicit panic!) is NOT in the filtered results
+    // Verify that the explicit panic! is NOT in the filtered results
     let explicit_panic_filtered = !scoped_detected
         .iter()
-        .any(|p| p.file.contains("main.rs") && p.line == 9);
+        .any(|p| p.file.contains("main.rs") && p.line == panic_line);
     assert!(
         explicit_panic_filtered,
-        "Scoped rule should filter explicit panic!() at main.rs:9"
+        "Scoped rule should filter explicit panic!() at main.rs:{panic_line}"
     );
 
     // Other panic types in main.rs should still be reported
@@ -1002,10 +1029,12 @@ fn test_inlined_function_names() {
     let workspace_root = find_workspace_root();
     let example_dir = workspace_root.join("examples").join("inlined");
 
-    // Build the example
+    // Build the example without coverage instrumentation
     let build_status = Command::new("cargo")
         .args(["build"])
         .current_dir(&example_dir)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1311,18 +1340,23 @@ fn test_dsym_auto_generation() {
     let workspace_root = find_workspace_root();
     let panic_example = workspace_root.join("examples/panic");
 
-    // Build the panic example with a local target directory
+    // Build the panic example with an isolated target directory
+    // Use a separate dir to avoid interfering with other tests that use find_target_dir()
+    let dsym_target = panic_example.join("target_dsym_test");
     let status = Command::new("cargo")
-        .args(["build", "--target-dir", "./target"])
+        .args(["build", "--target-dir"])
+        .arg(&dsym_target)
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .expect("Failed to build panic example");
     assert!(status.success(), "Failed to build panic example");
 
-    let binary_path = panic_example.join("target/debug/panic");
-    let dsym_path = panic_example.join("target/debug/panic.dSYM");
+    let binary_path = dsym_target.join("debug/panic");
+    let dsym_path = dsym_target.join("debug/panic.dSYM");
 
     // Remove existing dSYM if present
     if dsym_path.exists() {
@@ -1539,5 +1573,75 @@ fn test_problem_matcher_regex() {
          Tested {} lines, none matched. Sample: {:?}",
         panic_lines.len(),
         panic_lines.first()
+    );
+}
+
+/// Test that a config rule with a fully qualified function name suppresses panics
+/// for calls to that function, but not calls to an identically named function
+/// in a different module.
+///
+/// Uses `panic::module::cause_expect_none` (allowed by config) and
+/// `panic::module2::cause_expect_none` (NOT allowed, still reported).
+#[test]
+fn test_called_function_allow_distinguishes_modules() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+    let config_path = workspace_root
+        .join("jonesy")
+        .join("tests")
+        .join("test_called_function_allow.toml");
+
+    // Run without config to get baseline
+    let (_, baseline_detected) = run_jones_on_example(&example_dir);
+
+    // Both module::cause_expect_none and module2::cause_expect_none should have "expect"
+    // cause in the baseline. main.rs:23 calls module::cause_expect_none,
+    // main.rs:92 calls module2::cause_expect_none.
+    let module1_has_expect = baseline_detected
+        .iter()
+        .find(|p| p.file.contains("main.rs") && p.line == 23)
+        .map(|p| p.causes.iter().any(|c| c == "expect"))
+        .unwrap_or(false);
+    let module2_has_expect = baseline_detected
+        .iter()
+        .find(|p| p.file.contains("main.rs") && p.line == 92)
+        .map(|p| p.causes.iter().any(|c| c == "expect"))
+        .unwrap_or(false);
+
+    assert!(
+        module1_has_expect,
+        "Baseline should include 'expect' cause at main.rs:23 (module::cause_expect_none)"
+    );
+    assert!(
+        module2_has_expect,
+        "Baseline should include 'expect' cause at main.rs:92 (module2::cause_expect_none)"
+    );
+
+    // Run with config that allows "expect" on panic::module::cause_expect_none
+    let (_, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
+
+    // module::cause_expect_none (main.rs:23): "expect" cause should be removed,
+    // but other causes like "format" may still keep the point present
+    let module1_expect_cause = scoped_detected
+        .iter()
+        .find(|p| p.file.contains("main.rs") && p.line == 23)
+        .map(|p| p.causes.contains(&"expect".to_string()))
+        .unwrap_or(false);
+
+    // module2::cause_expect_none (main.rs:92): "expect" cause should still be there
+    let module2_expect_cause = scoped_detected
+        .iter()
+        .find(|p| p.file.contains("main.rs") && p.line == 92)
+        .map(|p| p.causes.contains(&"expect".to_string()))
+        .unwrap_or(false);
+
+    assert!(
+        !module1_expect_cause,
+        "Config rule for panic::module::cause_expect_none should remove 'expect' cause from main.rs:23"
+    );
+    assert!(
+        module2_expect_cause,
+        "Config rule should NOT remove 'expect' from main.rs:92 (module2::cause_expect_none)"
     );
 }
