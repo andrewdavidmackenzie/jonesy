@@ -11,6 +11,7 @@ pub mod call_tree;
 pub mod cargo;
 pub mod config;
 pub mod file_watcher;
+pub mod heuristics;
 pub mod html_output;
 pub mod inline_allows;
 pub mod json_output;

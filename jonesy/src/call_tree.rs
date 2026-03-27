@@ -4,6 +4,7 @@
 //! paths from panic symbols back to user code.
 
 use crate::config::Config;
+use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::{PanicCause, detect_panic_cause};
 use crate::sym::{CallGraph, ValidSourceFiles, matches_crate_pattern_validated};
 use dashmap::DashSet;
@@ -260,41 +261,6 @@ pub type CodePointInfo = (
 
 /// Map of code points: key -> info
 pub type CodePointMap = HashMap<CodePointKey, CodePointInfo>;
-
-/// Check if a function name represents a panic-triggering function.
-/// These are functions that directly cause a panic (unwrap, expect, panic!, etc.)
-/// as opposed to functions that call other functions that eventually panic.
-fn is_panic_triggering_function(func_name: &str) -> bool {
-    // Unwrap/expect variants
-    func_name.contains("unwrap_failed")
-        || func_name.contains("expect_failed")
-        // Direct unwrap/expect calls (before they reach _failed)
-        || (func_name.contains("unwrap") && !func_name.contains("unwrap_or"))
-        || (func_name.contains("expect") && func_name.contains("Option"))
-        || (func_name.contains("expect") && func_name.contains("Result"))
-        // Panic functions
-        || func_name.contains("panic_fmt")
-        || func_name.contains("panic_display")
-        || func_name.contains("panic_bounds_check")
-        || func_name.contains("panic_const_")
-        || func_name.contains("panic_in_cleanup")
-        || func_name.contains("panic_cannot_unwind")
-        || func_name.contains("panic_nounwind")
-        || func_name.contains("panic_misaligned_pointer")
-        || func_name.contains("panic_invalid_enum")
-        // Assert
-        || func_name.contains("assert_failed")
-        // Capacity/allocation
-        || func_name.contains("capacity_overflow")
-        || func_name.contains("handle_alloc_error")
-        // String/slice errors
-        || func_name.contains("slice_error_fail")
-        || func_name.contains("str_index_overflow_fail")
-        // Index trait - direct bounds check
-        || func_name.starts_with("index<")
-        || func_name.contains("::index<")
-        || func_name.contains("Index::index")
-}
 
 /// Extract a simple, readable function name from a potentially mangled or complex name.
 /// Demangles Rust symbols first, then extracts the simple name.
