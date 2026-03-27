@@ -129,6 +129,8 @@ impl JonesyLspServer {
             "causes": cause_ids,
             "function": &point.name,
             "file": &point.file,
+            "called_function": &point.called_function,
+            "is_direct_panic": point.is_direct_panic,
         });
 
         // Create code_description with documentation URL if available
@@ -868,6 +870,82 @@ impl JonesyLspServer {
         })
     }
 
+    /// Create a code action that adds a function-scoped rule to jonesy.toml
+    /// to silence all panics from calls to a specific function.
+    /// This is for indirect panics where the panic originates in a called function.
+    fn create_called_function_allow_action(
+        called_function: &str,
+        workspace_root: &Path,
+        diagnostic: &Diagnostic,
+    ) -> Option<CodeAction> {
+        let title = format!("Allow panics on calls to '{called_function}()'");
+        let rule_text =
+            format!("\n[[rules]]\nfunction = \"*::{called_function}\"\nallow = [\"*\"]\n");
+
+        let jonesy_toml_path = workspace_root.join("jonesy.toml");
+        let jonesy_toml_uri = Url::from_file_path(&jonesy_toml_path).ok()?;
+
+        let (file_exists, file_length) = if jonesy_toml_path.exists() {
+            let content = std::fs::read_to_string(&jonesy_toml_path).unwrap_or_default();
+            let lines = content.lines().count() as u32;
+            (true, lines)
+        } else {
+            (false, 0)
+        };
+
+        let mut document_changes = Vec::new();
+
+        if !file_exists {
+            document_changes.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                CreateFile {
+                    uri: jonesy_toml_uri.clone(),
+                    options: Some(CreateFileOptions {
+                        overwrite: Some(false),
+                        ignore_if_exists: Some(true),
+                    }),
+                    annotation_id: None,
+                },
+            )));
+        }
+
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: file_length,
+                    character: 0,
+                },
+                end: Position {
+                    line: file_length,
+                    character: 0,
+                },
+            },
+            new_text: rule_text,
+        };
+
+        document_changes.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                uri: jonesy_toml_uri,
+                version: None,
+            },
+            edits: vec![OneOf::Left(edit)],
+        }));
+
+        Some(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: None,
+                document_changes: Some(DocumentChanges::Operations(document_changes)),
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: None,
+        })
+    }
+
     /// Create a code action that adds a module-scoped rule to jonesy.toml.
     /// Returns the path pattern (e.g., "**/tests/**") and whether it applies.
     fn get_module_pattern(uri: &Url) -> Option<(&'static str, &'static str)> {
@@ -1325,6 +1403,10 @@ impl LanguageServer for JonesyLspServer {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let called_function: Option<String> = data
+                    .get("called_function")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 // Track which causes we've added actions for (avoid duplicates)
                 let mut seen_causes = std::collections::HashSet::new();
@@ -1364,7 +1446,16 @@ impl LanguageServer for JonesyLspServer {
                             }
                         }
 
-                        // Action 4: Allow in module (tests, benches, examples)
+                        // Action 4: Allow all panics on calls to called function
+                        if let Some(ref called_fn) = called_function {
+                            if let Some(action) =
+                                Self::create_called_function_allow_action(called_fn, root, diag)
+                            {
+                                actions.push(CodeActionOrCommand::CodeAction(action));
+                            }
+                        }
+
+                        // Action 5: Allow in module (tests, benches, examples)
                         if let Some(action) = Self::create_module_allow_action(
                             &params.text_document.uri,
                             cause,
@@ -1374,14 +1465,14 @@ impl LanguageServer for JonesyLspServer {
                             actions.push(CodeActionOrCommand::CodeAction(action));
                         }
 
-                        // Action 5: Allow in this crate (global allow)
+                        // Action 6: Allow in this crate (global allow)
                         if let Some(action) = Self::create_crate_allow_action(cause, root, diag) {
                             actions.push(CodeActionOrCommand::CodeAction(action));
                         }
                     }
                 }
 
-                // Action 6: Allow all panics on this line (wildcard)
+                // Action 7: Allow all panics on this line (wildcard)
                 if causes.len() > 1 {
                     if let Some(action) = Self::create_inline_allow_action(
                         &params.text_document.uri,
@@ -2482,6 +2573,29 @@ mod tests {
 
         // Uses full function path for precise matching
         assert_eq!(action.title, "Allow 'unwrap' in this function");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    }
+
+    #[test]
+    fn test_create_called_function_allow_action() {
+        let range = Range::default();
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let workspace_root = PathBuf::from("/workspace");
+
+        let action = JonesyLspServer::create_called_function_allow_action(
+            "parse_config",
+            &workspace_root,
+            &diagnostic,
+        )
+        .unwrap();
+
+        assert_eq!(action.title, "Allow panics on calls to 'parse_config()'");
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
     }
 
