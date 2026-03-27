@@ -193,32 +193,6 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
                 .join(format!("jonesy{}", std::env::consts::EXE_SUFFIX))
         });
 
-    // Debug: Check if the expected binary exists at the workspace root target dir
-    let workspace_root = find_workspace_root();
-    let ws_target = workspace_root.join("target").join("debug");
-    if let Ok(entries) = std::fs::read_dir(&ws_target) {
-        let bins: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                !name.starts_with('.') && !name.contains('-') && e.path().is_file()
-            })
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        eprintln!(
-            "Debug: workspace target/debug binaries: {:?} (for {})",
-            bins,
-            example_dir.display()
-        );
-    }
-    // Check if example has its own target dir
-    let example_target = example_dir.join("target").join("debug");
-    eprintln!(
-        "Debug: example target/debug exists: {} ({})",
-        example_target.exists(),
-        example_dir.display()
-    );
-
     // Run jonesy from the example directory with timeout
     let mut child = Command::new(&jones_binary)
         .args(extra_args)
@@ -237,14 +211,6 @@ fn run_jonesy_with_args(example_dir: &Path, extra_args: &[&str]) -> (i32, HashSe
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
                 eprintln!("jonesy stderr ({}):\n{}", example_dir.display(), stderr);
-            }
-            if exit_code == 255 {
-                eprintln!(
-                    "jonesy exited with 255 on {}. stdout ({} bytes):\n{}",
-                    example_dir.display(),
-                    stdout.len(),
-                    &stdout[..stdout.len().min(2000)]
-                );
             }
             (exit_code, parse_jones_output(&stdout))
         }
@@ -1366,9 +1332,12 @@ fn test_dsym_auto_generation() {
     let workspace_root = find_workspace_root();
     let panic_example = workspace_root.join("examples/panic");
 
-    // Build the panic example with a local target directory
+    // Build the panic example with an isolated target directory
+    // Use a separate dir to avoid interfering with other tests that use find_target_dir()
+    let dsym_target = panic_example.join("target_dsym_test");
     let status = Command::new("cargo")
-        .args(["build", "--target-dir", "./target"])
+        .args(["build", "--target-dir"])
+        .arg(&dsym_target)
         .current_dir(&panic_example)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1376,8 +1345,8 @@ fn test_dsym_auto_generation() {
         .expect("Failed to build panic example");
     assert!(status.success(), "Failed to build panic example");
 
-    let binary_path = panic_example.join("target/debug/panic");
-    let dsym_path = panic_example.join("target/debug/panic.dSYM");
+    let binary_path = dsym_target.join("debug/panic");
+    let dsym_path = dsym_target.join("debug/panic.dSYM");
 
     // Remove existing dSYM if present
     if dsym_path.exists() {
