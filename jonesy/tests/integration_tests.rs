@@ -978,6 +978,16 @@ fn test_rlib_conditional_panic_detection() {
     );
 }
 
+/// Test that simple panic patterns (without rand) detect correct source lines.
+/// When stdlib code like unwrap() is inlined, jonesy should still report
+/// the source line where the call was written, not the function definition line.
+/// This tests the "simple" pattern from issue #202.
+#[test]
+fn test_simple_panic_line_detection() {
+    setup();
+    test_example("simple_panic");
+}
+
 /// Test that inlined functions report the correct function name.
 /// When a function is inlined into main(), the panic point should still
 /// report the original function name, not "main".
@@ -1037,6 +1047,26 @@ fn test_inlined_function_names() {
         "Function names should be the inlined function names, not 'main': {:?}",
         function_names
     );
+
+    // Verify line numbers are accurate (not function-start lines).
+    // The markers are on lines 10 and 23, so detections should be on lines 10-11 and 23-24.
+    for point in panic_points {
+        let func = point["function"].as_str().unwrap_or("");
+        let line = point["line"].as_u64().unwrap_or(0) as u32;
+        if func.contains("run") {
+            // Marker on line 10, unwrap on line 11
+            assert!(
+                (10..=11).contains(&line),
+                "inlined::run should report line 10-11, got line {line}"
+            );
+        } else if func.contains("helper") {
+            // Marker on line 23, expect on line 24
+            assert!(
+                (23..=24).contains(&line),
+                "inlined::helper should report line 23-24, got line {line}"
+            );
+        }
+    }
 }
 
 /// Test that indirect panic messages include the called function name (issue #125).

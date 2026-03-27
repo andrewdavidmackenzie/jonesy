@@ -9,6 +9,7 @@ members = [
     "examples/panic",
     "examples/perfect",
     "examples/rlib",
+    "examples/simple_panic",
     "examples/staticlib",
     "examples/unwrap_or_default",
 ]
