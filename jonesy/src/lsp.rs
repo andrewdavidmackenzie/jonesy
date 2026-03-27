@@ -1446,16 +1446,7 @@ impl LanguageServer for JonesyLspServer {
                             }
                         }
 
-                        // Action 4: Allow all panics on calls to called function
-                        if let Some(ref called_fn) = called_function {
-                            if let Some(action) =
-                                Self::create_called_function_allow_action(called_fn, root, diag)
-                            {
-                                actions.push(CodeActionOrCommand::CodeAction(action));
-                            }
-                        }
-
-                        // Action 5: Allow in module (tests, benches, examples)
+                        // Action 4: Allow in module (tests, benches, examples)
                         if let Some(action) = Self::create_module_allow_action(
                             &params.text_document.uri,
                             cause,
@@ -1465,8 +1456,20 @@ impl LanguageServer for JonesyLspServer {
                             actions.push(CodeActionOrCommand::CodeAction(action));
                         }
 
-                        // Action 6: Allow in this crate (global allow)
+                        // Action 5: Allow in this crate (global allow)
                         if let Some(action) = Self::create_crate_allow_action(cause, root, diag) {
+                            actions.push(CodeActionOrCommand::CodeAction(action));
+                        }
+                    }
+                }
+
+                // Action 6: Allow all panics on calls to called function
+                // (outside cause loop since it uses wildcard allow, not cause-specific)
+                if let Some(ref root) = workspace_root {
+                    if let Some(ref called_fn) = called_function {
+                        if let Some(action) =
+                            Self::create_called_function_allow_action(called_fn, root, diag)
+                        {
                             actions.push(CodeActionOrCommand::CodeAction(action));
                         }
                     }
