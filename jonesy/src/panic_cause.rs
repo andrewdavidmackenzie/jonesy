@@ -75,6 +75,8 @@ pub enum PanicCause {
     InvalidEnum,
     /// Misaligned pointer dereference
     MisalignedPointer,
+    /// HashMap/BTreeMap key not found (Index trait on map)
+    KeyNotFound,
     /// Unknown cause
     Unknown,
 }
@@ -116,6 +118,7 @@ impl PanicCause {
             PanicCause::StringSliceError => "str_slice",
             PanicCause::InvalidEnum => "invalid_enum",
             PanicCause::MisalignedPointer => "misaligned_ptr",
+            PanicCause::KeyNotFound => "key_not_found",
             PanicCause::Unknown => "unknown",
         }
     }
@@ -155,6 +158,7 @@ impl PanicCause {
             "str_slice",
             "invalid_enum",
             "misaligned_ptr",
+            "key_not_found",
             "unknown",
         ]
     }
@@ -183,6 +187,7 @@ impl PanicCause {
             PanicCause::StringSliceError => "string/slice error",
             PanicCause::InvalidEnum => "invalid enum discriminant",
             PanicCause::MisalignedPointer => "misaligned pointer dereference",
+            PanicCause::KeyNotFound => "key not found in map",
             PanicCause::Unknown => "unknown cause",
         }
     }
@@ -245,6 +250,9 @@ impl PanicCause {
             PanicCause::MisalignedPointer => {
                 "Ensure pointer alignment requirements are met; review unsafe pointer casts"
             }
+            PanicCause::KeyNotFound => {
+                "Use .get() to safely look up keys; returns None instead of panicking"
+            }
             PanicCause::Unknown => {
                 "Jonesy detected a panic path but couldn't identify the cause. Use --tree to investigate"
             }
@@ -300,6 +308,9 @@ impl PanicCause {
             }
             PanicCause::MisalignedPointer => {
                 "This calls a function that may dereference a misaligned pointer"
+            }
+            PanicCause::KeyNotFound => {
+                "This calls a function that indexes a map. Use .get() instead of [] for safe lookup"
             }
             PanicCause::Unknown => {
                 "This calls a function that may panic. Use --tree to investigate the call chain"
@@ -386,6 +397,11 @@ impl PanicCause {
             PanicCause::MisalignedPointer => {
                 format!("This calls `{func}` which may dereference a misaligned pointer")
             }
+            PanicCause::KeyNotFound => {
+                format!(
+                    "This calls `{func}` which indexes a map. Use .get() instead of [] for safe lookup"
+                )
+            }
             PanicCause::Unknown => {
                 format!("This calls `{func}` which may panic. Use --tree to investigate")
             }
@@ -417,6 +433,7 @@ impl PanicCause {
             PanicCause::StringSliceError => "JP020",
             PanicCause::InvalidEnum => "JP021",
             PanicCause::MisalignedPointer => "JP022",
+            PanicCause::KeyNotFound => "JP023",
             PanicCause::Unknown => "JP000",
         }
     }
@@ -446,6 +463,7 @@ impl PanicCause {
             PanicCause::StringSliceError => "JP020-string-slice-error",
             PanicCause::InvalidEnum => "JP021-invalid-enum",
             PanicCause::MisalignedPointer => "JP022-misaligned-pointer",
+            PanicCause::KeyNotFound => "JP023-key-not-found",
             PanicCause::Unknown => "",
         }
     }
@@ -632,6 +650,10 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
     if func_name.contains("raw_vec") && func_name.contains("grow") {
         return Some(PanicCause::CapacityOverflow);
     }
+    // hashbrown (HashMap/HashSet internals) allocation error
+    if func_name.contains("hashbrown") && func_name.contains("alloc_err") {
+        return Some(PanicCause::OutOfMemory);
+    }
 
     // String/slice domain
     if func_name.contains("slice_error_fail") {
@@ -655,6 +677,15 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         || func_name.contains("Index::index")
         || func_name.contains(">::index")
     {
+        // Check if it's HashMap/BTreeMap indexing (key not found panic)
+        let is_map_op = func_name.contains("HashMap")
+            || func_name.contains("BTreeMap")
+            || func_name.contains("hash::map")
+            || func_name.contains("btree::map");
+        if is_map_op {
+            return Some(PanicCause::KeyNotFound);
+        }
+
         // Check if it's for str (string slice) vs array/vec (bounds check)
         // String slicing can be detected via:
         // 1. Function name containing str:: or core::str::

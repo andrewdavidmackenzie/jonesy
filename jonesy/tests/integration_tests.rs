@@ -409,6 +409,9 @@ fn description_to_cause_id(description: &str) -> String {
     if description.contains("out of memory") {
         return "oom".to_string();
     }
+    if description.contains("key not found") {
+        return "key_not_found".to_string();
+    }
     if description.contains("string") && description.contains("slice") {
         return "str_slice".to_string();
     }
@@ -1597,7 +1600,7 @@ fn test_called_function_allow_distinguishes_modules() {
 
     // Both module::cause_expect_none and module2::cause_expect_none should have "expect"
     // cause in the baseline. main.rs:23 calls module::cause_expect_none,
-    // main.rs:92 calls module2::cause_expect_none.
+    // main.rs:98 calls module2::cause_expect_none.
     let module1_has_expect = baseline_detected
         .iter()
         .find(|p| p.file.contains("main.rs") && p.line == 23)
@@ -1605,7 +1608,7 @@ fn test_called_function_allow_distinguishes_modules() {
         .unwrap_or(false);
     let module2_has_expect = baseline_detected
         .iter()
-        .find(|p| p.file.contains("main.rs") && p.line == 92)
+        .find(|p| p.file.contains("main.rs") && p.line == 98)
         .map(|p| p.causes.iter().any(|c| c == "expect"))
         .unwrap_or(false);
 
@@ -1615,7 +1618,7 @@ fn test_called_function_allow_distinguishes_modules() {
     );
     assert!(
         module2_has_expect,
-        "Baseline should include 'expect' cause at main.rs:92 (module2::cause_expect_none)"
+        "Baseline should include 'expect' cause at main.rs:98 (module2::cause_expect_none)"
     );
 
     // Run with config that allows "expect" on panic::module::cause_expect_none
@@ -1629,10 +1632,10 @@ fn test_called_function_allow_distinguishes_modules() {
         .map(|p| p.causes.contains(&"expect".to_string()))
         .unwrap_or(false);
 
-    // module2::cause_expect_none (main.rs:92): "expect" cause should still be there
+    // module2::cause_expect_none (main.rs:98): "expect" cause should still be there
     let module2_expect_cause = scoped_detected
         .iter()
-        .find(|p| p.file.contains("main.rs") && p.line == 92)
+        .find(|p| p.file.contains("main.rs") && p.line == 98)
         .map(|p| p.causes.contains(&"expect".to_string()))
         .unwrap_or(false);
 
@@ -1642,6 +1645,6 @@ fn test_called_function_allow_distinguishes_modules() {
     );
     assert!(
         module2_expect_cause,
-        "Config rule should NOT remove 'expect' from main.rs:92 (module2::cause_expect_none)"
+        "Config rule should NOT remove 'expect' from main.rs:98 (module2::cause_expect_none)"
     );
 }
