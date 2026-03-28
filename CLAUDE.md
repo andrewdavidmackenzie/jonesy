@@ -37,6 +37,10 @@ since the Makefile builds nested workspaces (like `examples/workspace_test`) tha
   (text/json/html/lsp), and a documentation page in `docs/panics/`.
 - **Update `examples/panic/` when adding new panic detection** — add a test case
   function that exercises the new detection, with a `// jonesy: expect panic` marker.
+- attempt a reasonable level of code re-use, detect functions that are similar and combine them
+with parameters if they can be
+- Use rust canonical code where possible. Implement `From` traits for conversion, create structs
+with methods, use traits when multiple implementations may be needed, etc.
 
 ## Testing Rules
 
