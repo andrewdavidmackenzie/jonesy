@@ -718,6 +718,26 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         return Some(PanicCause::MisalignedPointer);
     }
 
+    // ============================================================
+    // Collection internals - hashbrown raw table operations
+    // ============================================================
+    // hashbrown::raw:: contains the low-level hash table allocation/layout/capacity
+    // functions. When these appear on a panic path, it indicates a capacity overflow
+    // or allocation failure during HashMap/HashSet operations.
+    // This is more specific than the CannotUnwind cause that gets detected earlier
+    // from panic_nounwind_fmt on the allocator error path.
+    if func_name.contains("hashbrown::raw::") {
+        return Some(PanicCause::CapacityOverflow);
+    }
+
+    // std::collections::hash HashMap/HashSet creation and allocation functions
+    // may panic through hasher initialization (thread-local storage) or internal
+    // allocation. When no more specific cause is detected from the panic path,
+    // classify as capacity overflow since that's the most actionable cause.
+    if func_name.contains("std::collections::hash::") {
+        return Some(PanicCause::CapacityOverflow);
+    }
+
     // panic_fmt is the core panic function - if we reach here without a more
     // specific match, leave cause as None (unknown) to avoid incorrect labeling.
     None
@@ -1125,6 +1145,60 @@ mod tests {
         assert_eq!(
             detect_panic_cause("panic_misaligned_pointer_dereference", None),
             Some(PanicCause::MisalignedPointer)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_hashbrown_raw() {
+        // hashbrown raw table internals indicate capacity overflow
+        assert_eq!(
+            detect_panic_cause("hashbrown::raw::TableLayout::calculate_layout_for", None),
+            Some(PanicCause::CapacityOverflow)
+        );
+        assert_eq!(
+            detect_panic_cause(
+                "hashbrown::raw::RawTableInner::fallible_with_capacity",
+                None
+            ),
+            Some(PanicCause::CapacityOverflow)
+        );
+        assert_eq!(
+            detect_panic_cause("hashbrown::raw::RawTableInner::new_uninitialized", None),
+            Some(PanicCause::CapacityOverflow)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_std_collections_hash() {
+        // std::collections::hash functions indicate capacity overflow
+        assert_eq!(
+            detect_panic_cause(
+                "std::collections::hash::map::HashMap<K,V>::new",
+                Some("/rustc/abc/library/std/src/collections/hash/map.rs")
+            ),
+            Some(PanicCause::CapacityOverflow)
+        );
+        assert_eq!(
+            detect_panic_cause(
+                "std::collections::hash::set::HashSet<T>::with_capacity",
+                Some("/rustc/abc/library/std/src/collections/hash/set.rs")
+            ),
+            Some(PanicCause::CapacityOverflow)
+        );
+    }
+
+    #[test]
+    fn test_detect_hashbrown_specific_causes_take_priority() {
+        // hashbrown::raw::Fallibility::capacity_overflow is matched by the
+        // more specific capacity_overflow pattern, not the hashbrown::raw:: fallback
+        assert_eq!(
+            detect_panic_cause("hashbrown::raw::Fallibility::capacity_overflow", None),
+            Some(PanicCause::CapacityOverflow)
+        );
+        // hashbrown alloc_err is matched by the alloc_err pattern
+        assert_eq!(
+            detect_panic_cause("hashbrown::raw::Fallibility::alloc_err", None),
+            Some(PanicCause::OutOfMemory)
         );
     }
 
