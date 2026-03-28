@@ -88,6 +88,12 @@ fn main() {
     // jonesy: expect panic(misaligned_ptr)
     module::cause_misaligned_pointer();
 
+    // jonesy: expect panic(key_not_found)
+    module::cause_hashmap_index_panic();
+
+    // jonesy: expect panic(capacity)
+    module::cause_hashset_capacity_overflow();
+
     // jonesy: expect panic expect on None
     module2::cause_expect_none();
 }

@@ -17,3 +17,6 @@ rate limiting, and then address all comments from the review.
 Always wait for the human user to approve before you merge a PR.
 
 Don't change rust versions or install or uninstall anything using rustup without the user's explicit approval
+
+Don't assume that any test failure is independent of your change. We usually start a new feature
+branch from master where tests were working.

@@ -323,3 +323,25 @@ pub fn cause_misaligned_pointer() {
     // Panic-free alternative: use read_unaligned for potentially misaligned data
     // let value = unsafe { ptr.read_unaligned() };
 }
+
+#[inline(never)]
+pub fn cause_hashmap_index_panic() {
+    use std::collections::HashMap;
+    let map: HashMap<&str, i32> = HashMap::new();
+    // jonesy: expect panic(key_not_found)
+    let _ = map["missing_key"];
+
+    // Panic-free alternative: use .get() which returns Option
+    // if let Some(value) = map.get("missing_key") { ... }
+}
+
+#[inline(never)]
+pub fn cause_hashset_capacity_overflow() {
+    use std::collections::HashSet;
+    // jonesy: expect panic(capacity)
+    let _set: HashSet<u8> = HashSet::with_capacity(usize::MAX);
+
+    // Panic-free alternative: use try_reserve to check capacity
+    // let mut set = HashSet::new();
+    // if set.try_reserve(n).is_ok() { ... }
+}
