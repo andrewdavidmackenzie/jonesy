@@ -4,8 +4,9 @@
 //! paths from panic symbols back to user code.
 
 use crate::config::Config;
+use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
-use crate::panic_cause::{PanicCause, detect_panic_cause};
+use crate::panic_cause::PanicCause;
 use crate::sym::{CallGraph, ValidSourceFiles, matches_crate_pattern_validated};
 use dashmap::DashSet;
 use rayon::prelude::*;

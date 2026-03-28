@@ -30,9 +30,9 @@ use jonesy::config::Config;
 #[cfg(target_os = "macos")]
 use jonesy::heuristics::PANIC_SYMBOL_PATTERNS;
 #[cfg(target_os = "macos")]
-use jonesy::inline_allows::check_inline_allow;
+use jonesy::heuristics::detect_panic_cause;
 #[cfg(target_os = "macos")]
-use jonesy::panic_cause::detect_panic_cause;
+use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
 use jonesy::sym::{
     CallGraph, FunctionIndex, SymbolIndex, SymbolTable, ValidSourceFiles, find_symbol_address,

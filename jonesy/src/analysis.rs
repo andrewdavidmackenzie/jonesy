@@ -499,7 +499,7 @@ pub fn analyze_archive(
             // Detect panic cause from the panic symbol being called (target),
             // not from the user's function name (caller.name)
             if let Some(cause) =
-                crate::panic_cause::detect_panic_cause(&caller.target, Some(&caller.file))
+                crate::heuristics::detect_panic_cause(&caller.target, Some(&caller.file))
             {
                 causes.insert(cause);
             }
