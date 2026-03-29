@@ -1014,6 +1014,89 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_global_allow_capacity_single_cause() {
+        use crate::config::Config;
+        use std::io::Write;
+
+        // Create a jonesy.toml with a global (crate-level) allow for "capacity"
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("jonesy.toml");
+        let mut f = std::fs::File::create(&toml_path).unwrap();
+        writeln!(f, "allow = [\"capacity\"]").unwrap();
+
+        let mut config = Config::with_defaults();
+        config.load_from_jones_toml(&toml_path);
+
+        // Code point with only CapacityOverflow cause
+        let mut points = vec![CrateCodePoint {
+            name: "meshchat::device::DeviceIdentifier::hash".to_string(),
+            file: "src/device.rs".to_string(),
+            line: 74,
+            column: Some(22),
+            causes: vec![PanicCause::CapacityOverflow].into_iter().collect(),
+            children: vec![],
+            is_direct_panic: false,
+            called_function: Some("core::hash::Hash::hash".to_string()),
+        }];
+
+        filter_allowed_causes(&mut points, &config, None);
+
+        // The point should be filtered out because capacity is globally allowed
+        assert!(
+            points.is_empty(),
+            "Point should be filtered out by global allow for 'capacity', but found: {points:?}"
+        );
+    }
+
+    #[test]
+    fn test_filter_global_allow_capacity_with_other_cause_remaining() {
+        use crate::config::Config;
+        use std::io::Write;
+
+        // Create a jonesy.toml with a global (crate-level) allow for "capacity"
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("jonesy.toml");
+        let mut f = std::fs::File::create(&toml_path).unwrap();
+        writeln!(f, "allow = [\"capacity\"]").unwrap();
+
+        let mut config = Config::with_defaults();
+        config.load_from_jones_toml(&toml_path);
+
+        // Code point with BOTH CapacityOverflow and Unknown causes
+        // (simulates multiple panic paths through the same code point)
+        let mut points = vec![CrateCodePoint {
+            name: "meshchat::device::DeviceIdentifier::hash".to_string(),
+            file: "src/device.rs".to_string(),
+            line: 74,
+            column: Some(22),
+            causes: vec![PanicCause::CapacityOverflow, PanicCause::Unknown]
+                .into_iter()
+                .collect(),
+            children: vec![],
+            is_direct_panic: false,
+            called_function: Some("core::hash::Hash::hash".to_string()),
+        }];
+
+        filter_allowed_causes(&mut points, &config, None);
+
+        // The point should remain because Unknown is NOT allowed
+        assert_eq!(
+            points.len(),
+            1,
+            "Point should remain because Unknown cause is not allowed"
+        );
+        // But CapacityOverflow should have been removed from causes
+        assert!(
+            !points[0].causes.contains(&PanicCause::CapacityOverflow),
+            "CapacityOverflow should have been removed"
+        );
+        assert!(
+            points[0].causes.contains(&PanicCause::Unknown),
+            "Unknown should remain"
+        );
+    }
+
+    #[test]
     fn test_filter_keeps_non_matching_called_function() {
         use crate::config::Config;
         use std::io::Write;

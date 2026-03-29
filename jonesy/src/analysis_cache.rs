@@ -143,6 +143,16 @@ impl AnalysisCache {
         );
     }
 
+    /// Check if a config file is tracked in the cache.
+    pub fn has_config(&self, config_path: &Path) -> bool {
+        self.configs.contains_key(config_path)
+    }
+
+    /// Remove a config file from the cache (e.g., when deleted).
+    pub fn remove_config(&mut self, config_path: &Path) {
+        self.configs.remove(config_path);
+    }
+
     /// Check what kind of workspace changes occurred.
     pub fn detect_workspace_changes(&self, current: &WorkspaceState) -> WorkspaceChanges {
         let mut changes = WorkspaceChanges::default();
@@ -660,6 +670,39 @@ mod tests {
 
         // After loading, version should be set to current
         // (we can't easily test this without filesystem)
+    }
+
+    #[test]
+    fn test_config_changed_detects_content_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("jonesy.toml");
+
+        // Write initial config
+        fs::write(&config_path, "deny = [\"unwrap\"]").unwrap();
+
+        let mut cache = AnalysisCache::default();
+
+        // First check: not in cache, so reports changed
+        assert!(cache.config_changed(&config_path));
+
+        // Cache the config
+        cache.update_config(&config_path);
+
+        // Same content: no change detected
+        assert!(!cache.config_changed(&config_path));
+
+        // Modify the config (e.g., user adds an allow rule via quick fix)
+        fs::write(&config_path, "allow = [\"capacity\"]\ndeny = [\"unwrap\"]").unwrap();
+
+        // Should detect the content change
+        assert!(
+            cache.config_changed(&config_path),
+            "config_changed should detect modified jonesy.toml content"
+        );
+
+        // Update cache, then verify no further change
+        cache.update_config(&config_path);
+        assert!(!cache.config_changed(&config_path));
     }
 
     #[test]
