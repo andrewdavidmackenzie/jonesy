@@ -57,13 +57,10 @@ pub fn matches_crate_pattern_validated(
         if file_path.starts_with('/') {
             return valid.is_crate_source(file_path);
         }
-        // For relative paths, try resolving against workspace root first
-        if valid.is_crate_source(file_path) {
-            return true;
-        }
+        return valid.is_crate_source(file_path);
     }
 
-    // Fall back to pattern matching for relative paths and when no ValidSourceFiles
+    // Without ValidSourceFiles, fall back to simple pattern matching
     let matches = crate_pattern
         .split('|')
         .any(|pattern| !pattern.is_empty() && file_path.contains(pattern));
@@ -102,6 +99,11 @@ impl ValidSourceFiles {
     /// For workspaces, uses `{project_root}/{member}/src/` for each member.
     pub fn from_project_root(project_root: &std::path::Path) -> Self {
         let mut source_prefixes = Vec::new();
+
+        // Canonicalize to get an absolute path for reliable matching
+        let project_root =
+            std::fs::canonicalize(project_root).unwrap_or(project_root.to_path_buf());
+        let project_root = project_root.as_path();
 
         let cargo_toml = project_root.join("Cargo.toml");
         if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
@@ -150,21 +152,36 @@ impl ValidSourceFiles {
         }
     }
 
-    /// Walk up from a project root to find the workspace root.
-    /// The workspace root is the highest ancestor directory that has a Cargo.toml
-    /// with a [workspace] section. If none found, returns the original project root.
+    /// Find the workspace root for a project.
+    /// If the project root itself has a [workspace] section, returns it directly.
+    /// Otherwise walks up to find the nearest parent with [workspace].
+    /// Returns the original project root if no workspace is found.
     fn find_workspace_root(project_root: &std::path::Path) -> std::path::PathBuf {
+        // Check if project_root itself is a workspace root
+        if Self::has_workspace_section(project_root) {
+            return project_root.to_path_buf();
+        }
+
+        // Walk up to find the nearest parent workspace
         let mut current = project_root.parent();
         while let Some(dir) = current {
-            let cargo_toml = dir.join("Cargo.toml");
-            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                if content.contains("[workspace]") {
-                    return dir.to_path_buf();
-                }
+            if Self::has_workspace_section(dir) {
+                return dir.to_path_buf();
             }
             current = dir.parent();
         }
         project_root.to_path_buf()
+    }
+
+    /// Check if a directory's Cargo.toml has a [workspace] section.
+    fn has_workspace_section(dir: &std::path::Path) -> bool {
+        let cargo_toml = dir.join("Cargo.toml");
+        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
+                return manifest.workspace.is_some();
+            }
+        }
+        false
     }
 
     /// Check if a DWARF file path belongs to this project's source code.
@@ -183,9 +200,7 @@ impl ValidSourceFiles {
                 .any(|prefix| file_path.starts_with(prefix.as_str()));
         }
 
-        // For relative paths, try resolving against workspace root.
-        // Only match if the resolved path is unambiguously under a source prefix
-        // (i.e., the relative path includes enough context to be unique).
+        // For relative paths, resolve against workspace root and check.
         if let Some(root) = &self.project_root {
             let absolute = format!("{}{}", root, file_path);
             if self
@@ -193,24 +208,11 @@ impl ValidSourceFiles {
                 .iter()
                 .any(|prefix| absolute.starts_with(prefix.as_str()))
             {
-                // Verify this isn't an ambiguous short relative path like "src/main.rs"
-                // that could belong to any crate. Only trust it if the relative path
-                // includes a directory component that matches a specific member prefix.
-                let is_specific = self.source_prefixes.iter().any(|prefix| {
-                    // Extract the relative prefix from the absolute one
-                    // e.g., "/workspace/examples/panic/src/" relative to "/workspace/"
-                    // gives "examples/panic/src/"
-                    if let Some(rel_prefix) = prefix.strip_prefix(root.as_str()) {
-                        // Only match if the file path starts with this member-specific prefix
-                        // (not just a generic "src/")
-                        !rel_prefix.is_empty()
-                            && rel_prefix != "src/"
-                            && file_path.starts_with(rel_prefix)
-                    } else {
-                        false
-                    }
-                });
-                return is_specific;
+                // The resolved path matches a source prefix. But for generic relative
+                // paths like "src/main.rs", a dependency could also match.
+                // Check if the file actually exists on disk under our project root.
+                let path = std::path::Path::new(&absolute);
+                return path.exists();
             }
         }
 
@@ -3211,20 +3213,19 @@ mod tests {
 
     #[test]
     fn test_valid_source_files_relative_paths() {
-        // For a workspace with specific member prefixes, relative paths with
-        // member-specific components are matched
+        // Use the actual jonesy project root for filesystem-based validation
+        let project_root = env!("CARGO_MANIFEST_DIR");
         let valid = ValidSourceFiles {
-            source_prefixes: vec!["/Users/me/workspace/examples/panic/src/".to_string()],
-            project_root: Some("/Users/me/workspace/".to_string()),
+            source_prefixes: vec![format!("{}/src/", project_root)],
+            project_root: Some(format!("{}/", project_root)),
         };
 
-        // Workspace-specific relative paths match
-        assert!(valid.is_crate_source("examples/panic/src/main.rs"));
-        assert!(valid.is_crate_source("examples/panic/src/module/mod.rs"));
-        assert!(!valid.is_crate_source("tests/test.rs"));
+        // Relative paths that exist on disk match
+        assert!(valid.is_crate_source("src/lib.rs"));
 
-        // Generic "src/main.rs" is ambiguous — returns false, handled by fallback
-        assert!(!valid.is_crate_source("src/main.rs"));
+        // Relative paths that don't exist don't match (prevents dependency false positives)
+        assert!(!valid.is_crate_source("src/nonexistent_file.rs"));
+        assert!(!valid.is_crate_source("tests/test.rs"));
     }
 
     #[test]

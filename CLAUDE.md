@@ -1,10 +1,10 @@
 # Project
 
-Jonesy resides at https://github.com/andrewdavidmackenzie/jonesy, and it's purpose
+Jonesy resides at https://github.com/andrewdavidmackenzie/jonesy, and its purpose
 is to analyse a debug rust binary and detect all the points in the user's code where a 
 panic could occur.
 
-There are descriptions of features in README.md, as well as user facing docs in docs folder
+There are descriptions of features in README.md, as well as user-facing docs in docs folder
 and more technical details in description.md, SCENARIOS.md, features_and_tests.md, notes.md,
 BENCHMARK.md, benchmark_flow_workspace.md.
 
