@@ -213,6 +213,7 @@ pub fn analyze_macho(
                 crate_src_path,
                 show_timings,
                 symbol_index.as_ref(),
+                valid_files.as_ref(),
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -233,6 +234,7 @@ pub fn analyze_macho(
                     crate_src_path,
                     show_timings,
                     symbol_index.as_ref(),
+                    valid_files.as_ref(),
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");

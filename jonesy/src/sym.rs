@@ -1468,6 +1468,7 @@ impl<'a> CallGraph<'a> {
     /// Build a call graph with debug info enrichment.
     /// Uses parallel disassembly and parallel processing for faster analysis.
     /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_with_debug_info(
         binary_macho: &MachO,
         binary_buffer: &[u8],
@@ -1476,6 +1477,7 @@ impl<'a> CallGraph<'a> {
         crate_src_path: Option<&str>,
         show_timings: bool,
         symbol_index: Option<&'a SymbolIndex>,
+        valid_files: Option<&ValidSourceFiles>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -1559,6 +1561,7 @@ impl<'a> CallGraph<'a> {
                     &full_line_table,
                     crate_line_table.as_ref(),
                     symbol_index,
+                    valid_files,
                 )
             {
                 edges.entry(target).or_default().push(caller_info);
@@ -1965,6 +1968,7 @@ fn process_instruction_data_with_crate_table<'a>(
     full_line_table: &FullLineTable,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&'a SymbolIndex>,
+    valid_files: Option<&ValidSourceFiles>,
 ) -> Option<(u64, CallerInfo<'a>)> {
     let call_target = data.call_target?;
 
@@ -1996,7 +2000,9 @@ fn process_instruction_data_with_crate_table<'a>(
 
         // For functions in the crate source, find actual call line using pre-built table
         let file_in_crate = file.as_ref().is_some_and(|f| {
-            crate_src_path.is_some_and(|crate_path| matches_crate_pattern(f, crate_path))
+            crate_src_path.is_some_and(|crate_path| {
+                matches_crate_pattern_validated(f, crate_path, valid_files)
+            })
         });
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
