@@ -2528,15 +2528,31 @@ fn resolve_decl_file<R: Reader>(
     let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
     let file_name = file_str.to_string_lossy()?.into_owned();
 
-    if let Some(dir) = file_entry.directory(line_program.header()) {
+    let full_path = if let Some(dir) = file_entry.directory(line_program.header()) {
         let dir_str = dwarf.attr_string(unit, dir.clone())?;
         let dir_name = dir_str.to_string_lossy()?;
         if !dir_name.is_empty() {
-            return Ok(Some(format!("{dir_name}/{file_name}")));
+            format!("{dir_name}/{file_name}")
+        } else {
+            file_name
+        }
+    } else {
+        file_name
+    };
+
+    // If the path is relative, prepend the compilation directory to make it absolute.
+    // This is critical for distinguishing between files with the same relative path
+    // in different crates (e.g., "src/device.rs" in both the user's crate and a dependency).
+    if !full_path.starts_with('/') {
+        if let Some(comp_dir) = &unit.comp_dir {
+            let comp_dir_str = comp_dir.to_string_lossy()?;
+            if !comp_dir_str.is_empty() {
+                return Ok(Some(format!("{comp_dir_str}/{full_path}")));
+            }
         }
     }
 
-    Ok(Some(file_name))
+    Ok(Some(full_path))
 }
 
 /// Resolve name, file, and line from a DW_AT_specification reference.
@@ -3248,6 +3264,48 @@ mod tests {
         assert!(!valid.is_crate_source(
             "/Users/me/.cargo/registry/src/index.crates.io-abc/metal-0.32.0/src/device.rs"
         ));
+    }
+
+    /// Test the exact scenario that caused false positives in meshchat:
+    /// After resolve_decl_file prepends comp_dir, a metal crate function's
+    /// file path becomes absolute and is correctly rejected by is_crate_source.
+    #[test]
+    fn test_dependency_function_with_absolute_path_from_comp_dir() {
+        let valid = ValidSourceFiles {
+            source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
+            project_root: Some("/Users/me/meshchat/".to_string()),
+        };
+
+        // After resolve_decl_file prepends comp_dir, the metal function's file becomes:
+        // comp_dir="/Users/me/.cargo/registry/.../metal-0.32.0" + "src/device.rs"
+        let metal_device_rs =
+            "/Users/me/.cargo/registry/src/index.crates.io-abc/metal-0.32.0/src/device.rs";
+
+        // This should NOT match as crate source
+        assert!(
+            !valid.is_crate_source(metal_device_rs),
+            "Metal crate's device.rs should not be identified as meshchat source"
+        );
+
+        // But meshchat's own device.rs should match
+        assert!(
+            valid.is_crate_source("/Users/me/meshchat/src/device.rs"),
+            "Meshchat's device.rs should be identified as crate source"
+        );
+
+        // Verify via matches_crate_pattern_validated too
+        assert!(
+            !matches_crate_pattern_validated(metal_device_rs, "src/", Some(&valid)),
+            "Metal's device.rs should be rejected by validated pattern matching"
+        );
+        assert!(
+            matches_crate_pattern_validated(
+                "/Users/me/meshchat/src/device.rs",
+                "src/",
+                Some(&valid)
+            ),
+            "Meshchat's device.rs should pass validated pattern matching"
+        );
     }
 
     #[test]
