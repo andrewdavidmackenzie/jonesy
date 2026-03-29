@@ -1571,7 +1571,7 @@ async fn run_analysis_task(
     // Config changes affect all targets, so force a full re-analysis.
     let config_files = find_config_files(&workspace_root);
     for config_path in &config_files {
-        let config_deleted = !config_path.exists() && cache.configs.contains_key(config_path);
+        let config_deleted = !config_path.exists() && cache.has_config(config_path);
         if config_deleted || (config_path.exists() && cache.config_changed(config_path)) {
             client
                 .log_message(
@@ -1587,7 +1587,7 @@ async fn run_analysis_task(
                 .await;
             force_full_analysis = true;
             if config_deleted {
-                cache.configs.remove(config_path);
+                cache.remove_config(config_path);
             } else {
                 cache.update_config(config_path);
             }

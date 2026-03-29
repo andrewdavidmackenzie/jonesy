@@ -351,8 +351,13 @@ impl Config {
                     }
                 });
 
-            // Rules with no path or function pattern are treated as global rules
-            if path.is_none() && function.is_none() {
+            let has_path = toml_rule.path.is_some();
+            let has_function = toml_rule.function.is_some();
+
+            // Rules that genuinely omitted both selectors are treated as global rules.
+            // If a selector was provided but failed to parse (invalid glob), skip the
+            // rule entirely — the warning was already printed above.
+            if !has_path && !has_function {
                 for id in &toml_rule.allow {
                     if Self::is_valid_cause_id(id) {
                         self.allowed.insert(id.clone());
@@ -369,6 +374,11 @@ impl Config {
                         eprintln!("Warning: Unknown panic cause '{}' in deny list", id);
                     }
                 }
+                continue;
+            }
+
+            // Skip rules where a selector was specified but failed to parse
+            if path.is_none() && function.is_none() {
                 continue;
             }
 
@@ -565,6 +575,27 @@ mod tests {
         // Other causes should still be denied
         assert!(config.is_denied(&PanicCause::UnwrapNone));
         assert!(config.is_denied(&PanicCause::ExplicitPanic));
+    }
+
+    #[test]
+    fn test_malformed_scoped_rule_not_promoted_to_global() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                // Invalid glob pattern — should NOT become a global rule
+                path: Some("[".to_string()),
+                function: None,
+                allow: vec!["unwrap".to_string()],
+                deny: vec![],
+            }],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // unwrap should still be denied — the malformed rule should be skipped
+        assert!(config.is_denied(&PanicCause::UnwrapNone));
     }
 
     #[test]

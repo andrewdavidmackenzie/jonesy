@@ -143,6 +143,16 @@ impl AnalysisCache {
         );
     }
 
+    /// Check if a config file is tracked in the cache.
+    pub fn has_config(&self, config_path: &Path) -> bool {
+        self.configs.contains_key(config_path)
+    }
+
+    /// Remove a config file from the cache (e.g., when deleted).
+    pub fn remove_config(&mut self, config_path: &Path) {
+        self.configs.remove(config_path);
+    }
+
     /// Check what kind of workspace changes occurred.
     pub fn detect_workspace_changes(&self, current: &WorkspaceState) -> WorkspaceChanges {
         let mut changes = WorkspaceChanges::default();
