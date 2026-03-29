@@ -1565,7 +1565,29 @@ async fn run_analysis_task(
     };
 
     let workspace_changes = cache.detect_workspace_changes(&current_workspace_state);
-    let force_full_analysis = workspace_changes.needs_full_reanalysis();
+    let mut force_full_analysis = workspace_changes.needs_full_reanalysis();
+
+    // Check if config files (jonesy.toml, Cargo.toml) have changed.
+    // Config changes affect all targets, so force a full re-analysis.
+    let config_files = find_config_files(&workspace_root);
+    for config_path in &config_files {
+        if config_path.exists() && cache.config_changed(config_path) {
+            client
+                .log_message(
+                    MessageType::INFO,
+                    format!(
+                        "Config changed: {}",
+                        config_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ),
+                )
+                .await;
+            force_full_analysis = true;
+            cache.update_config(config_path);
+        }
+    }
 
     if workspace_changes.has_changes() {
         let change_summary = format!(

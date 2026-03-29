@@ -351,9 +351,24 @@ impl Config {
                     }
                 });
 
-            // Skip rules with no valid patterns
+            // Rules with no path or function pattern are treated as global rules
             if path.is_none() && function.is_none() {
-                eprintln!("Warning: Scoped rule has no valid path or function pattern, skipping");
+                for id in &toml_rule.allow {
+                    if Self::is_valid_cause_id(id) {
+                        self.allowed.insert(id.clone());
+                        self.denied.remove(id);
+                    } else {
+                        eprintln!("Warning: Unknown panic cause '{}' in allow list", id);
+                    }
+                }
+                for id in &toml_rule.deny {
+                    if Self::is_valid_cause_id(id) {
+                        self.denied.insert(id.clone());
+                        self.allowed.remove(id);
+                    } else {
+                        eprintln!("Warning: Unknown panic cause '{}' in deny list", id);
+                    }
+                }
                 continue;
             }
 
@@ -524,6 +539,103 @@ mod tests {
 
         // Drop should now be denied
         assert!(config.is_denied(&PanicCause::PanicInDrop));
+    }
+
+    #[test]
+    fn test_rules_without_pattern_treated_as_global() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                path: None,
+                function: None,
+                allow: vec!["expect".to_string(), "capacity".to_string()],
+                deny: vec![],
+            }],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // expect and capacity should be globally allowed
+        assert!(!config.is_denied(&PanicCause::ExpectNone));
+        assert!(!config.is_denied(&PanicCause::ExpectErr));
+        assert!(!config.is_denied(&PanicCause::CapacityOverflow));
+
+        // Other causes should still be denied
+        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::ExplicitPanic));
+    }
+
+    #[test]
+    fn test_scoped_rule_allows_format_on_function() {
+        let mut config = Config::with_defaults();
+        let toml_config = TomlConfig {
+            allow: vec![],
+            deny: vec![],
+            rules: vec![TomlScopedRule {
+                path: None,
+                function: Some("alloc::fmt::format".to_string()),
+                allow: vec!["format".to_string()],
+                deny: vec![],
+            }],
+            filter_phantom_async: None,
+        };
+        config.apply_toml_config(&toml_config);
+
+        // format should be allowed when called from alloc::fmt::format
+        assert!(!config.is_denied_at(
+            &PanicCause::FormattingError,
+            Some("src/main.rs"),
+            Some("alloc::fmt::format"),
+        ));
+
+        // format should still be denied for other functions
+        assert!(config.is_denied_at(
+            &PanicCause::FormattingError,
+            Some("src/main.rs"),
+            Some("my_crate::render"),
+        ));
+    }
+
+    #[test]
+    fn test_meshchat_jonesy_toml_parsed_correctly() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("jonesy.toml");
+        let mut f = std::fs::File::create(&toml_path).unwrap();
+        write!(
+            f,
+            "[[rules]]\nallow = [\"expect\", \"capacity\"]\n[[rules]]\nfunction = \"alloc::fmt::format\"\nallow = [\"format\"]\n"
+        )
+        .unwrap();
+
+        let mut config = Config::with_defaults();
+        config.load_from_jones_toml(&toml_path);
+
+        // First rule (no path/function) should be treated as global
+        assert!(!config.is_denied(&PanicCause::ExpectNone));
+        assert!(!config.is_denied(&PanicCause::ExpectErr));
+        assert!(!config.is_denied(&PanicCause::CapacityOverflow));
+
+        // Second rule should allow format on alloc::fmt::format
+        assert!(!config.is_denied_at(
+            &PanicCause::FormattingError,
+            Some("src/main.rs"),
+            Some("alloc::fmt::format"),
+        ));
+
+        // format should still be denied for other functions
+        assert!(config.is_denied_at(
+            &PanicCause::FormattingError,
+            Some("src/main.rs"),
+            Some("my_crate::render"),
+        ));
+
+        // Other causes should still be denied
+        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::ExplicitPanic));
     }
 
     #[test]

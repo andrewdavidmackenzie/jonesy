@@ -663,6 +663,39 @@ mod tests {
     }
 
     #[test]
+    fn test_config_changed_detects_content_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("jonesy.toml");
+
+        // Write initial config
+        fs::write(&config_path, "deny = [\"unwrap\"]").unwrap();
+
+        let mut cache = AnalysisCache::default();
+
+        // First check: not in cache, so reports changed
+        assert!(cache.config_changed(&config_path));
+
+        // Cache the config
+        cache.update_config(&config_path);
+
+        // Same content: no change detected
+        assert!(!cache.config_changed(&config_path));
+
+        // Modify the config (e.g., user adds an allow rule via quick fix)
+        fs::write(&config_path, "allow = [\"capacity\"]\ndeny = [\"unwrap\"]").unwrap();
+
+        // Should detect the content change
+        assert!(
+            cache.config_changed(&config_path),
+            "config_changed should detect modified jonesy.toml content"
+        );
+
+        // Update cache, then verify no further change
+        cache.update_config(&config_path);
+        assert!(!cache.config_changed(&config_path));
+    }
+
+    #[test]
     fn test_workspace_changes_no_full_reanalysis_without_member_changes() {
         let changes = WorkspaceChanges {
             added_binaries: vec!["bin1".to_string()],
