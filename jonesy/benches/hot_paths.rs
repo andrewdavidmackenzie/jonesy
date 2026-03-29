@@ -229,6 +229,7 @@ fn bench_build_call_tree_sequential(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
+            None,
         )
         .expect("Failed to build call graph");
 
@@ -324,6 +325,7 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
+            None,
         )
         .expect("Failed to build call graph");
 
@@ -462,6 +464,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
                     Some("jonesy/src/"),
                     false,
                     symbol_index.as_ref(),
+                    None,
                 );
                 black_box(graph)
             })
@@ -552,6 +555,7 @@ fn bench_build_shallow_callers(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
+            None,
         )
         .expect("Failed to build call graph");
 

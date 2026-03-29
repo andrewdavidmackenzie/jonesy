@@ -106,6 +106,15 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
     None
 }
 
+/// Expand a workspace member pattern to concrete directory paths.
+/// Handles glob patterns like "examples/*" by enumerating directories.
+pub fn expand_workspace_members(
+    workspace_root: &Path,
+    member_pattern: &str,
+) -> Vec<std::path::PathBuf> {
+    expand_workspace_member(workspace_root, member_pattern)
+}
+
 /// Expand a workspace member pattern to concrete paths.
 /// Handles glob patterns like "examples/*" by enumerating directories.
 fn expand_workspace_member(workspace_root: &Path, member_pattern: &str) -> Vec<std::path::PathBuf> {
