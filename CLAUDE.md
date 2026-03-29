@@ -1,3 +1,9 @@
+# Project
+
+Jonesy resides at https://github.com/andrewdavidmackenzie/jonesy and it's purpose
+is to analyse a debug rust binary and detect all the points in the user's code where a 
+panic could occur.
+
 ## General Considerations
 
 1. Allow Claude to say "I don't know" if it can't find information to confirm a
