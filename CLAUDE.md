@@ -1,6 +1,6 @@
 # Project
 
-Jonesy resides at https://github.com/andrewdavidmackenzie/jonesy and it's purpose
+Jonesy resides at https://github.com/andrewdavidmackenzie/jonesy, and it's purpose
 is to analyse a debug rust binary and detect all the points in the user's code where a 
 panic could occur.
 
