@@ -262,7 +262,7 @@ mod tests {
                 "test_func",
                 "src/main.rs",
                 10,
-                vec![PanicCause::UnwrapNone],
+                vec![PanicCause::Unwrap],
             )],
         };
 
@@ -288,7 +288,7 @@ mod tests {
                 "test_func",
                 "src/main.rs",
                 10,
-                vec![PanicCause::UnwrapNone],
+                vec![PanicCause::Unwrap],
             )],
         };
 
@@ -355,15 +355,15 @@ mod tests {
             "test",
             "src/main.rs",
             10,
-            vec![PanicCause::UnwrapNone, PanicCause::UnwrapErr],
+            vec![PanicCause::Unwrap, PanicCause::BoundsCheck],
         );
 
         let json = code_point_to_json(&point, "/test", false);
         let causes = json["causes"].as_array().unwrap();
         assert_eq!(causes.len(), 2);
         // Causes should be sorted by error code
-        assert_eq!(causes[0]["code"], "JP006");
-        assert_eq!(causes[1]["code"], "JP007");
+        assert_eq!(causes[0]["code"], "JP002");
+        assert_eq!(causes[1]["code"], "JP006");
     }
 
     #[test]

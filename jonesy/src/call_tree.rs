@@ -7,7 +7,8 @@ use crate::config::Config;
 use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
-use crate::sym::{CallGraph, ValidSourceFiles, matches_crate_pattern_validated};
+use crate::project_context::ProjectContext;
+use crate::sym::CallGraph;
 use dashmap::DashSet;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
@@ -46,66 +47,41 @@ impl CallTreeNode {
 /// Uses a thread-safe visited set to avoid infinite recursion when there are cycles.
 /// Uses pre-computed CallGraph for O(1) lookups instead of re-scanning instructions.
 /// Parallelizes exploration of top-level callers, with sequential recursion within each branch.
-pub fn build_call_tree_parallel(
-    call_graph: &CallGraph<'_>,
-    target_addr: u64,
-    visited: &Arc<DashSet<u64>>,
-) -> Vec<CallTreeNode> {
-    build_call_tree_parallel_filtered(call_graph, target_addr, visited, None, None)
-}
-
 /// Build a call tree with early filtering during construction.
 /// Nodes that would be pruned (not in crate and no crate children) are never created.
 pub fn build_call_tree_parallel_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
-    crate_src_path: Option<&str>,
-    valid_files: Option<&ValidSourceFiles>,
+    project_context: &ProjectContext,
 ) -> Vec<CallTreeNode> {
-    // Use pre-computed call graph for O(1) lookup
     let callers = call_graph.get_callers(target_addr);
 
-    // Process callers in parallel at this level.
-    // Note: We share visited across all branches to avoid exponential blowup.
-    // This means shared subtrees are only explored once, but all nodes are still created.
     callers
         .par_iter()
         .filter_map(|caller_info| {
             let caller_addr = caller_info.caller_start_address;
-
-            // Atomically try to insert - if already present, skip recursion but still create node
             let should_recurse = visited.insert(caller_addr);
 
-            // Create a new node for this caller
-            // Use the function's declaration file for crate identification,
-            // falling back to the call site file if not available
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
-                // Use sequential recursion within each branch to ensure deterministic behavior
                 build_call_tree_sequential_filtered(
                     call_graph,
                     caller_addr,
                     visited,
-                    crate_src_path,
-                    valid_files,
+                    project_context,
                 )
             } else {
-                // Already visited - still get callers but don't recurse into them
-                // This ensures all paths through the call graph are represented
-                build_shallow_callers_filtered(call_graph, caller_addr, crate_src_path, valid_files)
+                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
             };
 
-            // Early pruning: skip nodes with no children that aren't in crate
-            if let Some(crate_path) = crate_src_path {
-                if child_callers.is_empty() {
-                    let in_crate = file.as_ref().is_some_and(|f| {
-                        matches_crate_pattern_validated(f, crate_path, valid_files)
-                    });
-                    if !in_crate {
-                        return None;
-                    }
-                }
+            // Early pruning: skip leaf nodes that aren't in crate source
+            if child_callers.is_empty()
+                && !file
+                    .as_ref()
+                    .is_some_and(|f| project_context.is_crate_source(f))
+            {
+                return None;
             }
 
             Some(CallTreeNode {
@@ -119,25 +95,12 @@ pub fn build_call_tree_parallel_filtered(
         .collect()
 }
 
-/// Sequential version for recursion within parallel branches.
-/// Filters during construction to avoid creating nodes that would be pruned.
-pub fn build_call_tree_sequential(
-    call_graph: &CallGraph<'_>,
-    target_addr: u64,
-    visited: &Arc<DashSet<u64>>,
-) -> Vec<CallTreeNode> {
-    build_call_tree_sequential_filtered(call_graph, target_addr, visited, None, None)
-}
-
-/// Sequential version with optional early filtering during construction.
-/// When crate_src_path is provided, nodes are filtered as they're built,
-/// avoiding creation of nodes that would be pruned later.
+/// Sequential version with early filtering during construction.
 pub fn build_call_tree_sequential_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
-    crate_src_path: Option<&str>,
-    valid_files: Option<&ValidSourceFiles>,
+    project_context: &ProjectContext,
 ) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
@@ -153,25 +116,19 @@ pub fn build_call_tree_sequential_filtered(
                     call_graph,
                     caller_addr,
                     visited,
-                    crate_src_path,
-                    valid_files,
+                    project_context,
                 )
             } else {
-                // Already visited - still get callers but don't recurse into them
-                build_shallow_callers_filtered(call_graph, caller_addr, crate_src_path, valid_files)
+                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
             };
 
-            // Early pruning: skip nodes with no children that aren't in crate
-            if let Some(crate_path) = crate_src_path {
-                if child_callers.is_empty() {
-                    // Leaf node: only keep if in crate
-                    let in_crate = file.as_ref().is_some_and(|f| {
-                        matches_crate_pattern_validated(f, crate_path, valid_files)
-                    });
-                    if !in_crate {
-                        return None;
-                    }
-                }
+            // Early pruning: skip leaf nodes that aren't in crate source
+            if child_callers.is_empty()
+                && !file
+                    .as_ref()
+                    .is_some_and(|f| project_context.is_crate_source(f))
+            {
+                return None;
             }
 
             Some(CallTreeNode {
@@ -185,20 +142,12 @@ pub fn build_call_tree_sequential_filtered(
         .collect()
 }
 
-/// Build shallow caller nodes without recursion.
-/// Used when a function was already visited through another path.
-/// This ensures we still capture caller relationships even for visited functions.
-pub fn build_shallow_callers(call_graph: &CallGraph<'_>, target_addr: u64) -> Vec<CallTreeNode> {
-    build_shallow_callers_filtered(call_graph, target_addr, None, None)
-}
-
-/// Build shallow caller nodes with optional filtering.
+/// Build shallow caller nodes with filtering.
 /// Only creates nodes that are in the crate (leaves are filtered).
-fn build_shallow_callers_filtered(
+pub fn build_shallow_callers_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
-    crate_src_path: Option<&str>,
-    valid_files: Option<&ValidSourceFiles>,
+    project_context: &ProjectContext,
 ) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
@@ -206,14 +155,12 @@ fn build_shallow_callers_filtered(
         .filter_map(|caller_info| {
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
 
-            // Early pruning: shallow callers are leaves, only keep if in crate
-            if let Some(crate_path) = crate_src_path {
-                let in_crate = file
-                    .as_ref()
-                    .is_some_and(|f| matches_crate_pattern_validated(f, crate_path, valid_files));
-                if !in_crate {
-                    return None;
-                }
+            // Shallow callers are leaves — only keep if in crate source
+            if !file
+                .as_ref()
+                .is_some_and(|f| project_context.is_crate_source(f))
+            {
+                return None;
             }
 
             Some(CallTreeNode {
@@ -314,22 +261,13 @@ fn extract_qualified_function_name(full_name: &str) -> String {
 /// Returns a list of "root" code points (entry points) with their children.
 pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
-    crate_src_path: &str,
-    valid_files: Option<&ValidSourceFiles>,
+    project_context: &ProjectContext,
 ) -> Vec<CrateCodePoint> {
     // First pass: collect all crate code points and their relationships
     // Map: (file, line) -> (name, cause, set of child keys)
     let mut points: CodePointMap = CodePointMap::new();
 
-    collect_crate_relationships(
-        node,
-        crate_src_path,
-        &mut points,
-        None,
-        None,
-        None,
-        valid_files,
-    );
+    collect_crate_relationships(node, &mut points, None, None, None, project_context);
 
     // All crate code points should be reported as roots.
     // Each point that can lead to a panic deserves its own entry,
@@ -419,21 +357,20 @@ pub fn collect_crate_code_points_hierarchical(
 /// or indirect (calling a function that eventually panics).
 pub fn collect_crate_relationships(
     node: &CallTreeNode,
-    crate_src_path: &str,
     points: &mut CodePointMap,
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
     immediate_callee: Option<&str>, // Name of function this node calls (toward panic)
-    valid_files: Option<&ValidSourceFiles>,
+    project_context: &ProjectContext,
 ) {
-    // Try to detect panic cause from this node's function name and file path
-    let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
+    // Try to detect panic cause from this node's function name
+    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
 
     // Check if file matches any of the patterns
     let file_matches = node
         .file
         .as_ref()
-        .is_some_and(|file| matches_crate_pattern_validated(file, crate_src_path, valid_files));
+        .is_some_and(|file| project_context.is_crate_source(file));
 
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
         && file_matches
@@ -497,12 +434,11 @@ pub fn collect_crate_relationships(
     for caller in &node.callers {
         collect_crate_relationships(
             caller,
-            crate_src_path,
             points,
             next_child.clone(),
             detected_cause.clone(),
-            Some(&node.name), // Current node is the callee for the caller
-            valid_files,
+            Some(&node.name),
+            project_context,
         );
     }
 }
@@ -513,12 +449,11 @@ pub fn collect_crate_relationships(
 /// The `workspace_root` parameter is used to resolve relative file paths for inline allow checks.
 pub fn collect_crate_code_points(
     node: &CallTreeNode,
-    crate_src_path: &str,
     config: &Config,
-    valid_files: Option<&ValidSourceFiles>,
+    project_context: &ProjectContext,
     workspace_root: Option<&std::path::Path>,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
-    let mut roots = collect_crate_code_points_hierarchical(node, crate_src_path, valid_files);
+    let mut roots = collect_crate_code_points_hierarchical(node, project_context);
 
     // Assign Unknown cause to leaf points without identified causes
     assign_unknown_causes(&mut roots);
@@ -799,7 +734,7 @@ mod tests {
             file: "src/main.rs".to_string(),
             line: 42,
             column: Some(5),
-            causes: vec![PanicCause::UnwrapNone].into_iter().collect(),
+            causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
             called_function: Some("my_crate::time::TimeStamp::now".to_string()),
@@ -921,7 +856,7 @@ mod tests {
             file: "src/main.rs".to_string(),
             line: 42,
             column: Some(5),
-            causes: vec![PanicCause::UnwrapNone].into_iter().collect(),
+            causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
             called_function: Some("other_crate::Config::parse".to_string()),

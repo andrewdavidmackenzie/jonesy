@@ -349,16 +349,10 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
 /// Map a cause description (from output) to the cause ID (used in markers)
 fn description_to_cause_id(description: &str) -> String {
     // Handle exact matches from jonesy output
-    if description.contains("unwrap()") && description.contains("None") {
+    if description.contains("unwrap()") {
         return "unwrap".to_string();
     }
-    if description.contains("unwrap()") && description.contains("Err") {
-        return "unwrap".to_string();
-    }
-    if description.contains("expect()") && description.contains("None") {
-        return "expect".to_string();
-    }
-    if description.contains("expect()") && description.contains("Err") {
+    if description.contains("expect()") {
         return "expect".to_string();
     }
     if description.contains("panic!()") {

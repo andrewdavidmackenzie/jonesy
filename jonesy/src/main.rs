@@ -4,7 +4,7 @@ use goblin::mach::Mach::{Binary, Fat};
 #[cfg(target_os = "macos")]
 use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_macho};
 #[cfg(target_os = "macos")]
-use jonesy::sym::{SymbolTable, read_symbols};
+use jonesy::sym::SymbolTable;
 
 // Cross-platform imports
 use jonesy::args::{Args, VERSION, WorkspaceMember, parse_args};
@@ -120,7 +120,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let binary_buffer = fs::read(&binary_path)?;
-        let symbols = read_symbols(&binary_buffer)?;
+        let symbols = SymbolTable::from(&binary_buffer)?;
 
         // Capture project info from the first binary processed
         if project_name.is_none() {
@@ -302,7 +302,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     .canonicalize()
                     .unwrap_or_else(|_| binary_path.clone());
                 let binary_buffer = fs::read(&binary_path).ok()?;
-                let symbols = read_symbols(&binary_buffer).ok()?;
+                let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
                 let result = match symbols {
                     SymbolTable::MachO(Binary(macho)) => analyze_macho(

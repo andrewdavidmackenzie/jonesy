@@ -1,47 +1,18 @@
-//! Detection heuristics for panic analysis.
+//! Panic detection and classification.
 //!
-//! Jonesy uses a layered set of heuristics to achieve two core tasks:
-//!
-//! 1. **Source code ownership** — Distinguishing user/crate code from standard library
-//!    and dependency code in DWARF debug info and symbol tables.
-//! 2. **Panic cause classification** — Identifying _what kind_ of panic a call path
-//!    leads to (e.g., `unwrap()` on `None` vs. index out of bounds).
-//!
-//! This module consolidates the pattern constants and classification functions used
-//! throughout the crate, serving as the single reference for how detection works.
-//!
-//! # Source Code Ownership
-//!
-//! DWARF debug info includes file paths for every source line. When the compiler
-//! inlines stdlib code (e.g., `Option::unwrap()`), the line table contains paths
-//! from the Rust toolchain (like `/rustc/.../option.rs`). Jonesy must distinguish
-//! these from user code to report only panic points the developer controls.
-//!
-//! Two mechanisms handle this:
-//!
-//! - [`is_stdlib_function`] — Checks if a demangled function name belongs to the
-//!   standard library by namespace (`core::`, `std::`, `alloc::`), including trait
-//!   impl forms like `<core::option::Option<T>>::unwrap`.
-//!
-//! - `ValidSourceFiles` / `matches_crate_pattern_validated` (in [`crate::sym`]) —
-//!   Positive matching: checks if a file's absolute path falls under a known
-//!   source directory prefix derived from the project's `Cargo.toml`. All DWARF
-//!   paths are made absolute (via `comp_dir` prepending) at creation time.
+//! This module provides pattern matching and classification for panic analysis:
 //!
 //! # Panic Entry Points
 //!
 //! Analysis begins by finding _entry points_ — the low-level functions that the
-//! Rust panic runtime calls. The entry points differ between binary and library
-//! analysis:
+//! Rust panic runtime calls:
 //!
 //! - **Binary analysis** uses [`PANIC_SYMBOL_PATTERNS`] to find symbols like
 //!   `rust_panic$` in the binary's symbol table, then traces backwards through
 //!   the call graph to find user code that reaches them.
 //!
-//! - **Library analysis** (rlib/staticlib) cannot trace from a single entry point
-//!   because library object files are not fully linked. Instead, it uses
-//!   [`LIBRARY_PANIC_PATTERNS`] to match demangled relocation targets against
-//!   known panic-related functions.
+//! - **Library analysis** (rlib/staticlib) uses [`is_library_panic_symbol`] to
+//!   match demangled relocation targets against known panic-related functions.
 //!
 //! - **Abort paths** — Some panics (like OOM via `alloc_error_handler`) go through
 //!   `std::process::abort()` instead of the normal panic runtime. These are
@@ -50,14 +21,12 @@
 //! # Panic Cause Classification
 //!
 //! Once a panic path is found, jonesy classifies _why_ it panics. This happens
-//! in [`detect_panic_cause`] by matching against the
-//! function name at the panic site. The classification uses a priority order:
+//! in [`detect_panic_cause`] by matching against the fully qualified demangled
+//! function name. The classification uses a priority order:
 //!
 //! 1. **Exact symbol match** — e.g., `panic_bounds_check` → bounds error
 //! 2. **Domain detection** — e.g., `core::fmt::` prefix → formatting error
-//! 3. **Contextual disambiguation** — e.g., `unwrap_failed` in `option.rs`
-//!    vs. `result.rs` distinguishes `JP006` from `JP007`
-//! 4. **Fallback** — `PanicCause::Unknown` when no heuristic matches
+//! 3. **Fallback** — `None` when no pattern matches (caller assigns `Unknown`)
 //!
 //! # Direct vs. Indirect Panics
 //!
@@ -109,90 +78,37 @@ pub const ABORT_SYMBOL_PATTERNS: &[&str] = &["std::process::abort"];
 /// call graph. This list defines the demangled names that indicate a
 /// relocation target is panic-related.
 ///
-/// The list is checked with `contains()` matching, so `"core::panicking::panic"`
-/// also matches `core::panicking::panic_fmt` etc. Order does not matter.
-///
-/// # Categories
-///
-/// **Direct panic functions** — the low-level panic entry points:
-/// - `core::panicking::panic`, `panic_fmt`, `panic_display`
-/// - `panic_in_cleanup` (panic during drop), `panic_cannot_unwind`
-/// - `panic_const` (compile-time overflow checks)
-/// - `panic_bounds_check`, `panic_nounwind_fmt`
-/// - `assert_failed` (assert/debug_assert macros)
-/// - `std::panicking::begin_panic` / `begin_panic_fmt`
-///
-/// **Option panic functions** — called when unwrapping `None`:
-/// - `core::option::Option<T>::unwrap`, `::expect`
-/// - `core::option::unwrap_failed` (internal panic function)
-///
-/// **Result panic functions** — called when unwrapping `Err`:
-/// - `core::result::Result<T, E>::unwrap`, `::expect`
-/// - `core::result::Result<T, E>::unwrap_err`, `::expect_err`
-/// - `core::result::unwrap_failed` (internal panic function)
-///
-/// # Additional dynamic patterns
-///
-/// At runtime, the library analysis also matches:
-/// - Any symbol containing `core::panicking::` (catches future additions)
-/// - `std::panicking::*` except `set_hook`/`take_hook` (which configures
-///   the panic-handler, not trigger panics)
-pub const LIBRARY_PANIC_PATTERNS: &[&str] = &[
-    // Direct panic functions
-    "core::panicking::panic",
-    "core::panicking::panic_fmt",
-    "core::panicking::panic_display",
-    "core::panicking::panic_in_cleanup",
-    "core::panicking::panic_const",
-    "core::panicking::panic_bounds_check",
-    "core::panicking::panic_nounwind_fmt",
-    "core::panicking::panic_cannot_unwind",
-    "core::panicking::assert_failed",
-    "std::panicking::begin_panic",
-    "std::panicking::begin_panic_fmt",
-    // Option panic functions
-    "core::option::Option<T>::unwrap",
-    "core::option::Option<T>::expect",
+/// Checked with `contains()` matching, so `"core::panicking::"` matches all
+/// functions in that module. `std::panicking::` excludes `set_hook`/`take_hook`
+/// via [`is_library_panic_symbol`].
+const LIBRARY_PANIC_PATTERNS: &[&str] = &[
+    // All core panic functions (panic, panic_fmt, panic_const, assert_failed, etc.)
+    "core::panicking::",
+    // std panic entry points (begin_panic, begin_panic_fmt, etc.)
+    "std::panicking::",
+    // Option/Result unwrap/expect (appear as relocation targets in library analysis)
+    "Option<T>::unwrap",
+    "Option<T>::expect",
+    "Result<T,E>::unwrap",
+    "Result<T,E>::expect",
+    "Result<T,E>::unwrap_err",
+    "Result<T,E>::expect_err",
     "core::option::unwrap_failed",
-    // Result panic functions
-    "core::result::Result<T,E>::unwrap",
-    "core::result::Result<T,E>::expect",
-    "core::result::Result<T,E>::unwrap_err",
-    "core::result::Result<T,E>::expect_err",
+    "core::option::expect_failed",
     "core::result::unwrap_failed",
 ];
 
-// ---------------------------------------------------------------------------
-// Source code ownership heuristics
-// ---------------------------------------------------------------------------
-
-/// Check if a demangled function name belongs to the standard library.
+/// Check if a demangled symbol name is a panic-related function for library analysis.
 ///
-/// Returns `true` for functions in the `core`, `std`, or `alloc` crates.
-/// Handles multiple name formats that arise from Rust's name mangling:
-///
-/// | Format                       | Example                                  |
-/// |------------------------------|------------------------------------------|
-/// | Direct namespace             | `core::option::Option::unwrap`           |
-/// | Generic bounds               | `<core::option::Option<T>>::unwrap`      |
-/// | Trait impl with space        | `<Foo as core::fmt::Display>::fmt`       |
-/// | Nested module reference      | `mycrate::core::panicking::panic`        |
-///
-/// This function is used during library analysis to skip stdlib callers
-/// and report only user-code panic sources.
-pub fn is_stdlib_function(name: &str) -> bool {
-    name.starts_with("core::")
-        || name.starts_with("std::")
-        || name.starts_with("alloc::")
-        || name.starts_with("<core::")
-        || name.starts_with("<std::")
-        || name.starts_with("<alloc::")
-        || name.contains(" core::")
-        || name.contains(" std::")
-        || name.contains(" alloc::")
-        || name.contains("::core::")
-        || name.contains("::std::")
-        || name.contains("::alloc::")
+/// Uses [`LIBRARY_PANIC_PATTERNS`] with an exclusion for `set_hook`/`take_hook`
+/// which configure the panic handler but don't trigger panics.
+pub fn is_library_panic_symbol(name: &str) -> bool {
+    if LIBRARY_PANIC_PATTERNS.iter().any(|p| name.contains(p)) {
+        // Exclude panic handler configuration functions
+        !name.contains("set_hook") && !name.contains("take_hook")
+    } else {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,16 +194,10 @@ use crate::panic_cause::PanicCause;
 
 /// Detect panic cause from a function name in the call chain.
 ///
-/// Walks the priority order described in the module docs:
-///
-/// 1. Exact symbol match (`panic_bounds_check`, `unwrap_failed`, …)
-/// 2. Domain detection (`core::fmt::`, `capacity_overflow`, …)
-/// 3. Contextual disambiguation (file path for Option vs Result)
-/// 4. Collection internals (`hashbrown::raw::`, `std::collections::hash::`)
-/// 5. Fallback → `None` (unknown)
-///
-/// The optional `file_path` helps distinguish Option vs Result for unwrap/expect.
-pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<PanicCause> {
+/// Uses fully qualified demangled function names (from DWARF linkage names)
+/// for disambiguation (e.g., `core::result::unwrap_failed` vs
+/// `core::option::unwrap_failed`).
+pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     // Check for async function resumed after completion
     if func_name.contains("async_fn_resumed") {
         return Some(PanicCause::AsyncFnResumed);
@@ -335,36 +245,14 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
     if func_name.contains("panic_const_rem_by_zero") {
         return Some(PanicCause::DivisionByZero);
     }
-    // unwrap/expect detection - distinguish Option vs Result by file path or function name
-    // Check for Result::expect first (it calls unwrap_failed internally)
-    if func_name.contains("Result") && func_name.contains("expect") {
-        return Some(PanicCause::ExpectErr);
-    }
+    // unwrap/expect detection
     if func_name.contains("unwrap_failed") {
-        // Check file path first (most reliable), then fall back to function name
-        // Note: file_path may be the crate source file (not stdlib) when called from
-        // rlib analysis, so always check func_name as fallback
-        let is_result = file_path
-            .filter(|f| {
-                f.contains("result.rs")
-                    || f.contains("core/result")
-                    || f.contains("option.rs")
-                    || f.contains("core/option")
-            })
-            .map(|f| f.contains("result.rs") || f.contains("core/result"))
-            .unwrap_or_else(|| func_name.contains("result"));
-        if is_result {
-            // core::result::unwrap_failed - used by Result::unwrap()
-            // (Result::expect is detected above via the caller)
-            return Some(PanicCause::UnwrapErr);
-        } else {
-            // core::option::unwrap_failed
-            return Some(PanicCause::UnwrapNone);
-        }
+        return Some(PanicCause::Unwrap);
     }
-    if func_name.contains("expect_failed") {
-        // Only Option has expect_failed; Result::expect() uses unwrap_failed
-        return Some(PanicCause::ExpectNone);
+    if func_name.contains("expect_failed")
+        || (func_name.contains("expect") && func_name.contains("Result"))
+    {
+        return Some(PanicCause::Expect);
     }
     // Assert macros - both assert!() and debug_assert!() compile to the same
     // assert_failed function, so we cannot distinguish them at the binary level.
@@ -411,10 +299,6 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
     if func_name.contains("raw_vec") && func_name.contains("grow") {
         return Some(PanicCause::CapacityOverflow);
     }
-    // hashbrown (HashMap/HashSet internals) allocation error
-    if func_name.contains("hashbrown") && func_name.contains("alloc_err") {
-        return Some(PanicCause::OutOfMemory);
-    }
 
     // String/slice domain
     if func_name.contains("slice_error_fail") {
@@ -448,22 +332,8 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         }
 
         // Check if it's for str (string slice) vs array/vec (bounds check)
-        // String slicing can be detected via:
-        // 1. Function name containing str:: or core::str::
-        // 2. File path matching known stdlib string module paths
-        let is_string_op = func_name.contains("str::") || func_name.contains("core::str::");
-        let is_string_file = file_path
-            .map(|f| {
-                // Normalize path separators for cross-platform matching
-                let normalized = f.replace('\\', "/");
-                // Only match known stdlib string module paths to avoid false positives
-                // from user directories named "str"
-                normalized.contains("/library/core/src/str/")
-                    || normalized.contains("/library/std/src/str/")
-                    || normalized.contains("/src/libcore/str/")
-            })
-            .unwrap_or(false);
-        if is_string_op || is_string_file {
+        // Fully qualified names like "core::str::traits::...::index" contain "str::"
+        if func_name.contains("str::") {
             return Some(PanicCause::StringSliceError);
         }
         return Some(PanicCause::BoundsCheck);
@@ -513,32 +383,6 @@ mod tests {
     use super::*;
     use crate::panic_cause::PanicCause;
 
-    // -- is_stdlib_function tests --
-
-    #[test]
-    fn test_stdlib_direct_namespace() {
-        assert!(is_stdlib_function("core::option::Option::unwrap"));
-        assert!(is_stdlib_function("std::io::Read::read"));
-        assert!(is_stdlib_function("alloc::vec::Vec::push"));
-    }
-
-    #[test]
-    fn test_stdlib_generic_bounds() {
-        assert!(is_stdlib_function("<core::option::Option<T>>::unwrap"));
-        assert!(is_stdlib_function("<std::vec::Vec<T>>::push"));
-    }
-
-    #[test]
-    fn test_stdlib_trait_impl() {
-        assert!(is_stdlib_function("<MyStruct as core::fmt::Display>::fmt"));
-    }
-
-    #[test]
-    fn test_user_function_not_stdlib() {
-        assert!(!is_stdlib_function("my_crate::module::function"));
-        assert!(!is_stdlib_function("cause_an_unwrap"));
-    }
-
     // -- is_panic_triggering_function tests --
 
     #[test]
@@ -574,12 +418,32 @@ mod tests {
     }
 
     #[test]
-    fn test_library_panic_patterns_comprehensive() {
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("panic")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("unwrap")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("expect")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("option")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("result")));
+    fn test_is_library_panic_symbol() {
+        assert!(is_library_panic_symbol("core::panicking::panic_fmt"));
+        assert!(is_library_panic_symbol(
+            "core::panicking::panic_const::panic_const_add_overflow"
+        ));
+        assert!(is_library_panic_symbol("std::panicking::begin_panic"));
+        assert!(is_library_panic_symbol("core::option::unwrap_failed"));
+        assert!(is_library_panic_symbol("core::result::unwrap_failed"));
+        // set_hook/take_hook are NOT panic functions
+        assert!(!is_library_panic_symbol("std::panicking::set_hook"));
+        assert!(!is_library_panic_symbol("std::panicking::take_hook"));
+        // User code is not a panic symbol
+        assert!(!is_library_panic_symbol("my_crate::process_data"));
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_unwrap_err_expect_err() {
+        // Test unwrap_err and expect_err patterns
+        assert!(is_library_panic_symbol("Result<T,E>::unwrap_err"));
+        assert!(is_library_panic_symbol("Result<T,E>::expect_err"));
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_expect_failed() {
+        // Test core::option::expect_failed is matched
+        assert!(is_library_panic_symbol("core::option::expect_failed"));
     }
 
     // -- detect_panic_cause tests --
@@ -587,7 +451,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_bounds_check() {
         assert_eq!(
-            detect_panic_cause("panic_bounds_check", None),
+            detect_panic_cause("panic_bounds_check"),
             Some(PanicCause::BoundsCheck)
         );
     }
@@ -595,15 +459,15 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_arithmetic_overflow() {
         assert_eq!(
-            detect_panic_cause("panic_const_add_overflow", None),
+            detect_panic_cause("panic_const_add_overflow"),
             Some(PanicCause::ArithmeticOverflow("addition".to_string()))
         );
         assert_eq!(
-            detect_panic_cause("panic_const_sub_overflow", None),
+            detect_panic_cause("panic_const_sub_overflow"),
             Some(PanicCause::ArithmeticOverflow("subtraction".to_string()))
         );
         assert_eq!(
-            detect_panic_cause("panic_const_mul_overflow", None),
+            detect_panic_cause("panic_const_mul_overflow"),
             Some(PanicCause::ArithmeticOverflow("multiplication".to_string()))
         );
     }
@@ -611,11 +475,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_shift_overflow() {
         assert_eq!(
-            detect_panic_cause("panic_const_shl_overflow", None),
+            detect_panic_cause("panic_const_shl_overflow"),
             Some(PanicCause::ShiftOverflow("left".to_string()))
         );
         assert_eq!(
-            detect_panic_cause("panic_const_shr_overflow", None),
+            detect_panic_cause("panic_const_shr_overflow"),
             Some(PanicCause::ShiftOverflow("right".to_string()))
         );
     }
@@ -623,90 +487,51 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_division_by_zero() {
         assert_eq!(
-            detect_panic_cause("panic_const_div_by_zero", None),
+            detect_panic_cause("panic_const_div_by_zero"),
             Some(PanicCause::DivisionByZero)
         );
         assert_eq!(
-            detect_panic_cause("panic_const_rem_by_zero", None),
+            detect_panic_cause("panic_const_rem_by_zero"),
             Some(PanicCause::DivisionByZero)
         );
     }
 
     #[test]
-    fn test_detect_panic_cause_unwrap_failed_option() {
+    fn test_detect_panic_cause_unwrap_failed() {
         assert_eq!(
-            detect_panic_cause("unwrap_failed", Some("option.rs")),
-            Some(PanicCause::UnwrapNone)
-        );
-    }
-
-    #[test]
-    fn test_detect_panic_cause_unwrap_failed_result() {
-        assert_eq!(
-            detect_panic_cause("unwrap_failed", Some("result.rs")),
-            Some(PanicCause::UnwrapErr)
+            detect_panic_cause("unwrap_failed"),
+            Some(PanicCause::Unwrap)
         );
         assert_eq!(
-            detect_panic_cause("unwrap_failed", Some("core/result/mod.rs")),
-            Some(PanicCause::UnwrapErr)
+            detect_panic_cause("core::option::unwrap_failed"),
+            Some(PanicCause::Unwrap)
+        );
+        assert_eq!(
+            detect_panic_cause("core::result::unwrap_failed"),
+            Some(PanicCause::Unwrap)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_expect_failed() {
         assert_eq!(
-            detect_panic_cause("expect_failed", None),
-            Some(PanicCause::ExpectNone)
+            detect_panic_cause("expect_failed"),
+            Some(PanicCause::Expect)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_result_expect() {
         assert_eq!(
-            detect_panic_cause("Result::expect", None),
-            Some(PanicCause::ExpectErr)
+            detect_panic_cause("Result::expect"),
+            Some(PanicCause::Expect)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_assert_failed() {
         assert_eq!(
-            detect_panic_cause("assert_failed", None),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("src/main.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-    }
-
-    #[test]
-    fn test_assert_failed_always_assert_regardless_of_path() {
-        assert_eq!(
-            detect_panic_cause(
-                "assert_failed",
-                Some("/rustc/abc123/library/std/src/time.rs")
-            ),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("/library/core/src/num/mod.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("src/main.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-    }
-
-    #[test]
-    fn test_assert_in_user_path_with_library() {
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("/home/me/library/app/src/main.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("/projects/library/core/lib.rs")),
+            detect_panic_cause("assert_failed"),
             Some(PanicCause::AssertFailed)
         );
     }
@@ -714,7 +539,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_panic_display() {
         assert_eq!(
-            detect_panic_cause("panic_display", None),
+            detect_panic_cause("panic_display"),
             Some(PanicCause::ExplicitPanic)
         );
     }
@@ -722,7 +547,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_panic_in_cleanup() {
         assert_eq!(
-            detect_panic_cause("panic_in_cleanup", None),
+            detect_panic_cause("panic_in_cleanup"),
             Some(PanicCause::PanicInDrop)
         );
     }
@@ -730,11 +555,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_panic_cannot_unwind() {
         assert_eq!(
-            detect_panic_cause("panic_cannot_unwind", None),
+            detect_panic_cause("panic_cannot_unwind"),
             Some(PanicCause::CannotUnwind)
         );
         assert_eq!(
-            detect_panic_cause("panic_nounwind", None),
+            detect_panic_cause("panic_nounwind"),
             Some(PanicCause::CannotUnwind)
         );
     }
@@ -742,11 +567,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_formatting() {
         assert_eq!(
-            detect_panic_cause("core::fmt::write", None),
+            detect_panic_cause("core::fmt::write"),
             Some(PanicCause::FormattingError)
         );
         assert_eq!(
-            detect_panic_cause("write_fmt", None),
+            detect_panic_cause("write_fmt"),
             Some(PanicCause::FormattingError)
         );
     }
@@ -754,7 +579,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_capacity_overflow() {
         assert_eq!(
-            detect_panic_cause("capacity_overflow", None),
+            detect_panic_cause("capacity_overflow"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -762,7 +587,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_out_of_memory() {
         assert_eq!(
-            detect_panic_cause("handle_alloc_error", None),
+            detect_panic_cause("handle_alloc_error"),
             Some(PanicCause::OutOfMemory)
         );
     }
@@ -770,11 +595,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_string_slice_error() {
         assert_eq!(
-            detect_panic_cause("slice_error_fail", None),
+            detect_panic_cause("slice_error_fail"),
             Some(PanicCause::StringSliceError)
         );
         assert_eq!(
-            detect_panic_cause("str_index_overflow_fail", None),
+            detect_panic_cause("str_index_overflow_fail"),
             Some(PanicCause::StringSliceError)
         );
     }
@@ -782,23 +607,24 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_index_bounds() {
         assert_eq!(
-            detect_panic_cause("index<T, usize>", None),
+            detect_panic_cause("index<T, usize>"),
             Some(PanicCause::BoundsCheck)
         );
         assert_eq!(
-            detect_panic_cause("Index::index", None),
+            detect_panic_cause("Index::index"),
             Some(PanicCause::BoundsCheck)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_index_string() {
+        // Fully qualified demangled names contain both Index trait pattern and "str::"
         assert_eq!(
-            detect_panic_cause("index<Range>", Some("/library/core/src/str/mod.rs")),
+            detect_panic_cause("core::str::traits::<impl Index<I> for str>::index"),
             Some(PanicCause::StringSliceError)
         );
         assert_eq!(
-            detect_panic_cause("str::index<Range>", None),
+            detect_panic_cause("str::index<Range>"),
             Some(PanicCause::StringSliceError)
         );
     }
@@ -806,7 +632,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_invalid_enum() {
         assert_eq!(
-            detect_panic_cause("panic_invalid_enum_construction", None),
+            detect_panic_cause("panic_invalid_enum_construction"),
             Some(PanicCause::InvalidEnum)
         );
     }
@@ -814,7 +640,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_misaligned_pointer() {
         assert_eq!(
-            detect_panic_cause("panic_misaligned_pointer_dereference", None),
+            detect_panic_cause("panic_misaligned_pointer_dereference"),
             Some(PanicCause::MisalignedPointer)
         );
     }
@@ -822,18 +648,15 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_hashbrown_raw() {
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::TableLayout::calculate_layout_for", None),
+            detect_panic_cause("hashbrown::raw::TableLayout::calculate_layout_for"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause(
-                "hashbrown::raw::RawTableInner::fallible_with_capacity",
-                None
-            ),
+            detect_panic_cause("hashbrown::raw::RawTableInner::fallible_with_capacity"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::RawTableInner::new_uninitialized", None),
+            detect_panic_cause("hashbrown::raw::RawTableInner::new_uninitialized"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -841,42 +664,37 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_std_collections_hash() {
         assert_eq!(
-            detect_panic_cause(
-                "std::collections::hash::map::HashMap<K,V>::new",
-                Some("/rustc/abc/library/std/src/collections/hash/map.rs")
-            ),
+            detect_panic_cause("std::collections::hash::map::HashMap<K,V>::new"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause(
-                "std::collections::hash::set::HashSet<T>::with_capacity",
-                Some("/rustc/abc/library/std/src/collections/hash/set.rs")
-            ),
+            detect_panic_cause("std::collections::hash::set::HashSet<T>::with_capacity"),
             Some(PanicCause::CapacityOverflow)
         );
     }
 
     #[test]
-    fn test_detect_hashbrown_specific_causes_take_priority() {
+    fn test_detect_hashbrown_capacity_overflow() {
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::Fallibility::capacity_overflow", None),
+            detect_panic_cause("hashbrown::raw::Fallibility::capacity_overflow"),
             Some(PanicCause::CapacityOverflow)
         );
+        // alloc_err also falls through to hashbrown::raw:: catch-all
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::Fallibility::alloc_err", None),
-            Some(PanicCause::OutOfMemory)
+            detect_panic_cause("hashbrown::raw::Fallibility::alloc_err"),
+            Some(PanicCause::CapacityOverflow)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_unknown() {
-        assert_eq!(detect_panic_cause("some_random_function", None), None);
+        assert_eq!(detect_panic_cause("some_random_function"), None);
     }
 
     #[test]
     fn test_detect_panic_cause_unreachable() {
         assert_eq!(
-            detect_panic_cause("unreachable_panic_handler", None),
+            detect_panic_cause("unreachable_panic_handler"),
             Some(PanicCause::Unreachable)
         );
     }
@@ -884,7 +702,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_raw_vec_grow() {
         assert_eq!(
-            detect_panic_cause("raw_vec::grow", None),
+            detect_panic_cause("raw_vec::grow"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -892,11 +710,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_display_fmt() {
         assert_eq!(
-            detect_panic_cause("Display::fmt", None),
+            detect_panic_cause("Display::fmt"),
             Some(PanicCause::FormattingError)
         );
         assert_eq!(
-            detect_panic_cause("Debug::fmt", None),
+            detect_panic_cause("Debug::fmt"),
             Some(PanicCause::FormattingError)
         );
     }
@@ -904,19 +722,16 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_async_fn_resumed() {
         assert_eq!(
-            detect_panic_cause("panic_const_async_fn_resumed", None),
+            detect_panic_cause("panic_const_async_fn_resumed"),
             Some(PanicCause::AsyncFnResumed)
         );
         assert_eq!(
-            detect_panic_cause(
-                "core::panicking::panic_const::panic_const_async_fn_resumed",
-                None
-            ),
+            detect_panic_cause("core::panicking::panic_const::panic_const_async_fn_resumed"),
             Some(PanicCause::AsyncFnResumed)
         );
         // Also matches the "panic" variant
         assert_eq!(
-            detect_panic_cause("panic_const_async_fn_resumed_panic", None),
+            detect_panic_cause("panic_const_async_fn_resumed_panic"),
             Some(PanicCause::AsyncFnResumed)
         );
     }
@@ -927,5 +742,56 @@ mod tests {
         assert!(is_panic_triggering_function(
             "core::panicking::panic_const::panic_const_async_fn_resumed"
         ));
+    }
+
+    // Additional tests for NEW logic in simplify_heuristics branch
+
+    #[test]
+    fn test_detect_panic_cause_unwrap_failed_simple() {
+        // Test simple unwrap_failed (no namespace prefix)
+        assert_eq!(
+            detect_panic_cause("unwrap_failed"),
+            Some(PanicCause::Unwrap)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_result_unwrap_failed() {
+        // Test fully qualified Result unwrap_failed
+        assert_eq!(
+            detect_panic_cause("core::result::unwrap_failed"),
+            Some(PanicCause::Unwrap)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_expect_failed_simple() {
+        // Test simple expect_failed
+        assert_eq!(
+            detect_panic_cause("expect_failed"),
+            Some(PanicCause::Expect)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_result_expect_method() {
+        // Test Result::expect (method form)
+        assert_eq!(
+            detect_panic_cause("Result::expect"),
+            Some(PanicCause::Expect)
+        );
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_option_expect_failed() {
+        // Test core::option::expect_failed is matched
+        assert!(is_library_panic_symbol("core::option::expect_failed"));
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_result_unwrap_err() {
+        // Test Result unwrap_err and expect_err patterns
+        assert!(is_library_panic_symbol("Result<T,E>::unwrap_err"));
+        assert!(is_library_panic_symbol("Result<T,E>::expect_err"));
     }
 }

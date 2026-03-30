@@ -22,8 +22,9 @@ use jonesy::analysis::analyze_macho;
 use jonesy::args::OutputFormat;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{
-    CallTreeNode, CodePointMap, build_call_tree_parallel_filtered, build_call_tree_sequential,
-    build_shallow_callers, collect_crate_relationships, filter_allowed_causes,
+    CallTreeNode, CodePointMap, build_call_tree_parallel_filtered,
+    build_call_tree_sequential_filtered, build_shallow_callers_filtered,
+    collect_crate_relationships, filter_allowed_causes,
 };
 #[cfg(target_os = "macos")]
 use jonesy::config::Config;
@@ -35,9 +36,8 @@ use jonesy::heuristics::detect_panic_cause;
 use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
 use jonesy::sym::{
-    CallGraph, FunctionIndex, SymbolIndex, SymbolTable, ValidSourceFiles, find_symbol_address,
-    find_symbol_containing, get_functions_from_dwarf, load_debug_info,
-    matches_crate_pattern_validated, read_symbols,
+    CallGraph, FunctionIndex, ProjectContext, SymbolIndex, SymbolTable, get_functions_from_dwarf,
+    load_debug_info,
 };
 #[cfg(target_os = "macos")]
 use std::fs;
@@ -135,7 +135,7 @@ fn bench_find_function_name(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         // Build function index from DWARF
@@ -190,7 +190,7 @@ fn bench_prune_call_tree(_c: &mut Criterion) {
 // Hot Function #3: build_call_tree_sequential (92 samples)
 // ============================================================================
 #[cfg(target_os = "macos")]
-fn bench_build_call_tree_sequential(c: &mut Criterion) {
+fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
     ensure_jonesy_debug_built();
 
     let root = workspace_root();
@@ -202,13 +202,13 @@ fn bench_build_call_tree_sequential(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let mut panic_addr = 0u64;
         for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
+            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
+                && let Some(addr) = symbols.find_symbol_address(&sym)
             {
                 panic_addr = addr;
                 break;
@@ -220,6 +220,7 @@ fn bench_build_call_tree_sequential(c: &mut Criterion) {
             return;
         }
 
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -229,7 +230,7 @@ fn bench_build_call_tree_sequential(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
-            None,
+            &project_context,
         )
         .expect("Failed to build call graph");
 
@@ -238,7 +239,12 @@ fn bench_build_call_tree_sequential(c: &mut Criterion) {
         c.bench_function("build_call_tree_sequential_jonesy", |b| {
             b.iter(|| {
                 visited.clear();
-                let tree = build_call_tree_sequential(&call_graph, panic_addr, &visited);
+                let tree = build_call_tree_sequential_filtered(
+                    &call_graph,
+                    panic_addr,
+                    &visited,
+                    &project_context,
+                );
                 black_box(tree)
             })
         });
@@ -246,16 +252,15 @@ fn bench_build_call_tree_sequential(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Hot Function #4: matches_crate_pattern_validated (76 samples)
+// Hot Function #4: is_crate_source (76 samples)
 // ============================================================================
 #[cfg(target_os = "macos")]
-fn bench_matches_crate_pattern_validated(c: &mut Criterion) {
+fn bench_is_crate_source(c: &mut Criterion) {
     ensure_jonesy_debug_built();
 
     let root = workspace_root();
-    let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+    let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
 
-    // Test paths that simulate real workloads
     let test_paths = vec![
         "jonesy/src/main.rs",
         "jonesy/src/analysis.rs",
@@ -266,15 +271,11 @@ fn bench_matches_crate_pattern_validated(c: &mut Criterion) {
         "examples/panic/src/main.rs",
     ];
 
-    c.bench_function("matches_crate_pattern_validated", |b| {
+    c.bench_function("is_crate_source", |b| {
         b.iter(|| {
             for path in &test_paths {
                 for _ in 0..100 {
-                    black_box(matches_crate_pattern_validated(
-                        path,
-                        "jonesy/src/",
-                        Some(&valid_files),
-                    ));
+                    black_box(project_context.is_crate_source(path));
                 }
             }
         })
@@ -297,14 +298,14 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let mut panic_addr = 0u64;
         let mut panic_name = "rust_panic".to_string();
         for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
+            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
+                && let Some(addr) = symbols.find_symbol_address(&sym)
             {
                 panic_addr = addr;
                 panic_name = sym;
@@ -316,6 +317,7 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             return;
         }
 
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -325,33 +327,25 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
-            None,
+            &project_context,
         )
         .expect("Failed to build call graph");
 
-        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
         let visited = Arc::new(DashSet::new());
         let mut root_node = CallTreeNode::new_root(panic_name);
-        // Use filtered tree building instead of separate prune step
-        root_node.callers = build_call_tree_parallel_filtered(
-            &call_graph,
-            panic_addr,
-            &visited,
-            Some("jonesy/src/"),
-            Some(&valid_files),
-        );
+        root_node.callers =
+            build_call_tree_parallel_filtered(&call_graph, panic_addr, &visited, &project_context);
 
         c.bench_function("collect_crate_relationships_jonesy", |b| {
             b.iter(|| {
                 let mut points: CodePointMap = std::collections::HashMap::new();
                 collect_crate_relationships(
                     &root_node,
-                    "jonesy/src/",
                     &mut points,
                     None,
                     None,
                     None,
-                    Some(&valid_files),
+                    &project_context,
                 );
                 black_box(points)
             })
@@ -404,29 +398,20 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn bench_detect_panic_cause(c: &mut Criterion) {
     let test_funcs = vec![
-        (
-            "core::option::Option<T>::unwrap",
-            Some("/rustc/xyz/library/core/src/option.rs"),
-        ),
-        (
-            "core::result::Result<T,E>::expect",
-            Some("/rustc/xyz/library/core/src/result.rs"),
-        ),
-        ("std::panicking::begin_panic", None),
-        (
-            "alloc::vec::Vec<T>::index",
-            Some("/rustc/xyz/library/alloc/src/vec/mod.rs"),
-        ),
-        ("core::panicking::panic_bounds_check", None),
-        ("myapp::process_data", Some("src/lib.rs")),
-        ("core::slice::index::slice_index_fail", None),
+        "core::option::Option<T>::unwrap",
+        "core::result::Result<T,E>::expect",
+        "std::panicking::begin_panic",
+        "alloc::vec::Vec<T>::index",
+        "core::panicking::panic_bounds_check",
+        "myapp::process_data",
+        "core::slice::index::slice_index_fail",
     ];
 
     c.bench_function("detect_panic_cause", |b| {
         b.iter(|| {
             for _ in 0..100 {
-                for (func, file) in &test_funcs {
-                    black_box(detect_panic_cause(func, *file));
+                for func in &test_funcs {
+                    black_box(detect_panic_cause(func));
                 }
             }
         })
@@ -449,9 +434,10 @@ fn bench_call_graph_build(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
 
         c.bench_function("call_graph_build_jonesy", |b| {
@@ -464,7 +450,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
                     Some("jonesy/src/"),
                     false,
                     symbol_index.as_ref(),
-                    None,
+                    &project_context,
                 );
                 black_box(graph)
             })
@@ -487,9 +473,9 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
     let sample_points: Vec<CrateCodePoint> = (0..100)
         .map(|i| {
             let mut causes = HashSet::new();
-            causes.insert(PanicCause::UnwrapNone);
+            causes.insert(PanicCause::Unwrap);
             if i % 2 == 0 {
-                causes.insert(PanicCause::ExpectNone);
+                causes.insert(PanicCause::Expect);
             }
             CrateCodePoint {
                 name: format!("function_{}", i),
@@ -517,7 +503,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
 // Hot Function #10: build_shallow_callers (15 samples)
 // ============================================================================
 #[cfg(target_os = "macos")]
-fn bench_build_shallow_callers(c: &mut Criterion) {
+fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
     ensure_jonesy_debug_built();
 
     let root = workspace_root();
@@ -529,13 +515,13 @@ fn bench_build_shallow_callers(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let mut panic_addr = 0u64;
         for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
+            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
+                && let Some(addr) = symbols.find_symbol_address(&sym)
             {
                 panic_addr = addr;
                 break;
@@ -546,6 +532,7 @@ fn bench_build_shallow_callers(c: &mut Criterion) {
             return;
         }
 
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -555,13 +542,14 @@ fn bench_build_shallow_callers(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
-            None,
+            &project_context,
         )
         .expect("Failed to build call graph");
 
         c.bench_function("build_shallow_callers_jonesy", |b| {
             b.iter(|| {
-                let callers = build_shallow_callers(&call_graph, panic_addr);
+                let callers =
+                    build_shallow_callers_filtered(&call_graph, panic_addr, &project_context);
                 black_box(callers)
             })
         });
@@ -584,7 +572,7 @@ fn bench_symbol_index_new(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         c.bench_function("symbol_index_new_jonesy", |b| {
@@ -612,7 +600,7 @@ fn bench_get_functions_from_dwarf(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         c.bench_function("get_functions_from_dwarf_jonesy", |b| {
@@ -640,7 +628,7 @@ fn bench_load_debug_info(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         c.bench_function("load_debug_info_jonesy", |b| {
@@ -673,7 +661,7 @@ fn bench_analyze_macho(c: &mut Criterion) {
 
     c.bench_function("analyze_macho_jonesy", |b| {
         b.iter(|| {
-            let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+            let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
             if let SymbolTable::MachO(Binary(ref macho)) = symbols {
                 let result = analyze_macho(
                     macho,
@@ -696,9 +684,9 @@ fn bench_find_function_name(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
 fn bench_prune_call_tree(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
-fn bench_build_call_tree_sequential(_c: &mut Criterion) {}
+fn bench_build_call_tree_sequential_filtered(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
-fn bench_matches_crate_pattern_validated(_c: &mut Criterion) {}
+fn bench_is_crate_source(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
 fn bench_collect_crate_relationships(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
@@ -710,7 +698,7 @@ fn bench_call_graph_build(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
 fn bench_filter_allowed_causes(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
-fn bench_build_shallow_callers(_c: &mut Criterion) {}
+fn bench_build_shallow_callers_filtered(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
 fn bench_symbol_index_new(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
@@ -725,19 +713,19 @@ criterion_group!(
     // End-to-end (small binaries for quick regression)
     bench_e2e_analysis,
     // Top 20 hot functions (using jonesy 33MB binary)
-    bench_find_function_name,              // #1: 106 samples
-    bench_prune_call_tree,                 // #2: REMOVED (PR #152)
-    bench_build_call_tree_sequential,      // #3: 92 samples
-    bench_matches_crate_pattern_validated, // #4: 76 samples
-    bench_collect_crate_relationships,     // #5: 69 samples
-    bench_check_inline_allow,              // #6: 57 samples
-    bench_detect_panic_cause,              // #7: 38 samples
-    bench_call_graph_build,                // #8: 32 samples
-    bench_filter_allowed_causes,           // #9: 29 samples
-    bench_build_shallow_callers,           // #10: 15 samples
-    bench_symbol_index_new,                // #13: 6 samples
-    bench_get_functions_from_dwarf,        // #14: 4 samples
-    bench_load_debug_info,                 // #19: 2 samples
-    bench_analyze_macho,                   // #12: 9 samples (full pipeline)
+    bench_find_function_name,                  // #1: 106 samples
+    bench_prune_call_tree,                     // #2: REMOVED (PR #152)
+    bench_build_call_tree_sequential_filtered, // #3: 92 samples
+    bench_is_crate_source,                     // #4: 76 samples
+    bench_collect_crate_relationships,         // #5: 69 samples
+    bench_check_inline_allow,                  // #6: 57 samples
+    bench_detect_panic_cause,                  // #7: 38 samples
+    bench_call_graph_build,                    // #8: 32 samples
+    bench_filter_allowed_causes,               // #9: 29 samples
+    bench_build_shallow_callers_filtered,      // #10: 15 samples
+    bench_symbol_index_new,                    // #13: 6 samples
+    bench_get_functions_from_dwarf,            // #14: 4 samples
+    bench_load_debug_info,                     // #19: 2 samples
+    bench_analyze_macho,                       // #12: 9 samples (full pipeline)
 );
 criterion_main!(benches);

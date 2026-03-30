@@ -10,13 +10,10 @@ use crate::call_tree::{
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
-use crate::heuristics::{
-    ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS, is_stdlib_function,
-};
+use crate::heuristics::{ABORT_SYMBOL_PATTERNS, PANIC_SYMBOL_PATTERNS, is_library_panic_symbol};
+use crate::project_context::ProjectContext;
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
-    find_all_symbols_matching, find_symbol_address, find_symbol_containing, load_debug_info,
-    matches_crate_pattern_validated,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, load_debug_info,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::Binary;
@@ -128,15 +125,28 @@ pub fn analyze_macho(
     config: &Config,
     output: &OutputFormat,
 ) -> BinaryAnalysisResult {
+    // Create SymbolTable for method calls
+    let symbols = match SymbolTable::from(buffer) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: Failed to create symbol table: {}", e);
+            return BinaryAnalysisResult::empty();
+        }
+    };
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 
-    // Build set of valid source files for single-crate project filtering
-    // This prevents false positives from dependencies with relative src/ paths
-    let project_root = find_project_root(binary_path);
-    let valid_files = project_root
-        .as_ref()
-        .map(|root| ValidSourceFiles::from_project_root(root));
+    // Build set of valid source files for crate source filtering.
+    // All DWARF paths are absolute, so we need the project root to determine
+    // which files belong to the user's crate.
+    let Some(project_root) = find_project_root(binary_path) else {
+        eprintln!(
+            "Error: Cannot find project root for {}",
+            binary_path.display()
+        );
+        return BinaryAnalysisResult::empty();
+    };
+    let project_context = ProjectContext::from_project_root(&project_root);
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -149,8 +159,8 @@ pub fn analyze_macho(
 
     // Find panic entry points (first match from PANIC_SYMBOL_PATTERNS)
     for pattern in PANIC_SYMBOL_PATTERNS {
-        if let Ok(Some((sym, dem))) = find_symbol_containing(macho, pattern)
-            && let Some(addr) = find_symbol_address(macho, &sym)
+        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
+            && let Some(addr) = symbols.find_symbol_address(&sym)
         {
             entry_points.push((sym, dem, addr));
             break; // Only need one panic entry point
@@ -158,9 +168,9 @@ pub fn analyze_macho(
     }
 
     // Find abort entry points
-    if let Ok(abort_symbols) = find_all_symbols_matching(macho, ABORT_SYMBOL_PATTERNS) {
+    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(ABORT_SYMBOL_PATTERNS) {
         for (sym, dem) in abort_symbols {
-            if let Some(addr) = find_symbol_address(macho, &sym) {
+            if let Some(addr) = symbols.find_symbol_address(&sym) {
                 // Avoid duplicates
                 if !entry_points.iter().any(|(_, _, a)| *a == addr) {
                     entry_points.push((sym, dem, addr));
@@ -212,7 +222,7 @@ pub fn analyze_macho(
                 crate_src_path,
                 show_timings,
                 symbol_index.as_ref(),
-                valid_files.as_ref(),
+                &project_context,
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -233,7 +243,7 @@ pub fn analyze_macho(
                     crate_src_path,
                     show_timings,
                     symbol_index.as_ref(),
-                    valid_files.as_ref(),
+                    &project_context,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -285,18 +295,16 @@ pub fn analyze_macho(
             &call_graph,
             *target_addr,
             &visited,
-            crate_src_path,
-            valid_files.as_ref(),
+            &project_context,
         );
 
         // Collect code points from this tree
-        if let Some(crate_path) = crate_src_path {
+        if crate_src_path.is_some() {
             let (code_points, _summary) = collect_crate_code_points(
                 &root,
-                crate_path,
                 config,
-                valid_files.as_ref(),
-                project_root.as_deref(),
+                &project_context,
+                Some(project_root.as_path()),
             );
             let entry_result = BinaryAnalysisResult {
                 summary: AnalysisSummary::default(),
@@ -337,19 +345,21 @@ pub fn analyze_archive(
     config: &Config,
     output: &OutputFormat,
 ) -> BinaryAnalysisResult {
-    // Build set of valid source files for single-crate project filtering
-    let project_root = find_project_root(binary_path);
-    let valid_files = project_root
-        .as_ref()
-        .map(|root| ValidSourceFiles::from_project_root(root));
+    // Build set of valid source files for crate source filtering.
+    let Some(project_root) = find_project_root(binary_path) else {
+        eprintln!(
+            "Error: Cannot find project root for {}",
+            binary_path.display()
+        );
+        return BinaryAnalysisResult::empty();
+    };
+    let project_context = ProjectContext::from_project_root(&project_root);
 
     // Helper to check if a file path is within the crate/workspace scope
-    // Uses ValidSourceFiles for single-crate validation to prevent dependency false positives
     let file_in_scope = |file: &str| {
-        crate_src_path.is_none_or(|paths| {
+        crate_src_path.is_none_or(|_| {
             let file = file.replace('\\', "/");
-            // Use the same validated matching as binary analysis
-            matches_crate_pattern_validated(&file, paths, valid_files.as_ref())
+            project_context.is_crate_source(&file)
         })
     };
 
@@ -384,7 +394,12 @@ pub fn analyze_archive(
         // Parse the object file as Mach-O and build its call graph
         match MachO::parse(member_data, 0) {
             Ok(obj_macho) => {
-                match LibraryCallGraph::build_from_object(&obj_macho, member_data, crate_src_path) {
+                match LibraryCallGraph::build_from_object(
+                    &obj_macho,
+                    member_data,
+                    crate_src_path,
+                    &project_context,
+                ) {
                     Ok(obj_graph) => merged_graph.merge(obj_graph),
                     Err(e) => {
                         if show_progress {
@@ -431,32 +446,16 @@ pub fn analyze_archive(
 
     // Search for callers of panic-related symbols
     for target_sym in merged_graph.target_symbols() {
-        // Check if this is a panic-related symbol
-        // Note: be careful with std::panicking:: - set_hook/take_hook are NOT panic functions
-        let is_panic_symbol = LIBRARY_PANIC_PATTERNS
-            .iter()
-            .any(|p| target_sym.contains(p))
-            || target_sym.contains("core::panicking::")
-            || (target_sym.contains("std::panicking::")
-                && !target_sym.contains("set_hook")
-                && !target_sym.contains("take_hook"));
-
-        if !is_panic_symbol {
+        if !is_library_panic_symbol(target_sym) {
             continue;
         }
 
         for caller_info in merged_graph.get_callers(target_sym) {
-            // Skip standard library functions - we only want user code
-            if is_stdlib_function(&caller_info.caller_name) {
-                continue;
-            }
-
             // Get file from DWARF info, filtering out non-crate code paths
-            let dwarf_file = caller_info.caller_file.as_ref().filter(|f| {
-                crate_src_path.is_none_or(|p| {
-                    crate::sym::matches_crate_pattern_validated(f, p, valid_files.as_ref())
-                })
-            });
+            let dwarf_file = caller_info
+                .caller_file
+                .as_ref()
+                .filter(|f| project_context.is_crate_source(f));
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)
@@ -497,12 +496,10 @@ pub fn analyze_archive(
     let mut code_points: Vec<CrateCodePoint> = sorted_callers
         .into_iter()
         .map(|caller| {
-            let mut causes = std::collections::HashSet::new();
+            let mut causes = HashSet::new();
             // Detect panic cause from the panic symbol being called (target),
             // not from the user's function name (caller.name)
-            if let Some(cause) =
-                crate::heuristics::detect_panic_cause(&caller.target, Some(&caller.file))
-            {
+            if let Some(cause) = crate::heuristics::detect_panic_cause(&caller.target) {
                 causes.insert(cause);
             }
             CrateCodePoint {
@@ -625,12 +622,12 @@ mod tests {
     fn test_binary_analysis_result_merge_disjoint() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/a.rs", 10, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/a.rs", 10, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/b.rs", 20, PanicCause::UnwrapErr)],
+            code_points: vec![make_code_point("src/b.rs", 20, PanicCause::Unwrap)],
         };
 
         result1.merge(result2);
@@ -644,12 +641,12 @@ mod tests {
     fn test_binary_analysis_result_merge_same_location() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::ExpectNone)],
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Expect)],
         };
 
         result1.merge(result2);
@@ -657,29 +654,21 @@ mod tests {
         // Same file:line should be merged, causes combined
         assert_eq!(result1.code_points.len(), 1);
         assert_eq!(result1.code_points[0].causes.len(), 2);
-        assert!(
-            result1.code_points[0]
-                .causes
-                .contains(&PanicCause::UnwrapNone)
-        );
-        assert!(
-            result1.code_points[0]
-                .causes
-                .contains(&PanicCause::ExpectNone)
-        );
+        assert!(result1.code_points[0].causes.contains(&PanicCause::Unwrap));
+        assert!(result1.code_points[0].causes.contains(&PanicCause::Expect));
     }
 
     #[test]
     fn test_binary_analysis_result_merge_sorted() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/z.rs", 100, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/z.rs", 100, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![
-                make_code_point("src/a.rs", 10, PanicCause::UnwrapErr),
+                make_code_point("src/a.rs", 10, PanicCause::Unwrap),
                 make_code_point("src/a.rs", 5, PanicCause::ExplicitPanic),
             ],
         };
@@ -700,7 +689,7 @@ mod tests {
     fn test_binary_analysis_result_merge_empty() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult::empty();
