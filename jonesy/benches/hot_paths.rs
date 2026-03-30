@@ -36,7 +36,7 @@ use jonesy::heuristics::detect_panic_cause;
 use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
 use jonesy::sym::{
-    CallGraph, FunctionIndex, SymbolIndex, SymbolTable, ValidSourceFiles, find_symbol_address,
+    CallGraph, FunctionIndex, ProjectContext, SymbolIndex, SymbolTable, find_symbol_address,
     find_symbol_containing, get_functions_from_dwarf, load_debug_info, read_symbols,
 };
 #[cfg(target_os = "macos")]
@@ -220,7 +220,7 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
             return;
         }
 
-        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -230,7 +230,7 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
-            &valid_files,
+            &project_context,
         )
         .expect("Failed to build call graph");
 
@@ -243,7 +243,7 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
                     &call_graph,
                     panic_addr,
                     &visited,
-                    &valid_files,
+                    &project_context,
                 );
                 black_box(tree)
             })
@@ -259,7 +259,7 @@ fn bench_is_crate_source(c: &mut Criterion) {
     ensure_jonesy_debug_built();
 
     let root = workspace_root();
-    let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+    let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
 
     let test_paths = vec![
         "jonesy/src/main.rs",
@@ -275,7 +275,7 @@ fn bench_is_crate_source(c: &mut Criterion) {
         b.iter(|| {
             for path in &test_paths {
                 for _ in 0..100 {
-                    black_box(valid_files.is_crate_source(path));
+                    black_box(project_context.is_crate_source(path));
                 }
             }
         })
@@ -317,7 +317,7 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             return;
         }
 
-        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -327,14 +327,14 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
-            &valid_files,
+            &project_context,
         )
         .expect("Failed to build call graph");
 
         let visited = Arc::new(DashSet::new());
         let mut root_node = CallTreeNode::new_root(panic_name);
         root_node.callers =
-            build_call_tree_parallel_filtered(&call_graph, panic_addr, &visited, &valid_files);
+            build_call_tree_parallel_filtered(&call_graph, panic_addr, &visited, &project_context);
 
         c.bench_function("collect_crate_relationships_jonesy", |b| {
             b.iter(|| {
@@ -345,7 +345,7 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
                     None,
                     None,
                     None,
-                    &valid_files,
+                    &project_context,
                 );
                 black_box(points)
             })
@@ -437,7 +437,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
     let symbols = read_symbols(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
 
         c.bench_function("call_graph_build_jonesy", |b| {
@@ -450,7 +450,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
                     Some("jonesy/src/"),
                     false,
                     symbol_index.as_ref(),
-                    &valid_files,
+                    &project_context,
                 );
                 black_box(graph)
             })
@@ -532,7 +532,7 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
             return;
         }
 
-        let valid_files = ValidSourceFiles::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -542,13 +542,14 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
             Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
-            &valid_files,
+            &project_context,
         )
         .expect("Failed to build call graph");
 
         c.bench_function("build_shallow_callers_jonesy", |b| {
             b.iter(|| {
-                let callers = build_shallow_callers_filtered(&call_graph, panic_addr, &valid_files);
+                let callers =
+                    build_shallow_callers_filtered(&call_graph, panic_addr, &project_context);
                 black_box(callers)
             })
         });

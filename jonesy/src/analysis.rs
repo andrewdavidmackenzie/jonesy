@@ -11,9 +11,10 @@ use crate::call_tree::{
 use crate::cargo::find_project_root;
 use crate::config::Config;
 use crate::heuristics::{ABORT_SYMBOL_PATTERNS, PANIC_SYMBOL_PATTERNS, is_library_panic_symbol};
+use crate::project_context::ProjectContext;
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
-    find_all_symbols_matching, find_symbol_address, find_symbol_containing, load_debug_info,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, find_all_symbols_matching,
+    find_symbol_address, find_symbol_containing, load_debug_info,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::Binary;
@@ -138,7 +139,7 @@ pub fn analyze_macho(
         );
         return BinaryAnalysisResult::empty();
     };
-    let valid_files = ValidSourceFiles::from_project_root(&project_root);
+    let project_context = ProjectContext::from_project_root(&project_root);
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -214,7 +215,7 @@ pub fn analyze_macho(
                 crate_src_path,
                 show_timings,
                 symbol_index.as_ref(),
-                &valid_files,
+                &project_context,
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -235,7 +236,7 @@ pub fn analyze_macho(
                     crate_src_path,
                     show_timings,
                     symbol_index.as_ref(),
-                    &valid_files,
+                    &project_context,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -283,15 +284,19 @@ pub fn analyze_macho(
         let mut root = CallTreeNode::new_root(demangled.clone());
 
         // Build the call tree for this entry point
-        root.callers =
-            build_call_tree_parallel_filtered(&call_graph, *target_addr, &visited, &valid_files);
+        root.callers = build_call_tree_parallel_filtered(
+            &call_graph,
+            *target_addr,
+            &visited,
+            &project_context,
+        );
 
         // Collect code points from this tree
         if crate_src_path.is_some() {
             let (code_points, _summary) = collect_crate_code_points(
                 &root,
                 config,
-                &valid_files,
+                &project_context,
                 Some(project_root.as_path()),
             );
             let entry_result = BinaryAnalysisResult {
@@ -341,13 +346,13 @@ pub fn analyze_archive(
         );
         return BinaryAnalysisResult::empty();
     };
-    let valid_files = ValidSourceFiles::from_project_root(&project_root);
+    let project_context = ProjectContext::from_project_root(&project_root);
 
     // Helper to check if a file path is within the crate/workspace scope
     let file_in_scope = |file: &str| {
         crate_src_path.is_none_or(|_| {
             let file = file.replace('\\', "/");
-            valid_files.is_crate_source(&file)
+            project_context.is_crate_source(&file)
         })
     };
 
@@ -386,7 +391,7 @@ pub fn analyze_archive(
                     &obj_macho,
                     member_data,
                     crate_src_path,
-                    &valid_files,
+                    &project_context,
                 ) {
                     Ok(obj_graph) => merged_graph.merge(obj_graph),
                     Err(e) => {
@@ -443,7 +448,7 @@ pub fn analyze_archive(
             let dwarf_file = caller_info
                 .caller_file
                 .as_ref()
-                .filter(|f| valid_files.is_crate_source(f));
+                .filter(|f| project_context.is_crate_source(f));
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)

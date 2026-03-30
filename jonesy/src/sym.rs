@@ -1,6 +1,7 @@
 #![allow(unused_variables)] // TODO Just for now
 #![allow(dead_code)] // TODO Just for now
 
+pub use crate::project_context::ProjectContext;
 use capstone::arch::BuildsCapstone;
 use capstone::{Capstone, Insn, arch};
 use dashmap::DashMap;
@@ -35,151 +36,6 @@ type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
 /// Result type for get_functions_from_dwarf: (functions, inlined, string_tables)
 type DwarfFunctionResult = (Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables);
 
-/// Absolute source directory prefixes for a project.
-///
-/// Determines whether a DWARF file path belongs to the user's crate or workspace
-/// by checking if it falls under one of the project's source directories.
-/// A file is "ours" if and only if its absolute path starts with a known
-/// source directory prefix.
-#[derive(Debug, Default)]
-pub struct ValidSourceFiles {
-    /// Absolute path prefixes for source directories (e.g., "/Users/me/project/src/")
-    source_prefixes: Vec<String>,
-    /// Project root path, used to resolve relative DWARF paths to absolute
-    project_root: Option<String>,
-}
-
-impl ValidSourceFiles {
-    /// Build source directory prefixes from the project root.
-    ///
-    /// Reads Cargo.toml to find workspace members and their source directories.
-    /// For single crates, uses `{project_root}/src/`.
-    /// For workspaces, uses `{project_root}/{member}/src/` for each member.
-    pub fn from_project_root(project_root: &std::path::Path) -> Self {
-        let mut source_prefixes = Vec::new();
-
-        // Canonicalize to get an absolute path for reliable matching
-        let project_root = fs::canonicalize(project_root).unwrap_or(project_root.to_path_buf());
-        let project_root = project_root.as_path();
-
-        // TODO I think here we should use the Cargo crate to read and understand the
-        // project (workspace or crate)
-
-        let cargo_toml = project_root.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                if let Some(workspace) = &manifest.workspace {
-                    // Workspace: add each member's src directory
-                    for member_pattern in &workspace.members {
-                        let member_paths =
-                            crate::cargo::expand_workspace_members(project_root, member_pattern);
-                        for member_path in member_paths {
-                            let src_dir = member_path.join("src");
-                            if let Some(prefix) = src_dir.to_str() {
-                                source_prefixes.push(format!("{}/", prefix));
-                            }
-                        }
-                    }
-                }
-
-                if manifest.package.is_some() {
-                    // Single crate (or workspace root with its own package)
-                    let src_dir = project_root.join("src");
-                    if let Some(prefix) = src_dir.to_str() {
-                        source_prefixes.push(format!("{}/", prefix));
-                    }
-                }
-            }
-        }
-
-        // Fallback: if no prefixes found, use project_root/src/
-        if source_prefixes.is_empty() {
-            let src_dir = project_root.join("src");
-            if let Some(prefix) = src_dir.to_str() {
-                source_prefixes.push(format!("{}/", prefix));
-            }
-        }
-
-        // For resolving relative DWARF paths, we need the workspace root
-        // (where cargo build actually runs), not just the member's project root.
-        // Walk up from project_root to find the top-level workspace Cargo.toml.
-        let workspace_root = Self::find_workspace_root(project_root);
-        let root_str = workspace_root.to_str().map(|s| format!("{}/", s));
-
-        Self {
-            source_prefixes,
-            project_root: root_str,
-        }
-    }
-
-    /// Find the workspace root for a project.
-    /// If the project root itself has a [workspace] section, returns it directly.
-    /// Otherwise walks up to find the nearest parent with [workspace].
-    /// Returns the original project root if no workspace is found.
-    fn find_workspace_root(project_root: &std::path::Path) -> std::path::PathBuf {
-        // Check if project_root itself is a workspace root
-        if Self::has_workspace_section(project_root) {
-            return project_root.to_path_buf();
-        }
-
-        // Walk up to find the nearest parent workspace
-        let mut current = project_root.parent();
-        while let Some(dir) = current {
-            if Self::has_workspace_section(dir) {
-                return dir.to_path_buf();
-            }
-            current = dir.parent();
-        }
-        project_root.to_path_buf()
-    }
-
-    /// Check if a directory's Cargo.toml has a [workspace] section.
-    fn has_workspace_section(dir: &Path) -> bool {
-        let cargo_toml = dir.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                return manifest.workspace.is_some();
-            }
-        }
-        false
-    }
-
-    /// Check if a DWARF file path belongs to this project's source code.
-    ///
-    /// For absolute paths: checks if the path starts with any source directory prefix.
-    /// For relative paths with a workspace-specific prefix (e.g., "examples/panic/src/"):
-    /// resolves against workspace root and checks.
-    /// Returns false for ambiguous relative paths (e.g., "src/main.rs") — those
-    /// are handled by the pattern matching fallback in `matches_crate_pattern_validated`.
-    pub fn is_crate_source(&self, file_path: &str) -> bool {
-        if file_path.starts_with('/') {
-            // Absolute path: direct prefix check
-            return self
-                .source_prefixes
-                .iter()
-                .any(|prefix| file_path.starts_with(prefix.as_str()));
-        }
-
-        // For relative paths, resolve against workspace root and check.
-        if let Some(root) = &self.project_root {
-            let absolute = format!("{}{}", root, file_path);
-            if self
-                .source_prefixes
-                .iter()
-                .any(|prefix| absolute.starts_with(prefix.as_str()))
-            {
-                // The resolved path matches a source prefix. But for generic relative
-                // paths like "src/main.rs", a dependency could also match.
-                // Check if the file actually exists on disk under our project root.
-                let path = std::path::Path::new(&absolute);
-                return path.exists();
-            }
-        }
-
-        false
-    }
-}
-
 #[allow(clippy::large_enum_variant)]
 pub enum SymbolTable<'a> {
     MachO(Mach<'a>),
@@ -206,7 +62,7 @@ impl CrateLineTable {
     pub fn build<R: Reader>(
         dwarf: &Dwarf<R>,
         crate_src_path: &str,
-        valid_files: &ValidSourceFiles,
+        project_context: &ProjectContext,
     ) -> Result<Self, gimli::Error> {
         let mut entries = Vec::new();
 
@@ -222,7 +78,7 @@ impl CrateLineTable {
                         let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Only include entries from crate source
-                        if valid_files.is_crate_source(&full_path)
+                        if project_context.is_crate_source(&full_path)
                             && let Some(line) = row.line()
                         {
                             let column = match row.column() {
@@ -396,7 +252,7 @@ impl FullLineTable {
         func_end: u64,
         func_start_line: Option<u32>,
         crate_src_path: &str,
-        valid_files: &ValidSourceFiles,
+        project_context: &ProjectContext,
     ) -> (Option<u32>, Option<u32>) {
         // Find entries up to and including addr
         let end_idx = self.entries.partition_point(|e| e.address <= addr);
@@ -411,7 +267,7 @@ impl FullLineTable {
                 break;
             }
             if let Some(file) = self.file_pool.get(entry.file_id as usize) {
-                if valid_files.is_crate_source(file) && entry.line > 0 {
+                if project_context.is_crate_source(file) && entry.line > 0 {
                     // Found a crate entry, but if it's just the function start,
                     // try searching forward for a better line
                     if func_start_line.is_some_and(|fl| entry.line == fl) {
@@ -432,7 +288,7 @@ impl FullLineTable {
                 break;
             }
             if let Some(file) = self.file_pool.get(entry.file_id as usize) {
-                if valid_files.is_crate_source(file) && entry.line > 0 {
+                if project_context.is_crate_source(file) && entry.line > 0 {
                     // Found the next crate entry (e.g., closing brace).
                     // The call is on the line before the epilogue.
                     if let Some(func_line) = func_start_line {
@@ -464,7 +320,7 @@ impl FullLineTable {
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
         crate_src_path: &str,
-        valid_files: &ValidSourceFiles,
+        project_context: &ProjectContext,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
         let mut crate_entries = Vec::new();
         let mut full_entries = Vec::new();
@@ -490,7 +346,7 @@ impl FullLineTable {
                         let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Check crate match before interning (needs &full_path)
-                        let is_crate_match = valid_files.is_crate_source(&full_path);
+                        let is_crate_match = project_context.is_crate_source(&full_path);
 
                         // Intern the file path (avoid double clone on cache miss)
                         let file_id = if let Some(&id) = file_to_id.get(&full_path) {
@@ -1392,7 +1248,7 @@ impl<'a> CallGraph<'a> {
         crate_src_path: Option<&str>,
         show_timings: bool,
         symbol_index: Option<&'a SymbolIndex>,
-        valid_files: &ValidSourceFiles,
+        project_context: &ProjectContext,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -1449,7 +1305,8 @@ impl<'a> CallGraph<'a> {
         // Build both line tables in a single pass (saves iterating DWARF twice)
         let step = Instant::now();
         let (crate_line_table, full_line_table) = if let Some(path) = crate_src_path {
-            let (crate_table, full_table) = FullLineTable::build_both(&dwarf, path, valid_files)?;
+            let (crate_table, full_table) =
+                FullLineTable::build_both(&dwarf, path, project_context)?;
             (Some(crate_table), full_table)
         } else {
             (None, FullLineTable::build(&dwarf)?)
@@ -1476,7 +1333,7 @@ impl<'a> CallGraph<'a> {
                     &full_line_table,
                     crate_line_table.as_ref(),
                     symbol_index,
-                    valid_files,
+                    project_context,
                 )
             {
                 edges.entry(target).or_default().push(caller_info);
@@ -1602,7 +1459,7 @@ impl ObjectLineTable {
         &self,
         func_start: u64,
         call_site_addr: u64,
-        valid_files: &ValidSourceFiles,
+        project_context: &ProjectContext,
     ) -> Option<(String, u32, Option<u32>)> {
         if self.entries.is_empty() {
             return None;
@@ -1617,7 +1474,7 @@ impl ObjectLineTable {
         // Search backwards from end to find the last crate source entry
         for i in (start_idx..end_idx).rev() {
             let entry = &self.entries[i];
-            if valid_files.is_crate_source(&entry.file) {
+            if project_context.is_crate_source(&entry.file) {
                 return Some((entry.file.clone(), entry.line, entry.column));
             }
         }
@@ -1647,7 +1504,7 @@ impl LibraryCallGraph {
         macho: &MachO,
         buffer: &[u8],
         crate_src_path: Option<&str>,
-        valid_files: &ValidSourceFiles,
+        project_context: &ProjectContext,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
 
@@ -1749,12 +1606,16 @@ impl LibraryCallGraph {
                         let (file, line, column) = if let Some(crate_path) = crate_src_path
                             && file
                                 .as_ref()
-                                .is_some_and(|f| !valid_files.is_crate_source(f))
+                                .is_some_and(|f| !project_context.is_crate_source(f))
                         {
                             // Try to find precise line in crate source
                             if let Some(lt) = line_lookup.as_ref()
                                 && let Some((crate_file, crate_line, crate_col)) = lt
-                                    .get_crate_line_in_range(func_addr, call_site_addr, valid_files)
+                                    .get_crate_line_in_range(
+                                        func_addr,
+                                        call_site_addr,
+                                        project_context,
+                                    )
                             {
                                 (Some(crate_file), Some(crate_line), crate_col)
                             } else {
@@ -1867,7 +1728,7 @@ fn process_instruction_data_with_crate_table<'a>(
     full_line_table: &FullLineTable,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&'a SymbolIndex>,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Option<(u64, CallerInfo<'a>)> {
     let call_target = data.call_target?;
 
@@ -1899,7 +1760,7 @@ fn process_instruction_data_with_crate_table<'a>(
 
         // For functions in the crate source, find actual call line using pre-built table
         let file_in_crate = file.as_ref().is_some_and(|f| {
-            crate_src_path.is_some_and(|crate_path| valid_files.is_crate_source(f))
+            crate_src_path.is_some_and(|crate_path| project_context.is_crate_source(f))
         });
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
@@ -1920,7 +1781,7 @@ fn process_instruction_data_with_crate_table<'a>(
                                 func.end_address,
                                 func_line,
                                 crate_path,
-                                valid_files,
+                                project_context,
                             );
                             if full_line.is_some() && full_line != func_line {
                                 line = full_line;
@@ -2538,7 +2399,7 @@ pub fn find_callers_with_debug_info(
     debug_buffer: &[u8],
     target_addr: u64,
     crate_src_path: Option<&str>,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
     let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
@@ -2592,12 +2453,12 @@ pub fn find_callers_with_debug_info(
 
                     // For functions in the crate source, find the actual line where the call originates
                     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-                        && valid_files.is_crate_source(f)
+                        && project_context.is_crate_source(f)
                         && let Ok(Some((crate_line, crate_column))) = get_crate_line_at_address(
                             &dwarf,
                             func.start_address,
                             instruction.address(),
-                            valid_files,
+                            project_context,
                         )
                     {
                         line = Some(crate_line);
@@ -2656,7 +2517,7 @@ fn get_crate_line_at_address<R: Reader>(
     dwarf: &Dwarf<R>,
     func_start: u64,
     call_site_addr: u64,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Result<Option<(u32, Option<u32>)>, gimli::Error> {
     let mut units = dwarf.units();
     let mut best_line: Option<u32> = None;
@@ -2680,7 +2541,7 @@ fn get_crate_line_at_address<R: Reader>(
                     let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                     // Check if this line is in the crate source
-                    if valid_files.is_crate_source(&full_path)
+                    if project_context.is_crate_source(&full_path)
                         && let Some(line) = row.line()
                         && addr >= best_addr
                     {
@@ -3056,106 +2917,6 @@ fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Tests for ValidSourceFiles (absolute path matching)
-    #[test]
-    fn test_valid_source_files_absolute_path_matching() {
-        let valid = ValidSourceFiles {
-            source_prefixes: vec!["/Users/me/project/src/".to_string()],
-            project_root: Some("/Users/me/project/".to_string()),
-        };
-
-        // Absolute paths under our source directory match
-        assert!(valid.is_crate_source("/Users/me/project/src/main.rs"));
-        assert!(valid.is_crate_source("/Users/me/project/src/module/mod.rs"));
-
-        // Absolute paths in dependencies don't match
-        assert!(!valid.is_crate_source(
-            "/Users/me/.cargo/registry/src/index.crates.io-abc/metal-0.32.0/src/device.rs"
-        ));
-        assert!(!valid.is_crate_source(
-            "/Users/me/.cargo/registry/src/index.crates.io-abc/wgpu-hal-27.0.4/src/metal/device.rs"
-        ));
-
-        // Different project's source doesn't match
-        assert!(!valid.is_crate_source("/Users/me/other_project/src/main.rs"));
-    }
-
-    #[test]
-    fn test_valid_source_files_workspace() {
-        let valid = ValidSourceFiles {
-            source_prefixes: vec![
-                "/Users/me/workspace/crate_a/src/".to_string(),
-                "/Users/me/workspace/crate_b/src/".to_string(),
-            ],
-            project_root: Some("/Users/me/workspace/".to_string()),
-        };
-
-        assert!(valid.is_crate_source("/Users/me/workspace/crate_a/src/lib.rs"));
-        assert!(valid.is_crate_source("/Users/me/workspace/crate_b/src/main.rs"));
-        assert!(!valid.is_crate_source("/Users/me/workspace/crate_c/src/lib.rs"));
-    }
-
-    #[test]
-    fn test_valid_source_files_relative_paths() {
-        // Use the actual jonesy project root for filesystem-based validation
-        let project_root = env!("CARGO_MANIFEST_DIR");
-        let valid = ValidSourceFiles {
-            source_prefixes: vec![format!("{}/src/", project_root)],
-            project_root: Some(format!("{}/", project_root)),
-        };
-
-        // Relative paths that exist on disk match
-        assert!(valid.is_crate_source("src/lib.rs"));
-
-        // Relative paths that don't exist don't match (prevents dependency false positives)
-        assert!(!valid.is_crate_source("src/nonexistent_file.rs"));
-        assert!(!valid.is_crate_source("tests/test.rs"));
-    }
-
-    #[test]
-    fn test_valid_source_files_dependency_with_same_relative_path() {
-        let valid = ValidSourceFiles {
-            source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
-            project_root: Some("/Users/me/meshchat/".to_string()),
-        };
-
-        // Our device.rs matches
-        assert!(valid.is_crate_source("/Users/me/meshchat/src/device.rs"));
-
-        // Metal crate's device.rs does NOT match — this is the bug we're fixing
-        assert!(!valid.is_crate_source(
-            "/Users/me/.cargo/registry/src/index.crates.io-abc/metal-0.32.0/src/device.rs"
-        ));
-    }
-
-    /// Test the exact scenario that caused false positives in meshchat:
-    /// After resolve_decl_file prepends comp_dir, a metal crate function's
-    /// file path becomes absolute and is correctly rejected by is_crate_source.
-    #[test]
-    fn test_dependency_function_with_absolute_path_from_comp_dir() {
-        let valid = ValidSourceFiles {
-            source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
-            project_root: Some("/Users/me/meshchat/".to_string()),
-        };
-
-        // After resolve_decl_file prepends comp_dir, the metal function's file becomes:
-        // comp_dir="/Users/me/.cargo/registry/.../metal-0.32.0" + "src/device.rs"
-        let metal_device_rs =
-            "/Users/me/.cargo/registry/src/index.crates.io-abc/metal-0.32.0/src/device.rs";
-
-        // This should NOT match as crate source
-        assert!(
-            !valid.is_crate_source(metal_device_rs),
-            "Metal crate's device.rs should not be identified as meshchat source"
-        );
-
-        // But meshchat's own device.rs should match
-        assert!(
-            valid.is_crate_source("/Users/me/meshchat/src/device.rs"),
-            "Meshchat's device.rs should be identified as crate source"
-        );
-    }
 
     // Tests for decode_branch_target (ARM64)
     #[test]

@@ -7,7 +7,8 @@ use crate::config::Config;
 use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
-use crate::sym::{CallGraph, ValidSourceFiles};
+use crate::project_context::ProjectContext;
+use crate::sym::CallGraph;
 use dashmap::DashSet;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
@@ -52,7 +53,7 @@ pub fn build_call_tree_parallel_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
@@ -64,16 +65,21 @@ pub fn build_call_tree_parallel_filtered(
 
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
-                build_call_tree_sequential_filtered(call_graph, caller_addr, visited, valid_files)
+                build_call_tree_sequential_filtered(
+                    call_graph,
+                    caller_addr,
+                    visited,
+                    project_context,
+                )
             } else {
-                build_shallow_callers_filtered(call_graph, caller_addr, valid_files)
+                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
             };
 
             // Early pruning: skip leaf nodes that aren't in crate source
             if child_callers.is_empty()
                 && !file
                     .as_ref()
-                    .is_some_and(|f| valid_files.is_crate_source(f))
+                    .is_some_and(|f| project_context.is_crate_source(f))
             {
                 return None;
             }
@@ -97,7 +103,7 @@ pub fn build_call_tree_sequential_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
@@ -109,16 +115,21 @@ pub fn build_call_tree_sequential_filtered(
 
             let file = caller_info.caller_file.clone().or(caller_info.file.clone());
             let child_callers = if should_recurse {
-                build_call_tree_sequential_filtered(call_graph, caller_addr, visited, valid_files)
+                build_call_tree_sequential_filtered(
+                    call_graph,
+                    caller_addr,
+                    visited,
+                    project_context,
+                )
             } else {
-                build_shallow_callers_filtered(call_graph, caller_addr, valid_files)
+                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
             };
 
             // Early pruning: skip leaf nodes that aren't in crate source
             if child_callers.is_empty()
                 && !file
                     .as_ref()
-                    .is_some_and(|f| valid_files.is_crate_source(f))
+                    .is_some_and(|f| project_context.is_crate_source(f))
             {
                 return None;
             }
@@ -139,7 +150,7 @@ pub fn build_call_tree_sequential_filtered(
 pub fn build_shallow_callers_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
@@ -150,7 +161,7 @@ pub fn build_shallow_callers_filtered(
             // Shallow callers are leaves — only keep if in crate source
             if !file
                 .as_ref()
-                .is_some_and(|f| valid_files.is_crate_source(f))
+                .is_some_and(|f| project_context.is_crate_source(f))
             {
                 return None;
             }
@@ -253,13 +264,13 @@ fn extract_qualified_function_name(full_name: &str) -> String {
 /// Returns a list of "root" code points (entry points) with their children.
 pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) -> Vec<CrateCodePoint> {
     // First pass: collect all crate code points and their relationships
     // Map: (file, line) -> (name, cause, set of child keys)
     let mut points: CodePointMap = CodePointMap::new();
 
-    collect_crate_relationships(node, &mut points, None, None, None, valid_files);
+    collect_crate_relationships(node, &mut points, None, None, None, project_context);
 
     // All crate code points should be reported as roots.
     // Each point that can lead to a panic deserves its own entry,
@@ -353,7 +364,7 @@ pub fn collect_crate_relationships(
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
     immediate_callee: Option<&str>, // Name of function this node calls (toward panic)
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
 ) {
     // Try to detect panic cause from this node's function name
     let detected_cause = detect_panic_cause(&node.name).or(current_cause);
@@ -362,7 +373,7 @@ pub fn collect_crate_relationships(
     let file_matches = node
         .file
         .as_ref()
-        .is_some_and(|file| valid_files.is_crate_source(file));
+        .is_some_and(|file| project_context.is_crate_source(file));
 
     let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
         && file_matches
@@ -430,7 +441,7 @@ pub fn collect_crate_relationships(
             next_child.clone(),
             detected_cause.clone(),
             Some(&node.name),
-            valid_files,
+            project_context,
         );
     }
 }
@@ -442,10 +453,10 @@ pub fn collect_crate_relationships(
 pub fn collect_crate_code_points(
     node: &CallTreeNode,
     config: &Config,
-    valid_files: &ValidSourceFiles,
+    project_context: &ProjectContext,
     workspace_root: Option<&std::path::Path>,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
-    let mut roots = collect_crate_code_points_hierarchical(node, valid_files);
+    let mut roots = collect_crate_code_points_hierarchical(node, project_context);
 
     // Assign Unknown cause to leaf points without identified causes
     assign_unknown_causes(&mut roots);

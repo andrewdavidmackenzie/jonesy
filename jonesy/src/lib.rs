@@ -17,6 +17,7 @@ pub mod inline_allows;
 pub mod json_output;
 pub mod lsp;
 pub mod panic_cause;
+pub mod project_context;
 #[cfg(target_os = "macos")]
 pub mod sym;
 pub mod text_output;
