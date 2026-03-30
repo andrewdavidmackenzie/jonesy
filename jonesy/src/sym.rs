@@ -155,7 +155,7 @@ impl ValidSourceFiles {
     }
 
     /// Check if a directory's Cargo.toml has a [workspace] section.
-    fn has_workspace_section(dir: &std::path::Path) -> bool {
+    fn has_workspace_section(dir: &Path) -> bool {
         let cargo_toml = dir.join("Cargo.toml");
         if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
             if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
@@ -1677,6 +1677,7 @@ impl LibraryCallGraph {
         macho: &MachO,
         buffer: &[u8],
         crate_src_path: Option<&str>,
+        valid_files: Option<&ValidSourceFiles>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
 
@@ -1777,7 +1778,7 @@ impl LibraryCallGraph {
                         // the last crate source line between function start and call site
                         let (file, line, column) = if let Some(crate_path) = crate_src_path
                             && file.as_ref().is_some_and(|f| {
-                                !matches_crate_pattern_validated(f, crate_path, None)
+                                !matches_crate_pattern_validated(f, crate_path, valid_files)
                             }) {
                             // Try to find precise line in crate source
                             if let Some(lt) = line_lookup.as_ref()
@@ -2573,6 +2574,7 @@ pub fn find_callers_with_debug_info(
     debug_buffer: &[u8],
     target_addr: u64,
     crate_src_path: Option<&str>,
+    valid_files: Option<&ValidSourceFiles>,
 ) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
     let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
@@ -2626,7 +2628,7 @@ pub fn find_callers_with_debug_info(
 
                     // For functions in the crate source, find the actual line where the call originates
                     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-                        && matches_crate_pattern_validated(f, crate_path, None)
+                        && matches_crate_pattern_validated(f, crate_path, valid_files)
                         && let Ok(Some((crate_line, crate_column))) = get_crate_line_at_address(
                             &dwarf,
                             func.start_address,

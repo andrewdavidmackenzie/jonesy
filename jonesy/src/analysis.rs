@@ -382,7 +382,12 @@ pub fn analyze_archive(
         // Parse the object file as Mach-O and build its call graph
         match MachO::parse(member_data, 0) {
             Ok(obj_macho) => {
-                match LibraryCallGraph::build_from_object(&obj_macho, member_data, crate_src_path) {
+                match LibraryCallGraph::build_from_object(
+                    &obj_macho,
+                    member_data,
+                    crate_src_path,
+                    valid_files.as_ref(),
+                ) {
                     Ok(obj_graph) => merged_graph.merge(obj_graph),
                     Err(e) => {
                         if show_progress {
