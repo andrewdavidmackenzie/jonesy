@@ -433,6 +433,19 @@ mod tests {
         assert!(!is_library_panic_symbol("my_crate::process_data"));
     }
 
+    #[test]
+    fn test_is_library_panic_symbol_unwrap_err_expect_err() {
+        // Test unwrap_err and expect_err patterns
+        assert!(is_library_panic_symbol("Result<T,E>::unwrap_err"));
+        assert!(is_library_panic_symbol("Result<T,E>::expect_err"));
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_expect_failed() {
+        // Test core::option::expect_failed is matched
+        assert!(is_library_panic_symbol("core::option::expect_failed"));
+    }
+
     // -- detect_panic_cause tests --
 
     #[test]

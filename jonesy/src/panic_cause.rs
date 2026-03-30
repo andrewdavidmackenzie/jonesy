@@ -601,7 +601,20 @@ mod tests {
             "JP003"
         );
         assert_eq!(PanicCause::Unwrap.error_code(), "JP006");
+        assert_eq!(PanicCause::Expect.error_code(), "JP008");
         assert_eq!(PanicCause::Unknown.error_code(), "JP000");
+    }
+
+    #[test]
+    fn test_unwrap_expect_id() {
+        assert_eq!(PanicCause::Unwrap.id(), "unwrap");
+        assert_eq!(PanicCause::Expect.id(), "expect");
+    }
+
+    #[test]
+    fn test_unwrap_expect_description() {
+        assert_eq!(PanicCause::Unwrap.description(), "unwrap() failed");
+        assert_eq!(PanicCause::Expect.description(), "expect() failed");
     }
 
     #[test]

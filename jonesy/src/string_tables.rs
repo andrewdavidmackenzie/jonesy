@@ -71,3 +71,78 @@ impl StringTables {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_intern_name_returns_same_index_for_same_string() {
+        let mut tables = StringTables::new();
+        let idx1 = tables.intern_name("my_function".to_string());
+        let idx2 = tables.intern_name("my_function".to_string());
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_intern_name_different_indexes_for_different_strings() {
+        let mut tables = StringTables::new();
+        let idx1 = tables.intern_name("func1".to_string());
+        let idx2 = tables.intern_name("func2".to_string());
+        assert_ne!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_intern_file_returns_zero_for_none() {
+        let mut tables = StringTables::new();
+        let idx = tables.intern_file(None);
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_intern_file_returns_same_index_for_same_path() {
+        let mut tables = StringTables::new();
+        let idx1 = tables.intern_file(Some("/path/to/file.rs".to_string()));
+        let idx2 = tables.intern_file(Some("/path/to/file.rs".to_string()));
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_intern_file_different_indexes_for_different_paths() {
+        let mut tables = StringTables::new();
+        let idx1 = tables.intern_file(Some("/path/to/file1.rs".to_string()));
+        let idx2 = tables.intern_file(Some("/path/to/file2.rs".to_string()));
+        assert_ne!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_get_name_returns_interned_string() {
+        let mut tables = StringTables::new();
+        let idx = tables.intern_name("test_function".to_string());
+        assert_eq!(tables.get_name(idx), "test_function");
+    }
+
+    #[test]
+    fn test_get_file_returns_none_for_index_zero() {
+        let tables = StringTables::new();
+        assert_eq!(tables.get_file(0), None);
+    }
+
+    #[test]
+    fn test_get_file_returns_interned_path() {
+        let mut tables = StringTables::new();
+        let idx = tables.intern_file(Some("/src/main.rs".to_string()));
+        assert_eq!(tables.get_file(idx), Some("/src/main.rs"));
+    }
+
+    #[test]
+    fn test_intern_file_none_then_some() {
+        let mut tables = StringTables::new();
+        let idx_none = tables.intern_file(None);
+        let idx_some = tables.intern_file(Some("/file.rs".to_string()));
+        assert_eq!(idx_none, 0);
+        assert_ne!(idx_some, 0);
+        assert_eq!(tables.get_file(idx_none), None);
+        assert_eq!(tables.get_file(idx_some), Some("/file.rs"));
+    }
+}
