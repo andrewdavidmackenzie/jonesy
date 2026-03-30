@@ -453,8 +453,9 @@ pub fn analyze_archive(
 
             // Get file from DWARF info, filtering out non-crate code paths
             let dwarf_file = caller_info.caller_file.as_ref().filter(|f| {
-                crate_src_path
-                    .is_none_or(|p| crate::sym::matches_crate_pattern_validated(f, p, None))
+                crate_src_path.is_none_or(|p| {
+                    crate::sym::matches_crate_pattern_validated(f, p, valid_files.as_ref())
+                })
             });
 
             // Only include entries with proper DWARF file/line info from user code
