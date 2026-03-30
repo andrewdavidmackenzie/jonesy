@@ -290,17 +290,14 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     if func_name.contains("panic_const_rem_by_zero") {
         return Some(PanicCause::DivisionByZero);
     }
-    // unwrap/expect detection - distinguish Option vs Result by file path or function name
-    // Check for Result::expect first (it calls unwrap_failed internally)
-    if func_name.contains("Result") && func_name.contains("expect") {
-        return Some(PanicCause::ExpectErr);
-    }
+    // unwrap/expect detection
     if func_name.contains("unwrap_failed") {
         return Some(PanicCause::Unwrap);
     }
-    if func_name.contains("expect_failed") {
-        // Only Option has expect_failed; Result::expect() uses unwrap_failed
-        return Some(PanicCause::ExpectNone);
+    if func_name.contains("expect_failed")
+        || (func_name.contains("expect") && func_name.contains("Result"))
+    {
+        return Some(PanicCause::Expect);
     }
     // Assert macros - both assert!() and debug_assert!() compile to the same
     // assert_failed function, so we cannot distinguish them at the binary level.
@@ -544,7 +541,7 @@ mod tests {
     fn test_detect_panic_cause_expect_failed() {
         assert_eq!(
             detect_panic_cause("expect_failed"),
-            Some(PanicCause::ExpectNone)
+            Some(PanicCause::Expect)
         );
     }
 
@@ -552,7 +549,7 @@ mod tests {
     fn test_detect_panic_cause_result_expect() {
         assert_eq!(
             detect_panic_cause("Result::expect"),
-            Some(PanicCause::ExpectErr)
+            Some(PanicCause::Expect)
         );
     }
 

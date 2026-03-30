@@ -490,7 +490,7 @@ pub fn analyze_archive(
     let mut code_points: Vec<CrateCodePoint> = sorted_callers
         .into_iter()
         .map(|caller| {
-            let mut causes = std::collections::HashSet::new();
+            let mut causes = HashSet::new();
             // Detect panic cause from the panic symbol being called (target),
             // not from the user's function name (caller.name)
             if let Some(cause) = crate::heuristics::detect_panic_cause(&caller.target) {
@@ -640,7 +640,7 @@ mod tests {
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::ExpectNone)],
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Expect)],
         };
 
         result1.merge(result2);
@@ -649,11 +649,7 @@ mod tests {
         assert_eq!(result1.code_points.len(), 1);
         assert_eq!(result1.code_points[0].causes.len(), 2);
         assert!(result1.code_points[0].causes.contains(&PanicCause::Unwrap));
-        assert!(
-            result1.code_points[0]
-                .causes
-                .contains(&PanicCause::ExpectNone)
-        );
+        assert!(result1.code_points[0].causes.contains(&PanicCause::Expect));
     }
 
     #[test]

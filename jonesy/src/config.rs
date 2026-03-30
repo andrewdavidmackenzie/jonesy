@@ -546,8 +546,8 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // expect and capacity should be globally allowed
-        assert!(!config.is_denied(&PanicCause::ExpectNone));
-        assert!(!config.is_denied(&PanicCause::ExpectErr));
+        assert!(!config.is_denied(&PanicCause::Expect));
+        assert!(!config.is_denied(&PanicCause::Expect));
         assert!(!config.is_denied(&PanicCause::CapacityOverflow));
 
         // Other causes should still be denied
@@ -622,8 +622,8 @@ mod tests {
         config.load_from_jones_toml(&toml_path);
 
         // First rule (no path/function) should be treated as global
-        assert!(!config.is_denied(&PanicCause::ExpectNone));
-        assert!(!config.is_denied(&PanicCause::ExpectErr));
+        assert!(!config.is_denied(&PanicCause::Expect));
+        assert!(!config.is_denied(&PanicCause::Expect));
         assert!(!config.is_denied(&PanicCause::CapacityOverflow));
 
         // Second rule should allow format on alloc::fmt::format

@@ -45,10 +45,8 @@ pub enum PanicCause {
     DivisionByZero,
     /// Unwrap on None or Err
     Unwrap,
-    /// Expect on None
-    ExpectNone,
-    /// Expect on Err
-    ExpectErr,
+    /// Expect on None or Err
+    Expect,
     /// Assert failed (includes both assert!() and debug_assert!())
     AssertFailed,
     /// Unreachable code reached
@@ -103,8 +101,7 @@ impl PanicCause {
             PanicCause::ShiftOverflow(_) => "shift_overflow",
             PanicCause::DivisionByZero => "div_zero",
             PanicCause::Unwrap => "unwrap",
-            PanicCause::ExpectNone => "expect",
-            PanicCause::ExpectErr => "expect",
+            PanicCause::Expect => "expect",
             PanicCause::AssertFailed => "assert",
             PanicCause::Unreachable => "unreachable",
             PanicCause::Unimplemented => "unimplemented",
@@ -173,8 +170,7 @@ impl PanicCause {
             PanicCause::ShiftOverflow(_) => "shift overflow",
             PanicCause::DivisionByZero => "division by zero",
             PanicCause::Unwrap => "unwrap() failed",
-            PanicCause::ExpectNone => "expect() on None",
-            PanicCause::ExpectErr => "expect() on Err",
+            PanicCause::Expect => "expect() failed",
             PanicCause::AssertFailed => "assertion failed",
             PanicCause::Unreachable => "unreachable!() reached",
             PanicCause::Unimplemented => "unimplemented!() reached",
@@ -220,8 +216,7 @@ impl PanicCause {
             PanicCause::ShiftOverflow(_) => "Validate shift amount is within valid range",
             PanicCause::DivisionByZero => "Check divisor is non-zero before division",
             PanicCause::Unwrap => "Use if let, match, unwrap_or, or ? operator instead",
-            PanicCause::ExpectNone => "Use if let, match, unwrap_or, or ? operator instead",
-            PanicCause::ExpectErr => "Use if let, match, unwrap_or, or ? operator instead",
+            PanicCause::Expect => "Use if let, match, unwrap_or, or ? operator instead",
             PanicCause::AssertFailed => "Review assertion condition",
             PanicCause::Unreachable => "Ensure code path is truly unreachable",
             PanicCause::Unimplemented => "Implement the missing functionality",
@@ -283,7 +278,7 @@ impl PanicCause {
             PanicCause::Unwrap => {
                 "This calls a function that may call unwrap(). Consider a fallible alternative (e.g., try_*)"
             }
-            PanicCause::ExpectNone | PanicCause::ExpectErr => {
+            PanicCause::Expect => {
                 "This calls a function that may call expect(). Consider a fallible alternative (e.g., try_*)"
             }
             PanicCause::AssertFailed => {
@@ -360,7 +355,7 @@ impl PanicCause {
                     "This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{short_func})"
                 )
             }
-            PanicCause::ExpectNone | PanicCause::ExpectErr => {
+            PanicCause::Expect => {
                 format!(
                     "This calls `{func}` which may call expect(). Consider a fallible alternative (e.g., try_{short_func})"
                 )
@@ -429,8 +424,7 @@ impl PanicCause {
             PanicCause::ShiftOverflow(_) => "JP004",
             PanicCause::DivisionByZero => "JP005",
             PanicCause::Unwrap => "JP006",
-            PanicCause::ExpectNone => "JP008",
-            PanicCause::ExpectErr => "JP009",
+            PanicCause::Expect => "JP008",
             PanicCause::AssertFailed => "JP010",
             PanicCause::Unreachable => "JP012",
             PanicCause::Unimplemented => "JP013",
@@ -459,8 +453,7 @@ impl PanicCause {
             PanicCause::ShiftOverflow(_) => "JP004-shift-overflow",
             PanicCause::DivisionByZero => "JP005-division-by-zero",
             PanicCause::Unwrap => "JP006-unwrap",
-            PanicCause::ExpectNone => "JP008-expect-none",
-            PanicCause::ExpectErr => "JP009-expect-err",
+            PanicCause::Expect => "JP008-expect",
             PanicCause::AssertFailed => "JP010-assert-failed",
             PanicCause::Unreachable => "JP012-unreachable",
             PanicCause::Unimplemented => "JP013-unimplemented",
@@ -549,8 +542,7 @@ mod tests {
         assert_eq!(PanicCause::ExplicitPanic.id(), "panic");
         assert_eq!(PanicCause::BoundsCheck.id(), "bounds");
         assert_eq!(PanicCause::Unwrap.id(), "unwrap");
-        assert_eq!(PanicCause::ExpectNone.id(), "expect");
-        assert_eq!(PanicCause::ExpectErr.id(), "expect");
+        assert_eq!(PanicCause::Expect.id(), "expect");
         assert_eq!(PanicCause::DivisionByZero.id(), "div_zero");
         assert_eq!(
             PanicCause::ArithmeticOverflow("addition".to_string()).id(),
@@ -711,8 +703,8 @@ mod tests {
             PanicCause::DivisionByZero,
             PanicCause::Unwrap,
             PanicCause::Unwrap,
-            PanicCause::ExpectNone,
-            PanicCause::ExpectErr,
+            PanicCause::Expect,
+            PanicCause::Expect,
             PanicCause::AssertFailed,
             PanicCause::Unreachable,
             PanicCause::Unimplemented,
@@ -870,12 +862,12 @@ mod tests {
                 .contains("unwrap()")
         );
         assert!(
-            PanicCause::ExpectNone
+            PanicCause::Expect
                 .indirect_suggestion()
                 .contains("expect()")
         );
         assert!(
-            PanicCause::ExpectErr
+            PanicCause::Expect
                 .indirect_suggestion()
                 .contains("expect()")
         );
@@ -949,8 +941,8 @@ mod tests {
             PanicCause::DivisionByZero,
             PanicCause::Unwrap,
             PanicCause::Unwrap,
-            PanicCause::ExpectNone,
-            PanicCause::ExpectErr,
+            PanicCause::Expect,
+            PanicCause::Expect,
             PanicCause::AssertFailed,
             PanicCause::Unreachable,
             PanicCause::Unimplemented,
@@ -994,8 +986,7 @@ mod tests {
             PanicCause::DivisionByZero.docs_slug(),
             "JP005-division-by-zero"
         );
-        assert_eq!(PanicCause::ExpectNone.docs_slug(), "JP008-expect-none");
-        assert_eq!(PanicCause::ExpectErr.docs_slug(), "JP009-expect-err");
+        assert_eq!(PanicCause::Expect.docs_slug(), "JP008-expect");
         assert_eq!(PanicCause::AssertFailed.docs_slug(), "JP010-assert-failed");
         assert_eq!(PanicCause::Unreachable.docs_slug(), "JP012-unreachable");
         assert_eq!(PanicCause::Unimplemented.docs_slug(), "JP013-unimplemented");

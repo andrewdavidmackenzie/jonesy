@@ -480,7 +480,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
             let mut causes = HashSet::new();
             causes.insert(PanicCause::Unwrap);
             if i % 2 == 0 {
-                causes.insert(PanicCause::ExpectNone);
+                causes.insert(PanicCause::Expect);
             }
             CrateCodePoint {
                 name: format!("function_{}", i),
