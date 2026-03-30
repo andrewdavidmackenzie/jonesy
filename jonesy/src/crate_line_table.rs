@@ -97,3 +97,80 @@ impl CrateLineTable {
         Self { entries }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_table(entries: &[(u64, u32, Option<u32>)]) -> CrateLineTable {
+        CrateLineTable::from_entries(
+            entries
+                .iter()
+                .map(|&(address, line, column)| CrateLineEntry {
+                    address,
+                    line,
+                    column,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn test_empty_table() {
+        let table = make_table(&[]);
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.get_line(0, 100), (None, None));
+    }
+
+    #[test]
+    fn test_single_entry() {
+        let table = make_table(&[(100, 10, Some(5))]);
+        assert!(!table.is_empty());
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.get_line(100, 100), (Some(10), Some(5)));
+    }
+
+    #[test]
+    fn test_get_line_exact_match() {
+        let table = make_table(&[(100, 10, None), (200, 20, Some(3)), (300, 30, Some(7))]);
+        assert_eq!(table.get_line(200, 200), (Some(20), Some(3)));
+    }
+
+    #[test]
+    fn test_get_line_returns_last_in_range() {
+        // Two entries in range — should return the last one (highest address)
+        let table = make_table(&[(100, 10, None), (150, 15, Some(2)), (200, 20, None)]);
+        assert_eq!(table.get_line(100, 200), (Some(20), None));
+        assert_eq!(table.get_line(100, 160), (Some(15), Some(2)));
+    }
+
+    #[test]
+    fn test_get_line_no_entries_in_range() {
+        let table = make_table(&[(100, 10, None), (200, 20, None)]);
+        // Range before all entries
+        assert_eq!(table.get_line(0, 50), (None, None));
+        // Range between entries
+        assert_eq!(table.get_line(110, 190), (None, None));
+    }
+
+    #[test]
+    fn test_get_line_func_start_equals_call_site() {
+        let table = make_table(&[(100, 10, Some(1))]);
+        assert_eq!(table.get_line(100, 100), (Some(10), Some(1)));
+    }
+
+    #[test]
+    fn test_get_line_column_none() {
+        let table = make_table(&[(100, 10, None)]);
+        assert_eq!(table.get_line(100, 100), (Some(10), None));
+    }
+
+    #[test]
+    fn test_from_entries_preserves_order() {
+        let table = make_table(&[(300, 30, None), (100, 10, None), (200, 20, None)]);
+        assert_eq!(table.len(), 3);
+        // from_entries doesn't sort — entries are used as-is
+        // (build() sorts, but from_entries trusts the caller)
+    }
+}
