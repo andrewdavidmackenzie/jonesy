@@ -623,7 +623,6 @@ mod tests {
 
         // First rule (no path/function) should be treated as global
         assert!(!config.is_denied(&PanicCause::Expect));
-        assert!(!config.is_denied(&PanicCause::Expect));
         assert!(!config.is_denied(&PanicCause::CapacityOverflow));
 
         // Second rule should allow format on alloc::fmt::format
