@@ -1780,15 +1780,14 @@ impl LibraryCallGraph {
                             .and_then(|lt| lt.lookup(call_site_addr))
                             .unwrap_or((None, None, None));
 
-                        // If call site points to library code, find the last crate source
-                        // line between function start and call site for precise line numbers
-                        let (file, line, column) = if file
-                            .as_ref()
-                            .is_some_and(|f| crate::heuristics::is_dependency_path(f))
-                        {
+                        // If call site points to non-crate code (stdlib/dependency), find
+                        // the last crate source line between function start and call site
+                        let (file, line, column) = if let Some(crate_path) = crate_src_path
+                            && file.as_ref().is_some_and(|f| {
+                                !matches_crate_pattern_validated(f, crate_path, None)
+                            }) {
                             // Try to find precise line in crate source
-                            if let Some(crate_path) = crate_src_path
-                                && let Some(lt) = line_lookup.as_ref()
+                            if let Some(lt) = line_lookup.as_ref()
                                 && let Some((crate_file, crate_line, crate_col)) = lt
                                     .get_crate_line_in_range(
                                         func_addr,
