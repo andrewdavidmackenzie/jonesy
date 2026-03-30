@@ -239,3 +239,195 @@ impl SymbolIndex {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- SymbolEntry tests --
+
+    #[test]
+    fn test_symbol_entry_demangling() {
+        let entry = SymbolEntry::new(0x1000, "std::io::Read::read".to_string());
+        // First access computes demangled name
+        assert_eq!(entry.demangled(), "std::io::Read::read");
+        // Second access returns cached value
+        assert_eq!(entry.demangled(), "std::io::Read::read");
+    }
+
+    #[test]
+    fn test_symbol_entry_mangled_rust_symbol() {
+        // A mangled Rust symbol should be demangled
+        let entry = SymbolEntry::new(
+            0x2000,
+            "ZN3std2io4Read4read17h1234567890abcdefE".to_string(),
+        );
+        let name = entry.demangled();
+        // Should not contain mangled hash
+        assert!(!name.contains("h1234567890abcdef"));
+    }
+
+    #[test]
+    fn test_symbol_entry_debug_format() {
+        let entry = SymbolEntry::new(0x1000, "main".to_string());
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("address: 4096")); // 0x1000
+        assert!(debug.contains("main"));
+    }
+
+    // -- SymbolTable::from tests --
+
+    #[test]
+    fn test_symbol_table_from_invalid_data() {
+        let result = SymbolTable::from(b"not a valid binary");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_symbol_table_from_empty_data() {
+        let result = SymbolTable::from(b"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_symbol_table_from_real_binary() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            let symbols = SymbolTable::from(&buffer);
+            assert!(symbols.is_ok());
+            let symbols = symbols.unwrap();
+            assert!(symbols.macho().is_some());
+        }
+    }
+
+    // -- SymbolTable method tests (using real binary) --
+
+    #[test]
+    fn test_has_dwarf_sections_on_real_binary() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // Debug binary should have DWARF sections (or a dSYM)
+                // Either way, this exercises the code path
+                let _has_dwarf = symbols.has_dwarf_sections();
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_containing_on_real_binary() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // Should find rust_panic in jonesy binary
+                let result = symbols.find_symbol_containing("rust_panic$");
+                assert!(result.is_ok());
+                if let Ok(Some((_mangled, demangled))) = result {
+                    assert!(demangled.contains("rust_panic"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_containing_no_match() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_symbol_containing("zzz_nonexistent_symbol_zzz$");
+                assert!(result.is_ok());
+                assert!(result.unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_containing_invalid_regex() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_symbol_containing("[invalid regex");
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_all_symbols_matching() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result =
+                    symbols.find_all_symbols_matching(&["rust_panic$", "zzz_no_match_zzz"]);
+                assert!(result.is_ok());
+                let matches = result.unwrap();
+                // Should find at least rust_panic
+                assert!(
+                    matches.iter().any(|(_, d)| d.contains("rust_panic")),
+                    "Should find rust_panic"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_address() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // Find a known symbol first, then look up its address
+                if let Ok(Some((mangled, _))) = symbols.find_symbol_containing("rust_panic$") {
+                    let addr = symbols.find_symbol_address(&mangled);
+                    assert!(addr.is_some(), "Should find address for rust_panic");
+                    assert!(addr.unwrap() > 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_address_nonexistent() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                assert!(symbols.find_symbol_address("_zzz_nonexistent").is_none());
+            }
+        }
+    }
+
+    // -- SymbolIndex tests --
+
+    #[test]
+    fn test_symbol_index_from_real_binary() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                if let Some(macho) = symbols.macho() {
+                    let index = SymbolIndex::new(macho);
+                    assert!(index.is_some(), "Should build symbol index from binary");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_symbol_index_find_containing() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                if let Some(macho) = symbols.macho() {
+                    if let Some(index) = SymbolIndex::new(macho) {
+                        // Address 0 should return None (before all symbols)
+                        assert!(index.find_containing(0).is_none());
+
+                        // A very high address should find some symbol
+                        if let Some((addr, name)) = index.find_containing(0x100000000) {
+                            assert!(addr > 0);
+                            assert!(!name.is_empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
