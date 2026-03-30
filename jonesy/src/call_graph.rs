@@ -914,4 +914,70 @@ mod tests {
         }
         // If binary doesn't exist, test passes (this is a unit test, not integration)
     }
+
+    // Tests for CallGraph
+    #[test]
+    fn test_empty_call_graph() {
+        let graph: CallGraph<'_> = CallGraph::empty();
+        assert!(graph.get_callers(0x1000).is_empty());
+        assert!(graph.get_callers(0).is_empty());
+    }
+
+    #[test]
+    fn test_get_callers_returns_empty_for_unknown_target() {
+        let graph: CallGraph<'_> = CallGraph::empty();
+        let callers = graph.get_callers(0xDEADBEEF);
+        assert!(callers.is_empty());
+    }
+
+    // Tests for scan_branch_instructions
+    #[test]
+    fn test_scan_branch_instructions_bl() {
+        // BL +4 instruction at address 0x1000
+        let bl_insn: [u8; 4] = 0x94000001_u32.to_le_bytes();
+        let results = scan_branch_instructions(&bl_insn, 0x1000);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+        assert_eq!(results[0].call_target, Some(0x1004));
+    }
+
+    #[test]
+    fn test_scan_branch_instructions_b() {
+        // B +8 instruction (unconditional branch / tail call)
+        let b_insn: [u8; 4] = 0x14000002_u32.to_le_bytes();
+        let results = scan_branch_instructions(&b_insn, 0x2000);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x2000);
+        assert_eq!(results[0].call_target, Some(0x2008));
+    }
+
+    #[test]
+    fn test_scan_branch_instructions_non_branch() {
+        // ADD instruction (not a branch)
+        let add_insn: [u8; 4] = 0x91000000_u32.to_le_bytes();
+        let results = scan_branch_instructions(&add_insn, 0x1000);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_scan_branch_instructions_multiple() {
+        // Two BL instructions with a non-branch between them
+        let mut code = Vec::new();
+        code.extend_from_slice(&0x94000003_u32.to_le_bytes()); // BL +12
+        code.extend_from_slice(&0x91000000_u32.to_le_bytes()); // ADD (not branch)
+        code.extend_from_slice(&0x94000001_u32.to_le_bytes()); // BL +4
+
+        let results = scan_branch_instructions(&code, 0x1000);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].address, 0x1000);
+        assert_eq!(results[0].call_target, Some(0x100C));
+        assert_eq!(results[1].address, 0x1008);
+        assert_eq!(results[1].call_target, Some(0x100C));
+    }
+
+    #[test]
+    fn test_scan_branch_instructions_empty_input() {
+        let results = scan_branch_instructions(&[], 0x1000);
+        assert!(results.is_empty());
+    }
 }
