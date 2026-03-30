@@ -1,41 +1,18 @@
-//! Detection heuristics for panic analysis.
+//! Panic detection and classification.
 //!
-//! Jonesy uses a layered set of heuristics to achieve two core tasks:
-//!
-//! 1. **Source code ownership** — Distinguishing user/crate code from standard library
-//!    and dependency code in DWARF debug info and symbol tables.
-//! 2. **Panic cause classification** — Identifying _what kind_ of panic a call path
-//!    leads to (e.g., `unwrap()` on `None` vs. index out of bounds).
-//!
-//! This module consolidates the pattern constants and classification functions used
-//! throughout the crate, serving as the single reference for how detection works.
-//!
-//! # Source Code Ownership
-//!
-//! DWARF debug info includes file paths for every source line. When the compiler
-//! inlines stdlib code (e.g., `Option::unwrap()`), the line table contains paths
-//! from the Rust toolchain (like `/rustc/.../option.rs`). Jonesy must distinguish
-//! these from user code to report only panic points the developer controls.
-//!
-//! `ValidSourceFiles` / `matches_crate_pattern_validated` (in [`crate::sym`])
-//! handles this via positive matching: a file's absolute path must fall under a
-//! known source directory prefix derived from the project's `Cargo.toml`. All
-//! DWARF paths are made absolute (via `comp_dir` prepending) at creation time.
+//! This module provides pattern matching and classification for panic analysis:
 //!
 //! # Panic Entry Points
 //!
 //! Analysis begins by finding _entry points_ — the low-level functions that the
-//! Rust panic runtime calls. The entry points differ between binary and library
-//! analysis:
+//! Rust panic runtime calls:
 //!
 //! - **Binary analysis** uses [`PANIC_SYMBOL_PATTERNS`] to find symbols like
 //!   `rust_panic$` in the binary's symbol table, then traces backwards through
 //!   the call graph to find user code that reaches them.
 //!
-//! - **Library analysis** (rlib/staticlib) cannot trace from a single entry point
-//!   because library object files are not fully linked. Instead, it uses
-//!   [`LIBRARY_PANIC_PATTERNS`] to match demangled relocation targets against
-//!   known panic-related functions.
+//! - **Library analysis** (rlib/staticlib) uses [`is_library_panic_symbol`] to
+//!   match demangled relocation targets against known panic-related functions.
 //!
 //! - **Abort paths** — Some panics (like OOM via `alloc_error_handler`) go through
 //!   `std::process::abort()` instead of the normal panic runtime. These are
