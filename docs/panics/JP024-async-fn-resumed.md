@@ -85,5 +85,5 @@ async fn main() {
 
 ## Related
 
-- [JP015 - Panic in Drop](/jonesy/panics/JP015-panic-in-drop): Other compiler-generated panic paths
-- [JP016 - Cannot Unwind](/jonesy/panics/JP016-cannot-unwind): Panics in restricted contexts
+- [JP015 - Panic in Drop](/panics/JP015-panic-in-drop): Other compiler-generated panic paths
+- [JP016 - Cannot Unwind](/panics/JP016-cannot-unwind): Panics in restricted contexts
