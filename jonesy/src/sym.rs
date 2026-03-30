@@ -35,29 +35,6 @@ type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
 /// Result type for get_functions_from_dwarf: (functions, inlined, string_tables)
 type DwarfFunctionResult = (Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables);
 
-/// Check if a file path matches the crate source pattern, with optional validation.
-/// When valid_files is provided and the path is absolute, validates against absolute
-/// source directory prefixes derived from the project's Cargo.toml. For relative paths,
-/// falls back to pattern matching with dependency path filtering.
-pub fn matches_crate_pattern_validated(
-    file_path: &str,
-    crate_pattern: &str,
-    valid_files: Option<&ValidSourceFiles>,
-) -> bool {
-    // With ValidSourceFiles, use authoritative prefix matching.
-    // is_crate_source handles both absolute and relative paths internally.
-    if let Some(valid) = valid_files {
-        return valid.is_crate_source(file_path);
-    }
-
-    // Without ValidSourceFiles, fall back to simple pattern matching.
-    // With absolute paths (comp_dir prepended), this is more reliable
-    // but still less authoritative than ValidSourceFiles.
-    crate_pattern
-        .split('|')
-        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern))
-}
-
 /// Absolute source directory prefixes for a project.
 ///
 /// Determines whether a DWARF file path belongs to the user's crate or workspace
@@ -82,9 +59,11 @@ impl ValidSourceFiles {
         let mut source_prefixes = Vec::new();
 
         // Canonicalize to get an absolute path for reliable matching
-        let project_root =
-            std::fs::canonicalize(project_root).unwrap_or(project_root.to_path_buf());
+        let project_root = fs::canonicalize(project_root).unwrap_or(project_root.to_path_buf());
         let project_root = project_root.as_path();
+
+        // TODO I think here we should use the Cargo crate to read and understand the
+        // project (workspace or crate)
 
         let cargo_toml = project_root.join("Cargo.toml");
         if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
@@ -227,7 +206,7 @@ impl CrateLineTable {
     pub fn build<R: Reader>(
         dwarf: &Dwarf<R>,
         crate_src_path: &str,
-        valid_files: Option<&ValidSourceFiles>,
+        valid_files: &ValidSourceFiles,
     ) -> Result<Self, gimli::Error> {
         let mut entries = Vec::new();
 
@@ -243,7 +222,7 @@ impl CrateLineTable {
                         let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Only include entries from crate source
-                        if matches_crate_pattern_validated(&full_path, crate_src_path, valid_files)
+                        if valid_files.is_crate_source(&full_path)
                             && let Some(line) = row.line()
                         {
                             let column = match row.column() {
@@ -417,7 +396,7 @@ impl FullLineTable {
         func_end: u64,
         func_start_line: Option<u32>,
         crate_src_path: &str,
-        valid_files: Option<&ValidSourceFiles>,
+        valid_files: &ValidSourceFiles,
     ) -> (Option<u32>, Option<u32>) {
         // Find entries up to and including addr
         let end_idx = self.entries.partition_point(|e| e.address <= addr);
@@ -432,9 +411,7 @@ impl FullLineTable {
                 break;
             }
             if let Some(file) = self.file_pool.get(entry.file_id as usize) {
-                if matches_crate_pattern_validated(file, crate_src_path, valid_files)
-                    && entry.line > 0
-                {
+                if valid_files.is_crate_source(file) && entry.line > 0 {
                     // Found a crate entry, but if it's just the function start,
                     // try searching forward for a better line
                     if func_start_line.is_some_and(|fl| entry.line == fl) {
@@ -455,9 +432,7 @@ impl FullLineTable {
                 break;
             }
             if let Some(file) = self.file_pool.get(entry.file_id as usize) {
-                if matches_crate_pattern_validated(file, crate_src_path, valid_files)
-                    && entry.line > 0
-                {
+                if valid_files.is_crate_source(file) && entry.line > 0 {
                     // Found the next crate entry (e.g., closing brace).
                     // The call is on the line before the epilogue.
                     if let Some(func_line) = func_start_line {
@@ -489,7 +464,7 @@ impl FullLineTable {
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
         crate_src_path: &str,
-        valid_files: Option<&ValidSourceFiles>,
+        valid_files: &ValidSourceFiles,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
         let mut crate_entries = Vec::new();
         let mut full_entries = Vec::new();
@@ -515,11 +490,7 @@ impl FullLineTable {
                         let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Check crate match before interning (needs &full_path)
-                        let is_crate_match = matches_crate_pattern_validated(
-                            &full_path,
-                            crate_src_path,
-                            valid_files,
-                        );
+                        let is_crate_match = valid_files.is_crate_source(&full_path);
 
                         // Intern the file path (avoid double clone on cache miss)
                         let file_id = if let Some(&id) = file_to_id.get(&full_path) {
@@ -1421,7 +1392,7 @@ impl<'a> CallGraph<'a> {
         crate_src_path: Option<&str>,
         show_timings: bool,
         symbol_index: Option<&'a SymbolIndex>,
-        valid_files: Option<&ValidSourceFiles>,
+        valid_files: &ValidSourceFiles,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -1631,8 +1602,7 @@ impl ObjectLineTable {
         &self,
         func_start: u64,
         call_site_addr: u64,
-        crate_src_path: &str,
-        valid_files: Option<&ValidSourceFiles>,
+        valid_files: &ValidSourceFiles,
     ) -> Option<(String, u32, Option<u32>)> {
         if self.entries.is_empty() {
             return None;
@@ -1647,7 +1617,7 @@ impl ObjectLineTable {
         // Search backwards from end to find the last crate source entry
         for i in (start_idx..end_idx).rev() {
             let entry = &self.entries[i];
-            if matches_crate_pattern_validated(&entry.file, crate_src_path, valid_files) {
+            if valid_files.is_crate_source(&entry.file) {
                 return Some((entry.file.clone(), entry.line, entry.column));
             }
         }
@@ -1677,7 +1647,7 @@ impl LibraryCallGraph {
         macho: &MachO,
         buffer: &[u8],
         crate_src_path: Option<&str>,
-        valid_files: Option<&ValidSourceFiles>,
+        valid_files: &ValidSourceFiles,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
 
@@ -1777,18 +1747,14 @@ impl LibraryCallGraph {
                         // If call site points to non-crate code (stdlib/dependency), find
                         // the last crate source line between function start and call site
                         let (file, line, column) = if let Some(crate_path) = crate_src_path
-                            && file.as_ref().is_some_and(|f| {
-                                !matches_crate_pattern_validated(f, crate_path, valid_files)
-                            }) {
+                            && file
+                                .as_ref()
+                                .is_some_and(|f| !valid_files.is_crate_source(f))
+                        {
                             // Try to find precise line in crate source
                             if let Some(lt) = line_lookup.as_ref()
                                 && let Some((crate_file, crate_line, crate_col)) = lt
-                                    .get_crate_line_in_range(
-                                        func_addr,
-                                        call_site_addr,
-                                        crate_path,
-                                        None,
-                                    )
+                                    .get_crate_line_in_range(func_addr, call_site_addr, valid_files)
                             {
                                 (Some(crate_file), Some(crate_line), crate_col)
                             } else {
@@ -1901,7 +1867,7 @@ fn process_instruction_data_with_crate_table<'a>(
     full_line_table: &FullLineTable,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&'a SymbolIndex>,
-    valid_files: Option<&ValidSourceFiles>,
+    valid_files: &ValidSourceFiles,
 ) -> Option<(u64, CallerInfo<'a>)> {
     let call_target = data.call_target?;
 
@@ -1933,9 +1899,7 @@ fn process_instruction_data_with_crate_table<'a>(
 
         // For functions in the crate source, find actual call line using pre-built table
         let file_in_crate = file.as_ref().is_some_and(|f| {
-            crate_src_path.is_some_and(|crate_path| {
-                matches_crate_pattern_validated(f, crate_path, valid_files)
-            })
+            crate_src_path.is_some_and(|crate_path| valid_files.is_crate_source(f))
         });
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
@@ -2574,7 +2538,7 @@ pub fn find_callers_with_debug_info(
     debug_buffer: &[u8],
     target_addr: u64,
     crate_src_path: Option<&str>,
-    valid_files: Option<&ValidSourceFiles>,
+    valid_files: &ValidSourceFiles,
 ) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     // Get function info and DWARF from debug info (dSYM or embedded)
     let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
@@ -2628,13 +2592,12 @@ pub fn find_callers_with_debug_info(
 
                     // For functions in the crate source, find the actual line where the call originates
                     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-                        && matches_crate_pattern_validated(f, crate_path, valid_files)
+                        && valid_files.is_crate_source(f)
                         && let Ok(Some((crate_line, crate_column))) = get_crate_line_at_address(
                             &dwarf,
                             func.start_address,
                             instruction.address(),
-                            crate_path,
-                            None,
+                            valid_files,
                         )
                     {
                         line = Some(crate_line);
@@ -2693,8 +2656,7 @@ fn get_crate_line_at_address<R: Reader>(
     dwarf: &Dwarf<R>,
     func_start: u64,
     call_site_addr: u64,
-    crate_src_path: &str,
-    valid_files: Option<&ValidSourceFiles>,
+    valid_files: &ValidSourceFiles,
 ) -> Result<Option<(u32, Option<u32>)>, gimli::Error> {
     let mut units = dwarf.units();
     let mut best_line: Option<u32> = None;
@@ -2718,7 +2680,7 @@ fn get_crate_line_at_address<R: Reader>(
                     let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                     // Check if this line is in the crate source
-                    if matches_crate_pattern_validated(&full_path, crate_src_path, valid_files)
+                    if valid_files.is_crate_source(&full_path)
                         && let Some(line) = row.line()
                         && addr >= best_addr
                     {
@@ -3193,40 +3155,6 @@ mod tests {
             valid.is_crate_source("/Users/me/meshchat/src/device.rs"),
             "Meshchat's device.rs should be identified as crate source"
         );
-
-        // Verify via matches_crate_pattern_validated too
-        assert!(
-            !matches_crate_pattern_validated(metal_device_rs, "src/", Some(&valid)),
-            "Metal's device.rs should be rejected by validated pattern matching"
-        );
-        assert!(
-            matches_crate_pattern_validated(
-                "/Users/me/meshchat/src/device.rs",
-                "src/",
-                Some(&valid)
-            ),
-            "Meshchat's device.rs should pass validated pattern matching"
-        );
-    }
-
-    #[test]
-    fn test_matches_crate_pattern_validated_with_valid_files() {
-        let valid = ValidSourceFiles {
-            source_prefixes: vec!["/Users/me/project/src/".to_string()],
-            project_root: Some("/Users/me/project/".to_string()),
-        };
-
-        // With ValidSourceFiles, pattern string is ignored — absolute path matching is used
-        assert!(matches_crate_pattern_validated(
-            "/Users/me/project/src/main.rs",
-            "src/",
-            Some(&valid)
-        ));
-        assert!(!matches_crate_pattern_validated(
-            "/Users/me/.cargo/registry/src/dep/src/lib.rs",
-            "src/",
-            Some(&valid)
-        ));
     }
 
     // Tests for decode_branch_target (ARM64)
