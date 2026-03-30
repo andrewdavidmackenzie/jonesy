@@ -35,13 +35,6 @@ type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
 /// Result type for get_functions_from_dwarf: (functions, inlined, string_tables)
 type DwarfFunctionResult = (Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables);
 
-/// Check if a file path matches a crate source pattern.
-/// Supports multi-pattern format with "|" separator for workspace mode.
-/// Without valid_files, uses simple substring matching (for line table building).
-pub fn matches_crate_pattern(file_path: &str, crate_pattern: &str) -> bool {
-    matches_crate_pattern_validated(file_path, crate_pattern, None)
-}
-
 /// Check if a file path matches the crate source pattern, with optional validation.
 /// When valid_files is provided and the path is absolute, validates against absolute
 /// source directory prefixes derived from the project's Cargo.toml. For relative paths,
@@ -3099,44 +3092,6 @@ fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Tests for matches_crate_pattern
-    #[test]
-    fn test_matches_crate_pattern_simple() {
-        assert!(matches_crate_pattern("src/main.rs", "src/"));
-        assert!(matches_crate_pattern("src/lib.rs", "src/"));
-        assert!(matches_crate_pattern("src/module/mod.rs", "src/"));
-    }
-
-    #[test]
-    fn test_matches_crate_pattern_no_match() {
-        assert!(!matches_crate_pattern("tests/test.rs", "src/"));
-        assert!(!matches_crate_pattern("examples/ex.rs", "src/"));
-    }
-
-    #[test]
-    fn test_matches_crate_pattern_multi_pattern() {
-        let pattern = "flowc/src/|flowr/src/";
-        assert!(matches_crate_pattern("flowc/src/main.rs", pattern));
-        assert!(matches_crate_pattern("flowr/src/lib.rs", pattern));
-        assert!(!matches_crate_pattern("other/src/lib.rs", pattern));
-    }
-
-    #[test]
-    fn test_matches_crate_pattern_workspace() {
-        let pattern = "crate_a/src/|crate_b/src/";
-        assert!(matches_crate_pattern("crate_a/src/lib.rs", pattern));
-        assert!(matches_crate_pattern("crate_b/src/main.rs", pattern));
-        assert!(!matches_crate_pattern("crate_c/src/lib.rs", pattern));
-    }
-
-    #[test]
-    fn test_matches_crate_pattern_empty_pattern() {
-        // Empty pattern should not match
-        assert!(!matches_crate_pattern("src/main.rs", ""));
-        // Pattern with empty segments should work
-        assert!(matches_crate_pattern("src/main.rs", "|src/|"));
-    }
 
     // Tests for ValidSourceFiles (absolute path matching)
     #[test]
