@@ -1,6 +1,4 @@
 #![allow(dead_code)] // TODO Just for now
-
-use crate::sym::has_dwarf_sections;
 use goblin::Object;
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
@@ -85,8 +83,20 @@ pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
 }
 
 /// Check if the binary has any DWARF debug sections
-pub fn has_dwarf_sections_check(macho: &MachO) -> bool {
-    has_dwarf_sections(macho)
+/// This is a standalone helper for callers that only have a raw MachO reference.
+pub fn has_dwarf_sections(macho: &MachO) -> bool {
+    for segment in macho.segments.iter() {
+        if let Ok(sects) = segment.sections() {
+            for (section, _) in sects {
+                if let Ok(name) = section.name()
+                    && name.starts_with("__debug_")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Return true if `macho` has a `__DWARF` segment or a section named `__debug_*` in any segment

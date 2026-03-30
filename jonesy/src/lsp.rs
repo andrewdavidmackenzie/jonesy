@@ -1989,7 +1989,7 @@ fn analyze_single_target(
     use crate::analysis::{analyze_archive, analyze_macho};
     use crate::args::OutputFormat;
     use crate::config::Config;
-    use crate::sym::{SymbolTable, read_symbols};
+    use crate::sym::SymbolTable;
     use goblin::mach::Mach::{Binary, Fat};
     use goblin::mach::SingleArch;
     use goblin::mach::constants::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
@@ -1998,7 +1998,7 @@ fn analyze_single_target(
         std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
 
     let symbols =
-        read_symbols(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;
+        SymbolTable::from(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;
 
     let config =
         Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());

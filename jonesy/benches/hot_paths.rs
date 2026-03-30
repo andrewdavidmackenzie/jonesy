@@ -36,8 +36,8 @@ use jonesy::heuristics::detect_panic_cause;
 use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
 use jonesy::sym::{
-    CallGraph, FunctionIndex, ProjectContext, SymbolIndex, SymbolTable, find_symbol_address,
-    find_symbol_containing, get_functions_from_dwarf, load_debug_info, read_symbols,
+    CallGraph, FunctionIndex, ProjectContext, SymbolIndex, SymbolTable, get_functions_from_dwarf,
+    load_debug_info,
 };
 #[cfg(target_os = "macos")]
 use std::fs;
@@ -135,7 +135,7 @@ fn bench_find_function_name(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         // Build function index from DWARF
@@ -202,13 +202,13 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let mut panic_addr = 0u64;
         for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
+            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
+                && let Some(addr) = symbols.find_symbol_address(&sym)
             {
                 panic_addr = addr;
                 break;
@@ -298,14 +298,14 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let mut panic_addr = 0u64;
         let mut panic_name = "rust_panic".to_string();
         for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
+            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
+                && let Some(addr) = symbols.find_symbol_address(&sym)
             {
                 panic_addr = addr;
                 panic_name = sym;
@@ -434,7 +434,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
@@ -515,13 +515,13 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let mut panic_addr = 0u64;
         for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = find_symbol_containing(macho, pattern)
-                && let Some(addr) = find_symbol_address(macho, &sym)
+            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
+                && let Some(addr) = symbols.find_symbol_address(&sym)
             {
                 panic_addr = addr;
                 break;
@@ -572,7 +572,7 @@ fn bench_symbol_index_new(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         c.bench_function("symbol_index_new_jonesy", |b| {
@@ -600,7 +600,7 @@ fn bench_get_functions_from_dwarf(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         c.bench_function("get_functions_from_dwarf_jonesy", |b| {
@@ -628,7 +628,7 @@ fn bench_load_debug_info(c: &mut Criterion) {
     }
 
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         c.bench_function("load_debug_info_jonesy", |b| {
@@ -661,7 +661,7 @@ fn bench_analyze_macho(c: &mut Criterion) {
 
     c.bench_function("analyze_macho_jonesy", |b| {
         b.iter(|| {
-            let symbols = read_symbols(&buffer).expect("Failed to read symbols");
+            let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
             if let SymbolTable::MachO(Binary(ref macho)) = symbols {
                 let result = analyze_macho(
                     macho,

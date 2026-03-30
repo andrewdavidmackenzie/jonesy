@@ -14,7 +14,6 @@ pub use crate::string_tables::StringTables;
 
 use goblin::Object;
 use goblin::mach::MachO;
-use goblin::mach::segment::{Section, SectionData, Segment};
 use regex::Regex;
 use rustc_demangle::demangle;
 use std::io;
@@ -25,142 +24,150 @@ pub enum SymbolTable<'a> {
     Archive(goblin::archive::Archive<'a>),
 }
 
-pub fn read_symbols(buffer: &'_ [u8]) -> io::Result<SymbolTable<'_>> {
-    // Use goblin's Object::parse to auto-detect the file type
-    match Object::parse(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
-        Object::Mach(mach) => Ok(SymbolTable::MachO(mach)),
-        Object::Archive(archive) => Ok(SymbolTable::Archive(archive)),
-        Object::Elf(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ELF format not supported (macOS only)",
-        )),
-        Object::PE(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "PE format not supported (macOS only)",
-        )),
-        Object::COFF(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "COFF format not supported (macOS only)",
-        )),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Unknown binary format",
-        )),
+impl<'a> SymbolTable<'a> {
+    /// Parse a binary buffer into a SymbolTable.
+    pub fn from(buffer: &'a [u8]) -> io::Result<Self> {
+        match Object::parse(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
+            Object::Mach(mach) => Ok(SymbolTable::MachO(mach)),
+            Object::Archive(archive) => Ok(SymbolTable::Archive(archive)),
+            Object::Elf(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ELF format not supported (macOS only)",
+            )),
+            Object::PE(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "PE format not supported (macOS only)",
+            )),
+            Object::COFF(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "COFF format not supported (macOS only)",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unknown binary format",
+            )),
+        }
     }
-}
 
-/// Check if the binary has any DWARF debug sections
-pub fn has_dwarf_sections(macho: &MachO) -> bool {
-    for segment in macho.segments.iter() {
-        if let Ok(sects) = segment.sections() {
-            for (section, _) in sects {
-                if let Ok(name) = section.name()
-                    && name.starts_with("__debug_")
-                {
-                    return true;
+    /// Get the MachO binary, if this is a MachO (not an archive).
+    /// Panics on fat binaries — callers should handle that case.
+    pub fn macho(&self) -> Option<&MachO<'_>> {
+        match self {
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => Some(macho),
+            _ => None,
+        }
+    }
+
+    /// Check if the binary has any DWARF debug sections.
+    pub fn has_dwarf_sections(&self) -> bool {
+        let Some(macho) = self.macho() else {
+            return false;
+        };
+        for segment in macho.segments.iter() {
+            if let Ok(sects) = segment.sections() {
+                for (section, _) in sects {
+                    if let Ok(name) = section.name()
+                        && name.starts_with("__debug_")
+                    {
+                        return true;
+                    }
                 }
             }
         }
+        false
     }
-    false
-}
 
-/// Returns the first symbol found whose name matches the given regex pattern.
-/// The pattern is matched against the demangled symbol name.
-/// Example: "rust_panic$" matches symbols ending in "rust_panic"
-pub fn find_symbol_containing(
-    macho: &MachO,
-    pattern: &str,
-) -> Result<Option<(String, String)>, regex::Error> {
-    let regex = Regex::new(pattern)?;
-    let symbols = match macho.symbols.as_ref() {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-    for (sym_name, _) in symbols.iter().flatten() {
-        let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-        let demangled = format!("{:#}", demangle(stripped));
-        if regex.is_match(&demangled) {
-            return Ok(Some((sym_name.to_string(), demangled)));
-        }
-    }
-    Ok(None)
-}
-
-/// Returns all symbols whose demangled names match any of the given patterns.
-/// Returns a vector of (mangled_name, demangled_name) tuples.
-pub fn find_all_symbols_matching(
-    macho: &MachO,
-    patterns: &[&str],
-) -> Result<Vec<(String, String)>, regex::Error> {
-    let regexes: Vec<Regex> = patterns
-        .iter()
-        .map(|p| Regex::new(p))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut results = Vec::new();
-    let symbols = match macho.symbols.as_ref() {
-        Some(s) => s,
-        None => return Ok(results),
-    };
-
-    for (sym_name, _) in symbols.iter().flatten() {
-        let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-        let demangled = format!("{:#}", demangle(stripped));
-        for regex in &regexes {
+    /// Returns the first symbol found whose name matches the given regex pattern.
+    /// The pattern is matched against the demangled symbol name.
+    pub fn find_symbol_containing(
+        &self,
+        pattern: &str,
+    ) -> Result<Option<(String, String)>, regex::Error> {
+        let Some(macho) = self.macho() else {
+            return Ok(None);
+        };
+        let regex = Regex::new(pattern)?;
+        let symbols = match macho.symbols.as_ref() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        for (sym_name, _) in symbols.iter().flatten() {
+            let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+            let demangled = format!("{:#}", demangle(stripped));
             if regex.is_match(&demangled) {
-                results.push((sym_name.to_string(), demangled.clone()));
-                break; // Only add once even if multiple patterns match
+                return Ok(Some((sym_name.to_string(), demangled)));
             }
         }
+        Ok(None)
     }
-    Ok(results)
-}
 
-// TODO Restrict this to text segments?
-/// Returns the address of the first defined symbol found whose name matches `name` exactly.
-/// Skips undefined/import symbols which have n_value == 0.
-pub fn find_symbol_address(macho: &MachO, name: &str) -> Option<u64> {
-    let symbols = macho.symbols.as_ref()?;
-    for symbol in symbols.iter() {
-        if let Ok((sym_name, nlist)) = symbol
-            && sym_name == name
-            && !nlist.is_undefined()
-            && nlist.n_value != 0
-        {
-            return Some(nlist.n_value);
-        }
-    }
-    None
-}
+    /// Returns all symbols whose demangled names match any of the given patterns.
+    pub fn find_all_symbols_matching(
+        &self,
+        patterns: &[&str],
+    ) -> Result<Vec<(String, String)>, regex::Error> {
+        let Some(macho) = self.macho() else {
+            return Ok(Vec::new());
+        };
+        let regexes: Vec<Regex> = patterns
+            .iter()
+            .map(|p| Regex::new(p))
+            .collect::<Result<Vec<_>, _>>()?;
 
-pub(crate) fn get_text_section<'a>(macho: &MachO, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
-    get_section_by_name(macho, buffer, "__text")
-}
+        let mut results = Vec::new();
+        let symbols = match macho.symbols.as_ref() {
+            Some(s) => s,
+            None => return Ok(results),
+        };
 
-fn get_section_by_name<'a>(macho: &MachO, buffer: &'a [u8], name: &str) -> Option<(u64, &'a [u8])> {
-    for segment in &macho.segments {
-        for (section, section_data) in segment.sections().unwrap() {
-            if section.name().unwrap() == name {
-                let offset = section.offset as usize;
-                let size = section.size as usize;
-                return Some((section.addr, &buffer[offset..offset + size]));
+        for (sym_name, _) in symbols.iter().flatten() {
+            let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+            let demangled = format!("{:#}", demangle(stripped));
+            for regex in &regexes {
+                if regex.is_match(&demangled) {
+                    results.push((sym_name.to_string(), demangled.clone()));
+                    break;
+                }
             }
         }
+        Ok(results)
     }
-    None
-}
 
-/// Find a segment by name
-fn find_segment<'a>(macho: &'a MachO, segment_name: &str) -> Option<&'a Segment<'a>> {
-    for segment in macho.segments.iter() {
-        if let Ok(name) = segment.name()
-            && name == segment_name
-        {
-            return Some(segment);
+    /// Returns the address of the first defined symbol found whose name matches `name` exactly.
+    pub fn find_symbol_address(&self, name: &str) -> Option<u64> {
+        let macho = self.macho()?;
+        let symbols = macho.symbols.as_ref()?;
+        for symbol in symbols.iter() {
+            if let Ok((sym_name, nlist)) = symbol
+                && sym_name == name
+                && !nlist.is_undefined()
+                && nlist.n_value != 0
+            {
+                return Some(nlist.n_value);
+            }
         }
+        None
     }
-    None
+
+    /// Get the __text section's address and data.
+    pub(crate) fn get_text_section(&self, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
+        self.get_section_by_name(buffer, "__text")
+    }
+
+    /// Get a named section's address and data.
+    fn get_section_by_name(&self, buffer: &'a [u8], name: &str) -> Option<(u64, &'a [u8])> {
+        let macho = self.macho()?;
+        for segment in &macho.segments {
+            for (section, _section_data) in segment.sections().unwrap() {
+                if section.name().unwrap() == name {
+                    let offset = section.offset as usize;
+                    let size = section.size as usize;
+                    return Some((section.addr, &buffer[offset..offset + size]));
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Entry in the symbol index with lazy demangling.
@@ -251,21 +258,4 @@ impl SymbolIndex {
             Err(i) => Some((self.entries[i - 1].address, self.entries[i - 1].demangled())),
         }
     }
-}
-
-// TODO segments() seems to create copies that it returns, see if we can get references instead
-fn find_sections<'a>(macho: &'a MachO, section_name: &str) -> Vec<(Section, SectionData<'a>)> {
-    macho
-        .segments
-        .iter()
-        .filter_map(|segment| segment.sections().ok())
-        .flatten()
-        .filter_map(move |(section, data)| {
-            if section.name().unwrap() == section_name {
-                Some((section, data))
-            } else {
-                None
-            }
-        })
-        .collect()
 }

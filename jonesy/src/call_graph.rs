@@ -7,7 +7,7 @@ use crate::function_index::{
     FunctionIndex, get_crate_line_at_address, get_functions_from_dwarf, load_dwarf_sections,
 };
 use crate::project_context::ProjectContext;
-use crate::sym::{SymbolIndex, get_text_section};
+use crate::sym::SymbolIndex;
 use capstone::arch::BuildsCapstone;
 use capstone::{Capstone, Insn, arch};
 use dashmap::DashMap;
@@ -175,6 +175,21 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
             }
         })
         .collect()
+}
+
+/// Get the __text section's address and data from a MachO binary.
+/// This is a standalone helper for callers that only have a raw MachO reference.
+fn get_text_section<'a>(macho: &MachO, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
+    for segment in &macho.segments {
+        for (section, _section_data) in segment.sections().unwrap() {
+            if section.name().unwrap() == "__text" {
+                let offset = section.offset as usize;
+                let size = section.size as usize;
+                return Some((section.addr, &buffer[offset..offset + size]));
+            }
+        }
+    }
+    None
 }
 
 /// Pre-computed call graph mapping target addresses to their callers.

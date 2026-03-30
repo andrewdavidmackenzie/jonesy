@@ -13,8 +13,7 @@ use crate::config::Config;
 use crate::heuristics::{ABORT_SYMBOL_PATTERNS, PANIC_SYMBOL_PATTERNS, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
 use crate::sym::{
-    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, find_all_symbols_matching,
-    find_symbol_address, find_symbol_containing, load_debug_info,
+    CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, load_debug_info,
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::Binary;
@@ -126,6 +125,14 @@ pub fn analyze_macho(
     config: &Config,
     output: &OutputFormat,
 ) -> BinaryAnalysisResult {
+    // Create SymbolTable for method calls
+    let symbols = match SymbolTable::from(buffer) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: Failed to create symbol table: {}", e);
+            return BinaryAnalysisResult::empty();
+        }
+    };
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 
@@ -152,8 +159,8 @@ pub fn analyze_macho(
 
     // Find panic entry points (first match from PANIC_SYMBOL_PATTERNS)
     for pattern in PANIC_SYMBOL_PATTERNS {
-        if let Ok(Some((sym, dem))) = find_symbol_containing(macho, pattern)
-            && let Some(addr) = find_symbol_address(macho, &sym)
+        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
+            && let Some(addr) = symbols.find_symbol_address(&sym)
         {
             entry_points.push((sym, dem, addr));
             break; // Only need one panic entry point
@@ -161,9 +168,9 @@ pub fn analyze_macho(
     }
 
     // Find abort entry points
-    if let Ok(abort_symbols) = find_all_symbols_matching(macho, ABORT_SYMBOL_PATTERNS) {
+    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(ABORT_SYMBOL_PATTERNS) {
         for (sym, dem) in abort_symbols {
-            if let Some(addr) = find_symbol_address(macho, &sym) {
+            if let Some(addr) = symbols.find_symbol_address(&sym) {
                 // Avoid duplicates
                 if !entry_points.iter().any(|(_, _, a)| *a == addr) {
                     entry_points.push((sym, dem, addr));
