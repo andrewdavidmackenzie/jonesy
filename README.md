@@ -370,6 +370,7 @@ Configuration is loaded in order of precedence (later overrides earlier):
 | `str_slice`     | String/slice encoding or bounds error     | denied      | — |
 | `invalid_enum`  | Invalid enum discriminant (unsafe code)   | denied      | — |
 | `misaligned_ptr`| Misaligned pointer dereference            | denied      | — |
+| `async_resumed` | Async function polled after completion    | denied      | — |
 | `unknown`       | Unknown panic cause                       | denied      | — |
 
 Clippy lints are "restriction" lints (off by default). Enable in `Cargo.toml`:
@@ -487,29 +488,11 @@ fn setup_config() {
 
 The comment applies to the line it's on. Due to DWARF debug info sometimes being slightly off, jonesy checks a small range around the reported line number (±2 lines).
 
-**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_overflow`, `rem_overflow`, `shift_overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `format`, `capacity`, `oom`, `str_slice`, `invalid_enum`, `misaligned_ptr`, `drop`, `unwind`, `unknown`
+**Available cause IDs:** `panic`, `bounds`, `overflow`, `div_overflow`, `rem_overflow`, `shift_overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `format`, `capacity`, `oom`, `str_slice`, `invalid_enum`, `misaligned_ptr`, `async_resumed`, `drop`, `unwind`, `unknown`
 
 > **Tip for constant divisors:** If you have divisions with compile-time constant non-zero divisors (e.g., `x / 60`), you can suppress false positive warnings with `allow = ["div_overflow", "div_zero"]` in a scoped rule.
 
 Use `*` to allow all causes at that location.
-
-### Phantom Async Filtering
-
-By default, jonesy filters out "phantom" panic points from empty async functions. These are false positives caused by Rust's generated async state machine code having drop handlers with panic paths that can never actually be triggered by user code.
-
-For example, `async fn empty() {}` compiles to a state machine with `drop_in_place` handlers that technically have panic paths (like misaligned pointer dereference), but these cannot be reached from user code.
-
-**Criteria for filtering:**
-- Function name ends with `{async_fn#N}` (generated async state machine)
-- Only cause is Unknown (no specific panic identified)
-- No children (no real panic-inducing code in the call chain)
-
-To disable this filtering and see all potential panic points including phantoms:
-
-```toml
-# jonesy.toml
-filter_phantom_async = false
-```
 
 #### Configuring Linters and Code Review Tools
 

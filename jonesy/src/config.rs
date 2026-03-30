@@ -132,10 +132,6 @@ pub struct Config {
     denied: HashSet<String>,
     /// Scoped rules for path/function-specific allow/deny
     rules: Vec<ScopedRule>,
-    /// Whether to filter out phantom async panic points (default: true)
-    /// These are false positives from empty async functions where the only
-    /// panic path is through generated drop handlers.
-    filter_phantom_async: bool,
 }
 
 /// TOML configuration structure for jonesy
@@ -150,9 +146,6 @@ struct TomlConfig {
     /// Scoped rules
     #[serde(default)]
     rules: Vec<TomlScopedRule>,
-    /// Whether to filter out phantom async panic points (default: true)
-    #[serde(default)]
-    filter_phantom_async: Option<bool>,
 }
 
 /// Cargo.toml package metadata structure
@@ -196,15 +189,7 @@ impl Config {
             allowed,
             denied: HashSet::new(),
             rules: Vec::new(),
-            filter_phantom_async: true, // Filter by default
         }
-    }
-
-    /// Returns whether phantom async panic points should be filtered out.
-    /// These are false positives from empty async functions where the only
-    /// panic path is through generated drop handlers.
-    pub fn filter_phantom_async(&self) -> bool {
-        self.filter_phantom_async
     }
 
     /// Check if a panic cause should be reported (is denied).
@@ -409,11 +394,6 @@ impl Config {
                 denied,
             });
         }
-
-        // Apply filter_phantom_async setting if specified
-        if let Some(filter) = config.filter_phantom_async {
-            self.filter_phantom_async = filter;
-        }
     }
 
     /// Load configuration from Cargo.toml metadata.
@@ -543,7 +523,6 @@ mod tests {
             allow: vec![],
             deny: vec!["drop".to_string()],
             rules: vec![],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -563,7 +542,6 @@ mod tests {
                 allow: vec!["expect".to_string(), "capacity".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -590,7 +568,6 @@ mod tests {
                 allow: vec!["unwrap".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -610,7 +587,6 @@ mod tests {
                 allow: vec!["format".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -676,7 +652,6 @@ mod tests {
             allow: vec!["panic".to_string()],
             deny: vec![],
             rules: vec![],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -704,7 +679,6 @@ mod tests {
                 allow: vec!["unwrap".to_string(), "panic".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -736,7 +710,6 @@ mod tests {
                 allow: vec!["unwrap".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -767,7 +740,6 @@ mod tests {
                 allow: vec!["*".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -803,7 +775,6 @@ mod tests {
                     deny: vec!["unwrap".to_string()],
                 },
             ],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -844,7 +815,6 @@ mod tests {
                     deny: vec![],
                 },
             ],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -864,45 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_phantom_async_default_true() {
-        let config = Config::with_defaults();
-        assert!(config.filter_phantom_async());
-    }
-
-    #[test]
-    fn test_filter_phantom_async_can_be_disabled() {
-        let mut config = Config::with_defaults();
-        let toml_config = TomlConfig {
-            filter_phantom_async: Some(false),
-            ..Default::default()
-        };
-        config.apply_toml_config(&toml_config);
-        assert!(!config.filter_phantom_async());
-    }
-
-    #[test]
-    fn test_filter_phantom_async_can_be_explicitly_enabled() {
-        let mut config = Config::with_defaults();
-        let toml_config = TomlConfig {
-            filter_phantom_async: Some(true),
-            ..Default::default()
-        };
-        config.apply_toml_config(&toml_config);
-        assert!(config.filter_phantom_async());
-    }
-
-    #[test]
-    fn test_filter_phantom_async_unset_keeps_default() {
-        let mut config = Config::with_defaults();
-        let toml_config = TomlConfig {
-            filter_phantom_async: None,
-            ..Default::default()
-        };
-        config.apply_toml_config(&toml_config);
-        assert!(config.filter_phantom_async()); // Default is true
-    }
-
-    #[test]
     fn test_overflow_parent_id_allows_all_overflow() {
         // allow = ["overflow"] should match div_overflow, rem_overflow, shift_overflow
         let mut config = Config::with_defaults();
@@ -910,7 +841,6 @@ mod tests {
             allow: vec!["overflow".to_string()],
             deny: vec![],
             rules: vec![],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -932,7 +862,6 @@ mod tests {
             allow: vec!["assert".to_string()],
             deny: vec![],
             rules: vec![],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -949,7 +878,6 @@ mod tests {
             allow: vec!["div_overflow".to_string()],
             deny: vec![],
             rules: vec![],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -971,7 +899,6 @@ mod tests {
             allow: vec!["overflow".to_string()],
             deny: vec![],
             rules: vec![],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 
@@ -992,7 +919,6 @@ mod tests {
                 allow: vec!["overflow".to_string()],
                 deny: vec![],
             }],
-            filter_phantom_async: None,
         };
         config.apply_toml_config(&toml_config);
 

@@ -77,6 +77,8 @@ pub enum PanicCause {
     MisalignedPointer,
     /// HashMap/BTreeMap key not found (Index trait on map)
     KeyNotFound,
+    /// Async function polled after completion
+    AsyncFnResumed,
     /// Unknown cause
     Unknown,
 }
@@ -119,6 +121,7 @@ impl PanicCause {
             PanicCause::InvalidEnum => "invalid_enum",
             PanicCause::MisalignedPointer => "misaligned_ptr",
             PanicCause::KeyNotFound => "key_not_found",
+            PanicCause::AsyncFnResumed => "async_resumed",
             PanicCause::Unknown => "unknown",
         }
     }
@@ -159,6 +162,7 @@ impl PanicCause {
             "invalid_enum",
             "misaligned_ptr",
             "key_not_found",
+            "async_resumed",
             "unknown",
         ]
     }
@@ -188,6 +192,7 @@ impl PanicCause {
             PanicCause::InvalidEnum => "invalid enum discriminant",
             PanicCause::MisalignedPointer => "misaligned pointer dereference",
             PanicCause::KeyNotFound => "key not found in map",
+            PanicCause::AsyncFnResumed => "async function polled after completion",
             PanicCause::Unknown => "unknown cause",
         }
     }
@@ -253,6 +258,9 @@ impl PanicCause {
             PanicCause::KeyNotFound => {
                 "Use .get() to safely look up keys; returns None instead of panicking"
             }
+            PanicCause::AsyncFnResumed => {
+                "Ensure futures are not polled after returning Poll::Ready; check executor logic"
+            }
             PanicCause::Unknown => {
                 "Jonesy detected a panic path but couldn't identify the cause. Use --tree to investigate"
             }
@@ -311,6 +319,9 @@ impl PanicCause {
             }
             PanicCause::KeyNotFound => {
                 "This calls a function that indexes a map. Use .get() instead of [] for safe lookup"
+            }
+            PanicCause::AsyncFnResumed => {
+                "This calls an async function that panics if polled after completion"
             }
             PanicCause::Unknown => {
                 "This calls a function that may panic. Use --tree to investigate the call chain"
@@ -402,6 +413,11 @@ impl PanicCause {
                     "This calls `{func}` which indexes a map. Use .get() instead of [] for safe lookup"
                 )
             }
+            PanicCause::AsyncFnResumed => {
+                format!(
+                    "This calls `{func}` which is an async function that panics if polled after completion"
+                )
+            }
             PanicCause::Unknown => {
                 format!("This calls `{func}` which may panic. Use --tree to investigate")
             }
@@ -434,6 +450,7 @@ impl PanicCause {
             PanicCause::InvalidEnum => "JP021",
             PanicCause::MisalignedPointer => "JP022",
             PanicCause::KeyNotFound => "JP023",
+            PanicCause::AsyncFnResumed => "JP024",
             PanicCause::Unknown => "JP000",
         }
     }
@@ -464,6 +481,7 @@ impl PanicCause {
             PanicCause::InvalidEnum => "JP021-invalid-enum",
             PanicCause::MisalignedPointer => "JP022-misaligned-pointer",
             PanicCause::KeyNotFound => "JP023-key-not-found",
+            PanicCause::AsyncFnResumed => "JP024-async-fn-resumed",
             PanicCause::Unknown => "",
         }
     }

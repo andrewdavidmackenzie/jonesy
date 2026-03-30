@@ -349,6 +349,8 @@ pub fn is_panic_triggering_function(func_name: &str) -> bool {
         // Capacity/allocation
         || func_name.contains("capacity_overflow")
         || func_name.contains("handle_alloc_error")
+        // Async function resumed after completion
+        || func_name.contains("async_fn_resumed")
         // String/slice errors
         || func_name.contains("slice_error_fail")
         || func_name.contains("str_index_overflow_fail")
@@ -393,6 +395,11 @@ use crate::panic_cause::PanicCause;
 ///
 /// The optional `file_path` helps distinguish Option vs Result for unwrap/expect.
 pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<PanicCause> {
+    // Check for async function resumed after completion
+    if func_name.contains("async_fn_resumed") {
+        return Some(PanicCause::AsyncFnResumed);
+    }
+
     // Check for drop/cleanup panic paths first
     if func_name.contains("panic_in_cleanup") {
         return Some(PanicCause::PanicInDrop);
@@ -1094,5 +1101,33 @@ mod tests {
             detect_panic_cause("Debug::fmt", None),
             Some(PanicCause::FormattingError)
         );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_async_fn_resumed() {
+        assert_eq!(
+            detect_panic_cause("panic_const_async_fn_resumed", None),
+            Some(PanicCause::AsyncFnResumed)
+        );
+        assert_eq!(
+            detect_panic_cause(
+                "core::panicking::panic_const::panic_const_async_fn_resumed",
+                None
+            ),
+            Some(PanicCause::AsyncFnResumed)
+        );
+        // Also matches the "panic" variant
+        assert_eq!(
+            detect_panic_cause("panic_const_async_fn_resumed_panic", None),
+            Some(PanicCause::AsyncFnResumed)
+        );
+    }
+
+    #[test]
+    fn test_async_fn_resumed_is_panic_triggering() {
+        assert!(is_panic_triggering_function("panic_const_async_fn_resumed"));
+        assert!(is_panic_triggering_function(
+            "core::panicking::panic_const::panic_const_async_fn_resumed"
+        ));
     }
 }

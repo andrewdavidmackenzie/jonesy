@@ -5,7 +5,7 @@ title: Panic Reference
 
 # Panic Reference
 
-Jonesy detects and classifies panics using unique error codes (/panics/JP001-JP022). Each panic type includes:
+Jonesy detects and classifies panics using unique error codes (JP001-JP024). Each panic type includes:
 
 - **Description**: What causes this panic
 - **Example**: Code that triggers the panic
@@ -52,3 +52,4 @@ Other runtime panic conditions:
 - [JP016 - Cannot Unwind](/panics/JP016-cannot-unwind): FFI boundary panic
 - [JP017 - Formatting Error](/panics/JP017-formatting-error): Format string error
 - [JP021 - Invalid Enum](/panics/JP021-invalid-enum): Corrupted enum value
+- [JP024 - Async Fn Resumed](/panics/JP024-async-fn-resumed): Async function polled after completion

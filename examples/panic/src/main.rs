@@ -96,4 +96,6 @@ fn main() {
 
     // jonesy: expect panic expect on None
     module2::cause_expect_none();
+
+    module::poll_async_fn();
 }
