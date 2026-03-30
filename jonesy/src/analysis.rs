@@ -11,8 +11,7 @@ use crate::call_tree::{
 use crate::cargo::find_project_root;
 use crate::config::Config;
 use crate::heuristics::{
-    ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS,
-    is_library_dependency_path, is_stdlib_function,
+    ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS, is_stdlib_function,
 };
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
@@ -452,11 +451,12 @@ pub fn analyze_archive(
                 continue;
             }
 
-            // Get file from DWARF info, filtering out library code paths
-            let dwarf_file = caller_info
-                .caller_file
-                .as_ref()
-                .filter(|f| !is_library_dependency_path(f));
+            // Get file from DWARF info, filtering out non-crate code paths
+            let dwarf_file = caller_info.caller_file.as_ref().filter(|f| {
+                crate_src_path.is_none_or(|p| {
+                    crate::sym::matches_crate_pattern_validated(f, p, valid_files.as_ref())
+                })
+            });
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)

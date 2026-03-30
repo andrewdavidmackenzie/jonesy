@@ -17,21 +17,16 @@
 //! from the Rust toolchain (like `/rustc/.../option.rs`). Jonesy must distinguish
 //! these from user code to report only panic points the developer controls.
 //!
-//! Three complementary functions handle this:
-//!
-//! - [`is_dependency_path`] — Checks if a file path belongs to a dependency or
-//!   the standard library. Uses known path prefixes (`.cargo/registry/`, `/rustc/`,
-//!   `.rustup/toolchains/`, etc.).
+//! Two mechanisms handle this:
 //!
 //! - [`is_stdlib_function`] — Checks if a demangled function name belongs to the
 //!   standard library by namespace (`core::`, `std::`, `alloc::`), including trait
 //!   impl forms like `<core::option::Option<T>>::unwrap`.
 //!
-//! - `matches_crate_pattern_validated` (in [`crate::sym`]) — Positive matching:
-//!   checks if a path belongs to the user's crate based on `src/` patterns derived
-//!   from `Cargo.toml`. For single-crate projects, validates against an allowlist
-//!   of actual source files to prevent false positives from dependencies that use
-//!   relative `src/` paths in their DWARF info.
+//! - `ValidSourceFiles` / `matches_crate_pattern_validated` (in [`crate::sym`]) —
+//!   Positive matching: checks if a file's absolute path falls under a known
+//!   source directory prefix derived from the project's `Cargo.toml`. All DWARF
+//!   paths are made absolute (via `comp_dir` prepending) at creation time.
 //!
 //! # Panic Entry Points
 //!
@@ -171,62 +166,6 @@ pub const LIBRARY_PANIC_PATTERNS: &[&str] = &[
 // Source code ownership heuristics
 // ---------------------------------------------------------------------------
 
-/// Check if a file path belongs to a dependency or the standard library.
-///
-/// Returns `true` if the path should **not** be reported as user code. This is
-/// used in both binary and library analysis to filter DWARF line table entries
-/// that point into inlined stdlib code.
-///
-/// # Path categories detected
-///
-/// | Pattern                      | Source                                    |
-/// |------------------------------|-------------------------------------------|
-/// | `.cargo/registry/`           | Crates.io dependencies (Unix)             |
-/// | `.cargo\registry\`           | Crates.io dependencies (Windows)          |
-/// | `/rustc/`                    | Compiler-generated paths (includes hash)  |
-/// | `/.rustup/toolchains/`       | Toolchain stdlib source                   |
-/// | `/rustlib/src/`              | Stdlib source in sysroot                  |
-/// | `/rust/deps/` (prefix)       | Rust CI dependency paths                  |
-/// | `library/` (prefix)          | Relative stdlib paths in DWARF            |
-/// | `/__/`                       | Generated code boundaries (e.g., objc2)   |
-/// | `__` (prefix)                | Generated code (macro-generated modules)  |
-/// | `src/__` (prefix)            | Generated code in src directory            |
-///
-/// # Why both file paths and function names?
-///
-/// DWARF line tables use file paths while symbol tables use function names.
-/// A call to `opt.unwrap()` may be inlined, leaving only the stdlib file path
-/// (`option.rs`) in the line table — there is no function boundary to check.
-/// Conversely, a function like `core::option::unwrap_failed` appears only in
-/// the symbol table. Both checks are needed for complete coverage.
-pub fn is_dependency_path(file_path: &str) -> bool {
-    // Cargo registry dependencies (absolute paths)
-    if file_path.contains(".cargo/registry/") || file_path.contains(".cargo\\registry\\") {
-        return true;
-    }
-
-    // Rust stdlib and compiler-generated paths
-    if file_path.contains("/rustc/")
-        || file_path.contains("/.rustup/toolchains/")
-        || file_path.contains("/rustlib/src/")
-        || file_path.starts_with("/rust/deps/")
-        || file_path.starts_with("library/")
-    {
-        return true;
-    }
-
-    // Internal/generated paths from dependencies (common patterns)
-    // These use relative src/ paths that would match the "src/" pattern for single-crate projects
-    // The __ prefixes are used by macro-generated code in crates like objc2
-    // Use segment-boundary checks to avoid false positives on user dirs like /Users/__myuser__/
-    if file_path.contains("/__/") || file_path.starts_with("__") || file_path.starts_with("src/__")
-    {
-        return true;
-    }
-
-    false
-}
-
 /// Check if a demangled function name belongs to the standard library.
 ///
 /// Returns `true` for functions in the `core`, `std`, or `alloc` crates.
@@ -254,38 +193,6 @@ pub fn is_stdlib_function(name: &str) -> bool {
         || name.contains("::core::")
         || name.contains("::std::")
         || name.contains("::alloc::")
-}
-
-/// Paths in DWARF that indicate standard library source code.
-///
-/// Used to identify when a file path points to Rust standard library source.
-///
-/// These cover both the modern Rust source layout (`/library/core/src/`) and
-/// the legacy layout (`/src/libcore/`).
-pub const STDLIB_SOURCE_PREFIXES: &[&str] = &[
-    "/rustc/",
-    // Modern layout (absolute)
-    "/library/core/src/",
-    "/library/std/src/",
-    "/library/alloc/src/",
-    // Modern layout (relative — DWARF sometimes omits leading slash)
-    "library/core/src/",
-    "library/std/src/",
-    "library/alloc/src/",
-    // Legacy layout
-    "/src/libstd/",
-    "/src/libcore/",
-    "/src/liballoc/",
-];
-
-/// Check if a file path points to standard library source code.
-///
-/// This is a narrower check than [`is_dependency_path`] — it specifically
-/// identifies Rust stdlib source files, not all dependencies.
-pub fn is_stdlib_source(file_path: &str) -> bool {
-    STDLIB_SOURCE_PREFIXES
-        .iter()
-        .any(|prefix| file_path.contains(prefix))
 }
 
 // ---------------------------------------------------------------------------
@@ -361,20 +268,6 @@ pub fn is_panic_triggering_function(func_name: &str) -> bool {
         || func_name.contains("::index<")
         || func_name.contains("Index::index")
         || func_name.contains(">::index")
-}
-
-/// File path filter for library analysis DWARF entries.
-///
-/// Used in library (rlib/staticlib) analysis to filter out DWARF file entries
-/// that point to stdlib or dependency code. This is applied when processing
-/// `CallerInfo` from the `LibraryCallGraph` to ensure only user code paths
-/// are reported.
-///
-/// This is a superset of the checks in [`is_dependency_path`], also covering
-/// additional paths that appear in library DWARF info (e.g., `/rust/` CI paths,
-/// `/deps/` subdirectories).
-pub fn is_library_dependency_path(file_path: &str) -> bool {
-    is_dependency_path(file_path) || file_path.starts_with("/rust/") || file_path.contains("/deps/")
 }
 
 // ---------------------------------------------------------------------------
@@ -620,61 +513,6 @@ mod tests {
     use super::*;
     use crate::panic_cause::PanicCause;
 
-    // -- is_dependency_path tests --
-
-    #[test]
-    fn test_cargo_registry_unix() {
-        assert!(is_dependency_path(
-            "/home/user/.cargo/registry/src/crates.io/serde-1.0/src/lib.rs"
-        ));
-    }
-
-    #[test]
-    fn test_cargo_registry_windows() {
-        assert!(is_dependency_path(
-            "C:\\Users\\user\\.cargo\\registry\\src\\crates.io\\serde-1.0\\src\\lib.rs"
-        ));
-    }
-
-    #[test]
-    fn test_rustc_path() {
-        assert!(is_dependency_path(
-            "/rustc/abc123/library/core/src/option.rs"
-        ));
-    }
-
-    #[test]
-    fn test_rustup_toolchain() {
-        assert!(is_dependency_path(
-            "/Users/user/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs"
-        ));
-    }
-
-    #[test]
-    fn test_rustlib_src() {
-        assert!(is_dependency_path("/usr/lib/rustlib/src/rust/core.rs"));
-    }
-
-    #[test]
-    fn test_relative_library_path() {
-        assert!(is_dependency_path("library/core/src/option.rs"));
-    }
-
-    #[test]
-    fn test_generated_code_boundary() {
-        assert!(is_dependency_path("src/__generated/bindings.rs"));
-        assert!(is_dependency_path("__objc2/src/lib.rs"));
-        assert!(is_dependency_path("some/path/__/generated.rs"));
-    }
-
-    #[test]
-    fn test_user_code_not_dependency() {
-        assert!(!is_dependency_path("src/main.rs"));
-        assert!(!is_dependency_path("src/lib.rs"));
-        assert!(!is_dependency_path("/Users/user/project/src/module/mod.rs"));
-        assert!(!is_dependency_path("examples/demo/src/main.rs"));
-    }
-
     // -- is_stdlib_function tests --
 
     #[test]
@@ -725,46 +563,6 @@ mod tests {
     fn test_user_function_not_triggering() {
         assert!(!is_panic_triggering_function("my_function"));
         assert!(!is_panic_triggering_function("process_data"));
-    }
-
-    // -- is_stdlib_source tests --
-
-    #[test]
-    fn test_stdlib_source_paths() {
-        assert!(is_stdlib_source("/rustc/abc123/library/core/src/option.rs"));
-        assert!(is_stdlib_source("/library/core/src/panicking.rs"));
-        assert!(is_stdlib_source("/library/std/src/io/mod.rs"));
-        // Relative paths (DWARF sometimes omits leading slash)
-        assert!(is_stdlib_source("library/core/src/panicking.rs"));
-        assert!(is_stdlib_source("library/std/src/io/mod.rs"));
-        assert!(is_stdlib_source("library/alloc/src/vec/mod.rs"));
-        // User code and dependencies should not match
-        assert!(!is_stdlib_source("src/main.rs"));
-        assert!(!is_stdlib_source(
-            "/Users/user/.cargo/registry/src/serde/lib.rs"
-        ));
-    }
-
-    // -- is_library_dependency_path tests --
-
-    #[test]
-    fn test_library_dependency_paths() {
-        // Inherits all is_dependency_path checks
-        assert!(is_library_dependency_path("/rustc/abc/core.rs"));
-        assert!(is_library_dependency_path("library/core/src/option.rs"));
-        assert!(is_library_dependency_path(
-            "/home/user/.cargo/registry/serde.rs"
-        ));
-        assert!(is_library_dependency_path(
-            "/home/user/.rustup/toolchains/stable/lib.rs"
-        ));
-        // Additional library-specific checks
-        assert!(is_library_dependency_path("/rust/deps/std/src/lib.rs"));
-        assert!(is_library_dependency_path("target/debug/deps/serde.rs"));
-        // User code should not be filtered
-        assert!(!is_library_dependency_path("src/main.rs"));
-        assert!(!is_library_dependency_path("src/arch/arm64/mod.rs"));
-        assert!(!is_library_dependency_path("src/raw/mod.rs"));
     }
 
     // -- pattern constant tests --
