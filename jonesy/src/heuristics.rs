@@ -347,10 +347,6 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     if func_name.contains("raw_vec") && func_name.contains("grow") {
         return Some(PanicCause::CapacityOverflow);
     }
-    // hashbrown (HashMap/HashSet internals) allocation error
-    if func_name.contains("hashbrown") && func_name.contains("alloc_err") {
-        return Some(PanicCause::OutOfMemory);
-    }
 
     // String/slice domain
     if func_name.contains("slice_error_fail") {
@@ -706,14 +702,15 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_hashbrown_specific_causes_take_priority() {
+    fn test_detect_hashbrown_capacity_overflow() {
         assert_eq!(
             detect_panic_cause("hashbrown::raw::Fallibility::capacity_overflow"),
             Some(PanicCause::CapacityOverflow)
         );
+        // alloc_err also falls through to hashbrown::raw:: catch-all
         assert_eq!(
             detect_panic_cause("hashbrown::raw::Fallibility::alloc_err"),
-            Some(PanicCause::OutOfMemory)
+            Some(PanicCause::CapacityOverflow)
         );
     }
 
