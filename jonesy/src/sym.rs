@@ -148,26 +148,6 @@ impl<'a> SymbolTable<'a> {
         }
         None
     }
-
-    /// Get the __text section's address and data.
-    pub(crate) fn get_text_section(&self, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
-        self.get_section_by_name(buffer, "__text")
-    }
-
-    /// Get a named section's address and data.
-    fn get_section_by_name(&self, buffer: &'a [u8], name: &str) -> Option<(u64, &'a [u8])> {
-        let macho = self.macho()?;
-        for segment in &macho.segments {
-            for (section, _section_data) in segment.sections().unwrap() {
-                if section.name().unwrap() == name {
-                    let offset = section.offset as usize;
-                    let size = section.size as usize;
-                    return Some((section.addr, &buffer[offset..offset + size]));
-                }
-            }
-        }
-        None
-    }
 }
 
 /// Entry in the symbol index with lazy demangling.

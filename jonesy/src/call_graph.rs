@@ -179,10 +179,15 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
 
 /// Get the __text section's address and data from a MachO binary.
 /// This is a standalone helper for callers that only have a raw MachO reference.
-fn get_text_section<'a>(macho: &MachO, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
+/// Get a named section's address and data from a MachO binary.
+pub fn get_section_by_name<'a>(
+    macho: &MachO,
+    buffer: &'a [u8],
+    name: &str,
+) -> Option<(u64, &'a [u8])> {
     for segment in &macho.segments {
         for (section, _section_data) in segment.sections().unwrap() {
-            if section.name().unwrap() == "__text" {
+            if section.name().unwrap() == name {
                 let offset = section.offset as usize;
                 let size = section.size as usize;
                 return Some((section.addr, &buffer[offset..offset + size]));
@@ -209,7 +214,7 @@ impl<'a> CallGraph<'a> {
         buffer: &[u8],
         symbol_index: Option<&'a SymbolIndex>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+        let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
             return Ok(Self {
                 edges: HashMap::new(),
             });
@@ -260,7 +265,7 @@ impl<'a> CallGraph<'a> {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = HashMap::new();
 
-        let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+        let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
             return Ok(Self { edges });
         };
 
@@ -322,7 +327,9 @@ impl<'a> CallGraph<'a> {
             eprintln!("    [cg timing] load_dwarf_sections: {:?}", step.elapsed());
         }
 
-        let Some((text_addr, text_data)) = get_text_section(binary_macho, binary_buffer) else {
+        let Some((text_addr, text_data)) =
+            get_section_by_name(binary_macho, binary_buffer, "__text")
+        else {
             return Ok(Self {
                 edges: HashMap::new(),
             });
@@ -603,7 +610,7 @@ pub(crate) fn find_callers(
 ) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
     let mut callers = Vec::new();
 
-    let Some((text_addr, text_data)) = get_text_section(macho, buffer) else {
+    let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
         return Ok(callers);
     };
 
@@ -676,7 +683,8 @@ pub fn find_callers_with_debug_info(
     let mut callers = Vec::new();
 
     // Get __text section from the binary (not dSYM)
-    let Some((text_addr, text_data)) = get_text_section(binary_macho, binary_buffer) else {
+    let Some((text_addr, text_data)) = get_section_by_name(binary_macho, binary_buffer, "__text")
+    else {
         return Ok(callers);
     };
 
