@@ -44,14 +44,12 @@
 //! # Panic Cause Classification
 //!
 //! Once a panic path is found, jonesy classifies _why_ it panics. This happens
-//! in [`detect_panic_cause`] by matching against the
-//! function name at the panic site. The classification uses a priority order:
+//! in [`detect_panic_cause`] by matching against the fully qualified demangled
+//! function name. The classification uses a priority order:
 //!
 //! 1. **Exact symbol match** — e.g., `panic_bounds_check` → bounds error
 //! 2. **Domain detection** — e.g., `core::fmt::` prefix → formatting error
-//! 3. **Contextual disambiguation** — e.g., `unwrap_failed` in `option.rs`
-//!    vs. `result.rs` distinguishes `JP006` from `JP007`
-//! 4. **Fallback** — `PanicCause::Unknown` when no heuristic matches
+//! 3. **Fallback** — `None` when no pattern matches (caller assigns `Unknown`)
 //!
 //! # Direct vs. Indirect Panics
 //!
