@@ -885,4 +885,33 @@ mod tests {
         let target = decode_branch_target(insn, 0x1000);
         assert_eq!(target, 0x1000);
     }
+
+    // Additional test for NEW logic in simplify_heuristics branch
+
+    #[test]
+    fn test_get_section_by_name_nonexistent() {
+        // Create a minimal test binary to parse
+        // We'll use jonesy's own test binary if it exists
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let test_binary = format!("{}/target/debug/jonesy", manifest_dir);
+
+        if let Ok(buffer) = std::fs::read(&test_binary) {
+            if let Ok(macho) = MachO::parse(&buffer, 0) {
+                // Test that a non-existent section returns None
+                let result = get_section_by_name(&macho, &buffer, "__nonexistent_section");
+                assert!(
+                    result.is_none(),
+                    "get_section_by_name should return None for non-existent section"
+                );
+
+                // Verify __text section exists (sanity check)
+                let text_result = get_section_by_name(&macho, &buffer, "__text");
+                assert!(
+                    text_result.is_some(),
+                    "__text section should exist in binary"
+                );
+            }
+        }
+        // If binary doesn't exist, test passes (this is a unit test, not integration)
+    }
 }

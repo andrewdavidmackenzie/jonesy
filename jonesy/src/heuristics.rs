@@ -743,4 +743,55 @@ mod tests {
             "core::panicking::panic_const::panic_const_async_fn_resumed"
         ));
     }
+
+    // Additional tests for NEW logic in simplify_heuristics branch
+
+    #[test]
+    fn test_detect_panic_cause_unwrap_failed_simple() {
+        // Test simple unwrap_failed (no namespace prefix)
+        assert_eq!(
+            detect_panic_cause("unwrap_failed"),
+            Some(PanicCause::Unwrap)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_result_unwrap_failed() {
+        // Test fully qualified Result unwrap_failed
+        assert_eq!(
+            detect_panic_cause("core::result::unwrap_failed"),
+            Some(PanicCause::Unwrap)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_expect_failed_simple() {
+        // Test simple expect_failed
+        assert_eq!(
+            detect_panic_cause("expect_failed"),
+            Some(PanicCause::Expect)
+        );
+    }
+
+    #[test]
+    fn test_detect_panic_cause_result_expect_method() {
+        // Test Result::expect (method form)
+        assert_eq!(
+            detect_panic_cause("Result::expect"),
+            Some(PanicCause::Expect)
+        );
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_option_expect_failed() {
+        // Test core::option::expect_failed is matched
+        assert!(is_library_panic_symbol("core::option::expect_failed"));
+    }
+
+    #[test]
+    fn test_is_library_panic_symbol_result_unwrap_err() {
+        // Test Result unwrap_err and expect_err patterns
+        assert!(is_library_panic_symbol("Result<T,E>::unwrap_err"));
+        assert!(is_library_panic_symbol("Result<T,E>::expect_err"));
+    }
 }

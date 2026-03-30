@@ -213,4 +213,33 @@ mod tests {
         assert!(!ctx.is_crate_source(metal_device_rs));
         assert!(ctx.is_crate_source("/Users/me/meshchat/src/device.rs"));
     }
+
+    // Additional test for NEW logic in simplify_heuristics branch
+
+    #[test]
+    fn test_from_project_root_with_jonesy_project() {
+        // Test using the actual jonesy project root
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ctx = ProjectContext::from_project_root(project_root);
+
+        // Should have at least one source prefix
+        assert!(!ctx.source_prefixes.is_empty());
+
+        // Should correctly identify jonesy's own source files
+        // Build absolute path to a known file
+        let src_lib = project_root.join("src/lib.rs");
+        if let Some(src_lib_str) = src_lib.to_str() {
+            assert!(
+                ctx.is_crate_source(src_lib_str),
+                "Expected {} to be recognized as crate source",
+                src_lib_str
+            );
+        }
+
+        // Should NOT recognize random absolute paths as crate source
+        assert!(!ctx.is_crate_source("/tmp/random_file.rs"));
+        assert!(!ctx.is_crate_source(
+            "/Users/someone/.cargo/registry/src/index.crates.io-abc/serde-1.0.0/src/lib.rs"
+        ));
+    }
 }

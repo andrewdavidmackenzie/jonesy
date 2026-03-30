@@ -1025,4 +1025,53 @@ mod tests {
             "JP022-misaligned-pointer"
         );
     }
+
+    // Additional tests for NEW logic in simplify_heuristics branch
+
+    #[test]
+    fn test_expect_docs_slug() {
+        assert_eq!(PanicCause::Expect.docs_slug(), "JP008-expect");
+    }
+
+    #[test]
+    fn test_unwrap_docs_slug() {
+        assert_eq!(PanicCause::Unwrap.docs_slug(), "JP006-unwrap");
+    }
+
+    #[test]
+    fn test_expect_format_suggestion_direct() {
+        let suggestion = PanicCause::Expect.format_suggestion(true, None);
+        // Direct expect suggestion should be simple, without function name
+        assert!(suggestion.contains("if let") || suggestion.contains("match"));
+        assert!(!suggestion.contains("This calls"));
+    }
+
+    #[test]
+    fn test_expect_format_suggestion_indirect_with_func_name() {
+        let suggestion = PanicCause::Expect.format_suggestion(false, Some("my_func"));
+        // Indirect with function name should mention the function
+        assert!(suggestion.contains("my_func"));
+        assert!(suggestion.contains("expect"));
+    }
+
+    #[test]
+    fn test_unwrap_format_suggestion_indirect_with_func_name() {
+        let suggestion = PanicCause::Unwrap.format_suggestion(false, Some("parse"));
+        // Indirect unwrap with function name
+        assert!(suggestion.contains("parse"));
+        assert!(suggestion.contains("unwrap"));
+    }
+
+    #[test]
+    fn test_expect_suggestion_direct() {
+        let suggestion = PanicCause::Expect.suggestion(true);
+        assert!(suggestion.contains("if let") || suggestion.contains("match"));
+    }
+
+    #[test]
+    fn test_expect_suggestion_indirect() {
+        let suggestion = PanicCause::Expect.suggestion(false);
+        assert!(suggestion.contains("calls a function"));
+        assert!(suggestion.contains("expect"));
+    }
 }
