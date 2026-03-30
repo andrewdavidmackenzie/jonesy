@@ -508,7 +508,7 @@ fn get_sorted_causes(causes: &std::collections::HashSet<PanicCause>) -> Vec<&Pan
     sorted
 }
 
-/// Format all causes as a string, e.g., "[JP001: explicit panic!() call] [JP006: unwrap() on None]"
+/// Format all causes as a string, e.g., "[JP001: explicit panic!() call] [JP006: unwrap() failed]"
 fn format_causes(causes: &[&PanicCause]) -> String {
     causes
         .iter()
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn test_get_sorted_causes_single() {
         let mut causes = HashSet::new();
-        causes.insert(PanicCause::UnwrapNone);
+        causes.insert(PanicCause::Unwrap);
         let sorted = get_sorted_causes(&causes);
         assert_eq!(sorted.len(), 1);
         assert_eq!(sorted[0].error_code(), "JP006");
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn test_get_sorted_causes_multiple() {
         let mut causes = HashSet::new();
-        causes.insert(PanicCause::UnwrapErr); // JP007
+        causes.insert(PanicCause::Unwrap); // JP006
         causes.insert(PanicCause::BoundsCheck); // JP002
         causes.insert(PanicCause::ExplicitPanic); // JP001
         let sorted = get_sorted_causes(&causes);
@@ -674,7 +674,7 @@ mod tests {
         // Should be sorted by error code
         assert_eq!(sorted[0].error_code(), "JP001");
         assert_eq!(sorted[1].error_code(), "JP002");
-        assert_eq!(sorted[2].error_code(), "JP007");
+        assert_eq!(sorted[2].error_code(), "JP006");
     }
 
     #[test]
@@ -686,10 +686,10 @@ mod tests {
 
     #[test]
     fn test_format_causes_single() {
-        let cause = PanicCause::UnwrapNone;
+        let cause = PanicCause::Unwrap;
         let causes = vec![&cause];
         let formatted = format_causes(&causes);
-        assert_eq!(formatted, "[JP006: unwrap() on None]");
+        assert_eq!(formatted, "[JP006: unwrap() failed]");
     }
 
     #[test]
@@ -725,7 +725,7 @@ mod tests {
             "test",
             "src/main.rs",
             10,
-            vec![PanicCause::UnwrapNone],
+            vec![PanicCause::Unwrap],
         )]);
         let mut output = Vec::new();
         write_text_output(&mut output, &result, false, true, true, false).unwrap();
@@ -743,7 +743,7 @@ mod tests {
             "test_func",
             "src/main.rs",
             42,
-            vec![PanicCause::UnwrapNone],
+            vec![PanicCause::Unwrap],
         )]);
         let mut output = Vec::new();
         // no_hyperlinks=true forces flat format
@@ -752,7 +752,7 @@ mod tests {
 
         assert!(output_str.contains("Panic code points in crate"));
         assert!(output_str.contains("src/main.rs:42:5"));
-        assert!(output_str.contains("[JP006: unwrap() on None]"));
+        assert!(output_str.contains("[JP006: unwrap() failed]"));
         assert!(output_str.contains("= help:"));
     }
 
@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn test_write_flat_point_multiple_causes() {
         let mut causes = HashSet::new();
-        causes.insert(PanicCause::UnwrapNone);
+        causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::BoundsCheck);
         let point = CrateCodePoint {
             name: "test".to_string(),
@@ -826,7 +826,7 @@ mod tests {
 
         // Both causes should appear, sorted by error code
         assert!(output_str.contains("[JP002: index out of bounds]"));
-        assert!(output_str.contains("[JP006: unwrap() on None]"));
+        assert!(output_str.contains("[JP006: unwrap() failed]"));
     }
 
     #[test]
@@ -868,7 +868,7 @@ mod tests {
             file: "src/main.rs".to_string(),
             line: 10,
             column: Some(1),
-            causes: vec![PanicCause::UnwrapNone].into_iter().collect(),
+            causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
             called_function: Some("parse_config".to_string()),
@@ -1070,14 +1070,14 @@ mod tests {
     #[test]
     fn test_format_causes_with_three_causes() {
         let causes = vec![
-            &PanicCause::UnwrapNone,
-            &PanicCause::UnwrapErr,
+            &PanicCause::Unwrap,
+            &PanicCause::BoundsCheck,
             &PanicCause::ExplicitPanic,
         ];
         let result = format_causes(&causes);
         assert!(result.contains("[JP001:"));
+        assert!(result.contains("[JP002:"));
         assert!(result.contains("[JP006:"));
-        assert!(result.contains("[JP007:"));
     }
 
     #[test]

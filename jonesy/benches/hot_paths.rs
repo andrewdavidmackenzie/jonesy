@@ -478,7 +478,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
     let sample_points: Vec<CrateCodePoint> = (0..100)
         .map(|i| {
             let mut causes = HashSet::new();
-            causes.insert(PanicCause::UnwrapNone);
+            causes.insert(PanicCause::Unwrap);
             if i % 2 == 0 {
                 causes.insert(PanicCause::ExpectNone);
             }

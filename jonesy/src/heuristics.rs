@@ -296,13 +296,7 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
         return Some(PanicCause::ExpectErr);
     }
     if func_name.contains("unwrap_failed") {
-        // Distinguish Option vs Result by fully qualified function name
-        // e.g. "core::result::unwrap_failed" vs "core::option::unwrap_failed"
-        return if func_name.contains("result") {
-            Some(PanicCause::UnwrapErr)
-        } else {
-            Some(PanicCause::UnwrapNone)
-        };
+        return Some(PanicCause::Unwrap);
     }
     if func_name.contains("expect_failed") {
         // Only Option has expect_failed; Result::expect() uses unwrap_failed
@@ -535,24 +529,18 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_panic_cause_unwrap_failed_option() {
-        // Fully qualified name distinguishes option vs result
-        assert_eq!(
-            detect_panic_cause("core::option::unwrap_failed"),
-            Some(PanicCause::UnwrapNone)
-        );
-        // Plain "unwrap_failed" without "result" defaults to Option
+    fn test_detect_panic_cause_unwrap_failed() {
         assert_eq!(
             detect_panic_cause("unwrap_failed"),
-            Some(PanicCause::UnwrapNone)
+            Some(PanicCause::Unwrap)
         );
-    }
-
-    #[test]
-    fn test_detect_panic_cause_unwrap_failed_result() {
+        assert_eq!(
+            detect_panic_cause("core::option::unwrap_failed"),
+            Some(PanicCause::Unwrap)
+        );
         assert_eq!(
             detect_panic_cause("core::result::unwrap_failed"),
-            Some(PanicCause::UnwrapErr)
+            Some(PanicCause::Unwrap)
         );
     }
 

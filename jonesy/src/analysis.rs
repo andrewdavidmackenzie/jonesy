@@ -616,12 +616,12 @@ mod tests {
     fn test_binary_analysis_result_merge_disjoint() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/a.rs", 10, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/a.rs", 10, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/b.rs", 20, PanicCause::UnwrapErr)],
+            code_points: vec![make_code_point("src/b.rs", 20, PanicCause::Unwrap)],
         };
 
         result1.merge(result2);
@@ -635,7 +635,7 @@ mod tests {
     fn test_binary_analysis_result_merge_same_location() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult {
@@ -648,11 +648,7 @@ mod tests {
         // Same file:line should be merged, causes combined
         assert_eq!(result1.code_points.len(), 1);
         assert_eq!(result1.code_points[0].causes.len(), 2);
-        assert!(
-            result1.code_points[0]
-                .causes
-                .contains(&PanicCause::UnwrapNone)
-        );
+        assert!(result1.code_points[0].causes.contains(&PanicCause::Unwrap));
         assert!(
             result1.code_points[0]
                 .causes
@@ -664,13 +660,13 @@ mod tests {
     fn test_binary_analysis_result_merge_sorted() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/z.rs", 100, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/z.rs", 100, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![
-                make_code_point("src/a.rs", 10, PanicCause::UnwrapErr),
+                make_code_point("src/a.rs", 10, PanicCause::Unwrap),
                 make_code_point("src/a.rs", 5, PanicCause::ExplicitPanic),
             ],
         };
@@ -691,7 +687,7 @@ mod tests {
     fn test_binary_analysis_result_merge_empty() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::UnwrapNone)],
+            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
         };
 
         let result2 = BinaryAnalysisResult::empty();

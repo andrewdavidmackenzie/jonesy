@@ -802,7 +802,7 @@ mod tests {
             "test_func",
             "src/main.rs",
             42,
-            vec![PanicCause::UnwrapNone],
+            vec![PanicCause::Unwrap],
         )]);
         let html = generate_html_output(&result, false, false);
 
@@ -810,7 +810,7 @@ mod tests {
         assert!(html.contains(":42:"));
         assert!(html.contains("test_func"));
         assert!(html.contains("JP006"));
-        assert!(html.contains("unwrap() on None"));
+        assert!(html.contains("unwrap() failed"));
     }
 
     #[test]
@@ -819,7 +819,7 @@ mod tests {
             "test_func",
             "src/main.rs",
             42,
-            vec![PanicCause::UnwrapNone],
+            vec![PanicCause::Unwrap],
         )]);
         let html = generate_html_output(&result, false, true);
 

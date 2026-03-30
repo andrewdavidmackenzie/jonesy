@@ -43,10 +43,8 @@ pub enum PanicCause {
     ShiftOverflow(String),
     /// Division by zero
     DivisionByZero,
-    /// Unwrap on None
-    UnwrapNone,
-    /// Unwrap on Err
-    UnwrapErr,
+    /// Unwrap on None or Err
+    Unwrap,
     /// Expect on None
     ExpectNone,
     /// Expect on Err
@@ -104,8 +102,7 @@ impl PanicCause {
             },
             PanicCause::ShiftOverflow(_) => "shift_overflow",
             PanicCause::DivisionByZero => "div_zero",
-            PanicCause::UnwrapNone => "unwrap",
-            PanicCause::UnwrapErr => "unwrap",
+            PanicCause::Unwrap => "unwrap",
             PanicCause::ExpectNone => "expect",
             PanicCause::ExpectErr => "expect",
             PanicCause::AssertFailed => "assert",
@@ -175,8 +172,7 @@ impl PanicCause {
             PanicCause::ArithmeticOverflow(_) => "arithmetic overflow",
             PanicCause::ShiftOverflow(_) => "shift overflow",
             PanicCause::DivisionByZero => "division by zero",
-            PanicCause::UnwrapNone => "unwrap() on None",
-            PanicCause::UnwrapErr => "unwrap() on Err",
+            PanicCause::Unwrap => "unwrap() failed",
             PanicCause::ExpectNone => "expect() on None",
             PanicCause::ExpectErr => "expect() on Err",
             PanicCause::AssertFailed => "assertion failed",
@@ -223,8 +219,7 @@ impl PanicCause {
             }
             PanicCause::ShiftOverflow(_) => "Validate shift amount is within valid range",
             PanicCause::DivisionByZero => "Check divisor is non-zero before division",
-            PanicCause::UnwrapNone => "Use if let, match, unwrap_or, or ? operator instead",
-            PanicCause::UnwrapErr => "Use if let, match, unwrap_or, or ? operator instead",
+            PanicCause::Unwrap => "Use if let, match, unwrap_or, or ? operator instead",
             PanicCause::ExpectNone => "Use if let, match, unwrap_or, or ? operator instead",
             PanicCause::ExpectErr => "Use if let, match, unwrap_or, or ? operator instead",
             PanicCause::AssertFailed => "Review assertion condition",
@@ -285,7 +280,7 @@ impl PanicCause {
             PanicCause::DivisionByZero => {
                 "This calls a function that may divide by zero. Validate inputs"
             }
-            PanicCause::UnwrapNone | PanicCause::UnwrapErr => {
+            PanicCause::Unwrap => {
                 "This calls a function that may call unwrap(). Consider a fallible alternative (e.g., try_*)"
             }
             PanicCause::ExpectNone | PanicCause::ExpectErr => {
@@ -360,7 +355,7 @@ impl PanicCause {
             PanicCause::DivisionByZero => {
                 format!("This calls `{func}` which may divide by zero. Validate inputs")
             }
-            PanicCause::UnwrapNone | PanicCause::UnwrapErr => {
+            PanicCause::Unwrap => {
                 format!(
                     "This calls `{func}` which may call unwrap(). Consider a fallible alternative (e.g., try_{short_func})"
                 )
@@ -433,8 +428,7 @@ impl PanicCause {
             PanicCause::ArithmeticOverflow(_) => "JP003",
             PanicCause::ShiftOverflow(_) => "JP004",
             PanicCause::DivisionByZero => "JP005",
-            PanicCause::UnwrapNone => "JP006",
-            PanicCause::UnwrapErr => "JP007",
+            PanicCause::Unwrap => "JP006",
             PanicCause::ExpectNone => "JP008",
             PanicCause::ExpectErr => "JP009",
             PanicCause::AssertFailed => "JP010",
@@ -464,8 +458,7 @@ impl PanicCause {
             PanicCause::ArithmeticOverflow(_) => "JP003-arithmetic-overflow",
             PanicCause::ShiftOverflow(_) => "JP004-shift-overflow",
             PanicCause::DivisionByZero => "JP005-division-by-zero",
-            PanicCause::UnwrapNone => "JP006-unwrap-none",
-            PanicCause::UnwrapErr => "JP007-unwrap-err",
+            PanicCause::Unwrap => "JP006-unwrap",
             PanicCause::ExpectNone => "JP008-expect-none",
             PanicCause::ExpectErr => "JP009-expect-err",
             PanicCause::AssertFailed => "JP010-assert-failed",
@@ -555,8 +548,7 @@ mod tests {
     fn test_panic_cause_id() {
         assert_eq!(PanicCause::ExplicitPanic.id(), "panic");
         assert_eq!(PanicCause::BoundsCheck.id(), "bounds");
-        assert_eq!(PanicCause::UnwrapNone.id(), "unwrap");
-        assert_eq!(PanicCause::UnwrapErr.id(), "unwrap");
+        assert_eq!(PanicCause::Unwrap.id(), "unwrap");
         assert_eq!(PanicCause::ExpectNone.id(), "expect");
         assert_eq!(PanicCause::ExpectErr.id(), "expect");
         assert_eq!(PanicCause::DivisionByZero.id(), "div_zero");
@@ -600,8 +592,7 @@ mod tests {
             "explicit panic!() call"
         );
         assert_eq!(PanicCause::BoundsCheck.description(), "index out of bounds");
-        assert_eq!(PanicCause::UnwrapNone.description(), "unwrap() on None");
-        assert_eq!(PanicCause::UnwrapErr.description(), "unwrap() on Err");
+        assert_eq!(PanicCause::Unwrap.description(), "unwrap() failed");
         assert_eq!(PanicCause::Todo.description(), "todo!() reached");
         assert_eq!(
             PanicCause::Unreachable.description(),
@@ -617,8 +608,7 @@ mod tests {
             PanicCause::ArithmeticOverflow("add".to_string()).error_code(),
             "JP003"
         );
-        assert_eq!(PanicCause::UnwrapNone.error_code(), "JP006");
-        assert_eq!(PanicCause::UnwrapErr.error_code(), "JP007");
+        assert_eq!(PanicCause::Unwrap.error_code(), "JP006");
         assert_eq!(PanicCause::Unknown.error_code(), "JP000");
     }
 
@@ -629,7 +619,7 @@ mod tests {
             "JP001-explicit-panic"
         );
         assert_eq!(PanicCause::BoundsCheck.docs_slug(), "JP002-bounds-check");
-        assert_eq!(PanicCause::UnwrapNone.docs_slug(), "JP006-unwrap-none");
+        assert_eq!(PanicCause::Unwrap.docs_slug(), "JP006-unwrap");
         assert_eq!(PanicCause::Unknown.docs_slug(), "");
     }
 
@@ -652,7 +642,7 @@ mod tests {
         assert!(!PanicCause::AssertFailed.is_debug_only());
         assert!(!PanicCause::BoundsCheck.is_debug_only());
         assert!(!PanicCause::DivisionByZero.is_debug_only());
-        assert!(!PanicCause::UnwrapNone.is_debug_only());
+        assert!(!PanicCause::Unwrap.is_debug_only());
     }
 
     #[test]
@@ -669,30 +659,30 @@ mod tests {
         );
         assert!(PanicCause::AssertFailed.release_warning().is_none());
         assert!(PanicCause::BoundsCheck.release_warning().is_none());
-        assert!(PanicCause::UnwrapNone.release_warning().is_none());
+        assert!(PanicCause::Unwrap.release_warning().is_none());
     }
 
     #[test]
     fn test_panic_cause_suggestion_direct() {
-        let suggestion = PanicCause::UnwrapNone.suggestion(true);
+        let suggestion = PanicCause::Unwrap.suggestion(true);
         assert!(suggestion.contains("if let") || suggestion.contains("match"));
     }
 
     #[test]
     fn test_panic_cause_suggestion_indirect() {
-        let suggestion = PanicCause::UnwrapNone.suggestion(false);
+        let suggestion = PanicCause::Unwrap.suggestion(false);
         assert!(suggestion.contains("calls a function"));
     }
 
     #[test]
     fn test_panic_cause_format_suggestion_with_function() {
-        let suggestion = PanicCause::UnwrapNone.format_suggestion(false, Some("parse_config"));
+        let suggestion = PanicCause::Unwrap.format_suggestion(false, Some("parse_config"));
         assert!(suggestion.contains("parse_config"));
     }
 
     #[test]
     fn test_panic_cause_format_suggestion_direct() {
-        let suggestion = PanicCause::UnwrapNone.format_suggestion(true, Some("ignored"));
+        let suggestion = PanicCause::Unwrap.format_suggestion(true, Some("ignored"));
         // Direct suggestions don't include function name
         assert!(!suggestion.contains("ignored"));
     }
@@ -719,8 +709,8 @@ mod tests {
             PanicCause::ArithmeticOverflow("add".to_string()),
             PanicCause::ShiftOverflow("left".to_string()),
             PanicCause::DivisionByZero,
-            PanicCause::UnwrapNone,
-            PanicCause::UnwrapErr,
+            PanicCause::Unwrap,
+            PanicCause::Unwrap,
             PanicCause::ExpectNone,
             PanicCause::ExpectErr,
             PanicCause::AssertFailed,
@@ -870,12 +860,12 @@ mod tests {
                 .contains("divide by zero")
         );
         assert!(
-            PanicCause::UnwrapNone
+            PanicCause::Unwrap
                 .indirect_suggestion()
                 .contains("unwrap()")
         );
         assert!(
-            PanicCause::UnwrapErr
+            PanicCause::Unwrap
                 .indirect_suggestion()
                 .contains("unwrap()")
         );
@@ -957,8 +947,8 @@ mod tests {
             PanicCause::ArithmeticOverflow("add".to_string()),
             PanicCause::ShiftOverflow("left".to_string()),
             PanicCause::DivisionByZero,
-            PanicCause::UnwrapNone,
-            PanicCause::UnwrapErr,
+            PanicCause::Unwrap,
+            PanicCause::Unwrap,
             PanicCause::ExpectNone,
             PanicCause::ExpectErr,
             PanicCause::AssertFailed,

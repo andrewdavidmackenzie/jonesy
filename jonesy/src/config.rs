@@ -513,7 +513,7 @@ mod tests {
         // Other panics should be denied by default
         assert!(config.is_denied(&PanicCause::ExplicitPanic));
         assert!(config.is_denied(&PanicCause::BoundsCheck));
-        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::Unwrap));
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod tests {
         assert!(!config.is_denied(&PanicCause::CapacityOverflow));
 
         // Other causes should still be denied
-        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::Unwrap));
         assert!(config.is_denied(&PanicCause::ExplicitPanic));
     }
 
@@ -572,7 +572,7 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // unwrap should still be denied — the malformed rule should be skipped
-        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::Unwrap));
     }
 
     #[test]
@@ -641,7 +641,7 @@ mod tests {
         ));
 
         // Other causes should still be denied
-        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::Unwrap));
         assert!(config.is_denied(&PanicCause::ExplicitPanic));
     }
 
@@ -683,11 +683,7 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // In tests directory, unwrap should be allowed
-        assert!(!config.is_denied_at(
-            &PanicCause::UnwrapNone,
-            Some("src/tests/test_main.rs"),
-            None
-        ));
+        assert!(!config.is_denied_at(&PanicCause::Unwrap, Some("src/tests/test_main.rs"), None));
         assert!(!config.is_denied_at(
             &PanicCause::ExplicitPanic,
             Some("src/tests/test_main.rs"),
@@ -695,7 +691,7 @@ mod tests {
         ));
 
         // Outside tests, unwrap should be denied (global default)
-        assert!(config.is_denied_at(&PanicCause::UnwrapNone, Some("src/main.rs"), None));
+        assert!(config.is_denied_at(&PanicCause::Unwrap, Some("src/main.rs"), None));
     }
 
     #[test]
@@ -715,14 +711,14 @@ mod tests {
 
         // In matching function, unwrap should be allowed
         assert!(!config.is_denied_at(
-            &PanicCause::UnwrapNone,
+            &PanicCause::Unwrap,
             Some("src/config.rs"),
             Some("my_crate::config::load")
         ));
 
         // In non-matching function, unwrap should be denied
         assert!(config.is_denied_at(
-            &PanicCause::UnwrapNone,
+            &PanicCause::Unwrap,
             Some("src/main.rs"),
             Some("my_crate::main")
         ));
@@ -744,7 +740,7 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // In tests, all panics should be allowed
-        assert!(!config.is_denied_at(&PanicCause::UnwrapNone, Some("tests/integration.rs"), None));
+        assert!(!config.is_denied_at(&PanicCause::Unwrap, Some("tests/integration.rs"), None));
         assert!(!config.is_denied_at(&PanicCause::BoundsCheck, Some("tests/integration.rs"), None));
         assert!(!config.is_denied_at(
             &PanicCause::ExplicitPanic,
@@ -779,18 +775,10 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // In general tests, unwrap allowed
-        assert!(!config.is_denied_at(
-            &PanicCause::UnwrapNone,
-            Some("src/tests/normal_test.rs"),
-            None
-        ));
+        assert!(!config.is_denied_at(&PanicCause::Unwrap, Some("src/tests/normal_test.rs"), None));
 
         // In strict_test.rs, unwrap denied (more specific rule)
-        assert!(config.is_denied_at(
-            &PanicCause::UnwrapNone,
-            Some("src/tests/strict_test.rs"),
-            None
-        ));
+        assert!(config.is_denied_at(&PanicCause::Unwrap, Some("src/tests/strict_test.rs"), None));
     }
 
     #[test]
@@ -820,14 +808,14 @@ mod tests {
 
         // In src without function match, unwrap denied
         assert!(config.is_denied_at(
-            &PanicCause::UnwrapNone,
+            &PanicCause::Unwrap,
             Some("src/main.rs"),
             Some("my_crate::main")
         ));
 
         // In src with function match, unwrap allowed (function rule more specific)
         assert!(!config.is_denied_at(
-            &PanicCause::UnwrapNone,
+            &PanicCause::Unwrap,
             Some("src/config.rs"),
             Some("my_crate::config::load")
         ));
@@ -867,7 +855,7 @@ mod tests {
 
         assert!(!config.is_denied(&PanicCause::AssertFailed));
         // Other causes should still be denied
-        assert!(config.is_denied(&PanicCause::UnwrapNone));
+        assert!(config.is_denied(&PanicCause::Unwrap));
     }
 
     #[test]

@@ -3068,7 +3068,7 @@ mod tests {
         use crate::panic_cause::PanicCause;
 
         let mut causes = HashSet::new();
-        causes.insert(PanicCause::UnwrapNone);
+        causes.insert(PanicCause::Unwrap);
 
         let point = CrateCodePoint {
             file: "src/main.rs".to_string(),
@@ -3095,7 +3095,7 @@ mod tests {
         use crate::panic_cause::PanicCause;
 
         let mut causes = HashSet::new();
-        causes.insert(PanicCause::UnwrapNone);
+        causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::ExpectNone);
 
         let point = CrateCodePoint {
