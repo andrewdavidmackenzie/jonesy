@@ -547,7 +547,6 @@ mod tests {
 
         // expect and capacity should be globally allowed
         assert!(!config.is_denied(&PanicCause::Expect));
-        assert!(!config.is_denied(&PanicCause::Expect));
         assert!(!config.is_denied(&PanicCause::CapacityOverflow));
 
         // Other causes should still be denied
