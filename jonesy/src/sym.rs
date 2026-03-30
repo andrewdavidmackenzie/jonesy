@@ -57,21 +57,12 @@ pub fn matches_crate_pattern_validated(
         return valid.is_crate_source(file_path);
     }
 
-    // Without ValidSourceFiles, fall back to simple pattern matching
-    let matches = crate_pattern
+    // Without ValidSourceFiles, fall back to simple pattern matching.
+    // With absolute paths (comp_dir prepended), this is more reliable
+    // but still less authoritative than ValidSourceFiles.
+    crate_pattern
         .split('|')
-        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern));
-
-    if !matches {
-        return false;
-    }
-
-    // Apply dependency path heuristics to filter out known dependency patterns
-    if crate::heuristics::is_dependency_path(file_path) {
-        return false;
-    }
-
-    true
+        .any(|pattern| !pattern.is_empty() && file_path.contains(pattern))
 }
 
 /// Absolute source directory prefixes for a project.
@@ -240,7 +231,11 @@ pub struct CrateLineTable {
 
 impl CrateLineTable {
     /// Build a line table with only entries from crate source files.
-    pub fn build<R: Reader>(dwarf: &Dwarf<R>, crate_src_path: &str) -> Result<Self, gimli::Error> {
+    pub fn build<R: Reader>(
+        dwarf: &Dwarf<R>,
+        crate_src_path: &str,
+        valid_files: Option<&ValidSourceFiles>,
+    ) -> Result<Self, gimli::Error> {
         let mut entries = Vec::new();
 
         let mut units = dwarf.units();
@@ -252,27 +247,10 @@ impl CrateLineTable {
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
-                        let file_name = dwarf
-                            .attr_string(&unit, file_entry.path_name())?
-                            .to_string_lossy()?
-                            .into_owned();
-
-                        let full_path = if let Some(dir) = file_entry.directory(header) {
-                            let dir_str = dwarf
-                                .attr_string(&unit, dir)?
-                                .to_string_lossy()?
-                                .into_owned();
-                            if dir_str.is_empty() {
-                                file_name
-                            } else {
-                                format!("{}/{}", dir_str, file_name)
-                            }
-                        } else {
-                            file_name
-                        };
+                        let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Only include entries from crate source
-                        if matches_crate_pattern(&full_path, crate_src_path)
+                        if matches_crate_pattern_validated(&full_path, crate_src_path, valid_files)
                             && let Some(line) = row.line()
                         {
                             let column = match row.column() {
@@ -364,24 +342,7 @@ impl FullLineTable {
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
-                        let file_name = dwarf
-                            .attr_string(&unit, file_entry.path_name())?
-                            .to_string_lossy()?
-                            .into_owned();
-
-                        let full_path = if let Some(dir) = file_entry.directory(header) {
-                            let dir_str = dwarf
-                                .attr_string(&unit, dir)?
-                                .to_string_lossy()?
-                                .into_owned();
-                            if dir_str.is_empty() {
-                                file_name
-                            } else {
-                                format!("{}/{}", dir_str, file_name)
-                            }
-                        } else {
-                            file_name
-                        };
+                        let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Intern the file path to reduce memory usage
                         // Use two-step get/insert to avoid cloning on cache hits
@@ -463,6 +424,7 @@ impl FullLineTable {
         func_end: u64,
         func_start_line: Option<u32>,
         crate_src_path: &str,
+        valid_files: Option<&ValidSourceFiles>,
     ) -> (Option<u32>, Option<u32>) {
         // Find entries up to and including addr
         let end_idx = self.entries.partition_point(|e| e.address <= addr);
@@ -477,7 +439,9 @@ impl FullLineTable {
                 break;
             }
             if let Some(file) = self.file_pool.get(entry.file_id as usize) {
-                if matches_crate_pattern(file, crate_src_path) && entry.line > 0 {
+                if matches_crate_pattern_validated(file, crate_src_path, valid_files)
+                    && entry.line > 0
+                {
                     // Found a crate entry, but if it's just the function start,
                     // try searching forward for a better line
                     if func_start_line.is_some_and(|fl| entry.line == fl) {
@@ -498,7 +462,9 @@ impl FullLineTable {
                 break;
             }
             if let Some(file) = self.file_pool.get(entry.file_id as usize) {
-                if matches_crate_pattern(file, crate_src_path) && entry.line > 0 {
+                if matches_crate_pattern_validated(file, crate_src_path, valid_files)
+                    && entry.line > 0
+                {
                     // Found the next crate entry (e.g., closing brace).
                     // The call is on the line before the epilogue.
                     if let Some(func_line) = func_start_line {
@@ -530,6 +496,7 @@ impl FullLineTable {
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
         crate_src_path: &str,
+        valid_files: Option<&ValidSourceFiles>,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
         let mut crate_entries = Vec::new();
         let mut full_entries = Vec::new();
@@ -552,27 +519,14 @@ impl FullLineTable {
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
-                        let file_name = dwarf
-                            .attr_string(&unit, file_entry.path_name())?
-                            .to_string_lossy()?
-                            .into_owned();
-
-                        let full_path = if let Some(dir) = file_entry.directory(header) {
-                            let dir_str = dwarf
-                                .attr_string(&unit, dir)?
-                                .to_string_lossy()?
-                                .into_owned();
-                            if dir_str.is_empty() {
-                                file_name
-                            } else {
-                                format!("{}/{}", dir_str, file_name)
-                            }
-                        } else {
-                            file_name
-                        };
+                        let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                         // Check crate match before interning (needs &full_path)
-                        let is_crate_match = matches_crate_pattern(&full_path, crate_src_path);
+                        let is_crate_match = matches_crate_pattern_validated(
+                            &full_path,
+                            crate_src_path,
+                            valid_files,
+                        );
 
                         // Intern the file path (avoid double clone on cache miss)
                         let file_id = if let Some(&id) = file_to_id.get(&full_path) {
@@ -1531,7 +1485,7 @@ impl<'a> CallGraph<'a> {
         // Build both line tables in a single pass (saves iterating DWARF twice)
         let step = Instant::now();
         let (crate_line_table, full_line_table) = if let Some(path) = crate_src_path {
-            let (crate_table, full_table) = FullLineTable::build_both(&dwarf, path)?;
+            let (crate_table, full_table) = FullLineTable::build_both(&dwarf, path, valid_files)?;
             (Some(crate_table), full_table)
         } else {
             (None, FullLineTable::build(&dwarf)?)
@@ -1629,24 +1583,7 @@ impl ObjectLineTable {
                 file_paths.push(String::new()); // placeholder for index 0
 
                 for file_entry in header.file_names() {
-                    let file_name = dwarf
-                        .attr_string(&unit, file_entry.path_name())?
-                        .to_string_lossy()?
-                        .into_owned();
-
-                    let full_path = if let Some(dir) = file_entry.directory(header) {
-                        let dir_str = dwarf
-                            .attr_string(&unit, dir)?
-                            .to_string_lossy()?
-                            .into_owned();
-                        if dir_str.is_empty() {
-                            file_name
-                        } else {
-                            format!("{}/{}", dir_str, file_name)
-                        }
-                    } else {
-                        file_name
-                    };
+                    let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
                     file_paths.push(full_path);
                 }
 
@@ -1702,6 +1639,7 @@ impl ObjectLineTable {
         func_start: u64,
         call_site_addr: u64,
         crate_src_path: &str,
+        valid_files: Option<&ValidSourceFiles>,
     ) -> Option<(String, u32, Option<u32>)> {
         if self.entries.is_empty() {
             return None;
@@ -1716,7 +1654,7 @@ impl ObjectLineTable {
         // Search backwards from end to find the last crate source entry
         for i in (start_idx..end_idx).rev() {
             let entry = &self.entries[i];
-            if matches_crate_pattern(&entry.file, crate_src_path) {
+            if matches_crate_pattern_validated(&entry.file, crate_src_path, valid_files) {
                 return Some((entry.file.clone(), entry.line, entry.column));
             }
         }
@@ -1852,7 +1790,12 @@ impl LibraryCallGraph {
                             if let Some(crate_path) = crate_src_path
                                 && let Some(lt) = line_lookup.as_ref()
                                 && let Some((crate_file, crate_line, crate_col)) = lt
-                                    .get_crate_line_in_range(func_addr, call_site_addr, crate_path)
+                                    .get_crate_line_in_range(
+                                        func_addr,
+                                        call_site_addr,
+                                        crate_path,
+                                        None,
+                                    )
                             {
                                 (Some(crate_file), Some(crate_line), crate_col)
                             } else {
@@ -2020,6 +1963,7 @@ fn process_instruction_data_with_crate_table<'a>(
                                 func.end_address,
                                 func_line,
                                 crate_path,
+                                valid_files,
                             );
                             if full_line.is_some() && full_line != func_line {
                                 line = full_line;
@@ -2511,6 +2455,47 @@ fn resolve_abstract_origin_name<R: Reader>(
 
 /// Resolve file path from DW_AT_decl_file attribute value.
 /// Handles cases where directory may be absent or empty (basename-only entries).
+/// Resolve a file path from a DWARF line program file entry.
+/// Constructs the full path from directory + file name, and prepends comp_dir
+/// for relative paths to produce an absolute path.
+fn resolve_line_file_path<R: Reader>(
+    dwarf: &Dwarf<R>,
+    unit: &Unit<R>,
+    file_entry: &gimli::FileEntry<R, R::Offset>,
+    header: &gimli::LineProgramHeader<R, R::Offset>,
+) -> Result<String, gimli::Error> {
+    let file_name = dwarf
+        .attr_string(unit, file_entry.path_name())?
+        .to_string_lossy()?
+        .into_owned();
+
+    let full_path = if let Some(dir) = file_entry.directory(header) {
+        let dir_str = dwarf
+            .attr_string(unit, dir)?
+            .to_string_lossy()?
+            .into_owned();
+        if dir_str.is_empty() {
+            file_name
+        } else {
+            format!("{dir_str}/{file_name}")
+        }
+    } else {
+        file_name
+    };
+
+    // Prepend comp_dir for relative paths to make them absolute
+    if !full_path.starts_with('/') {
+        if let Some(comp_dir) = &unit.comp_dir {
+            let comp_dir_str = comp_dir.to_string_lossy()?;
+            if !comp_dir_str.is_empty() {
+                return Ok(format!("{comp_dir_str}/{full_path}"));
+            }
+        }
+    }
+
+    Ok(full_path)
+}
+
 fn resolve_decl_file<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
@@ -2522,34 +2507,12 @@ fn resolve_decl_file<R: Reader>(
     let Some(file_entry) = line_program.header().file(file_idx) else {
         return Ok(None);
     };
-    let file_str = dwarf.attr_string(unit, file_entry.path_name())?;
-    let file_name = file_str.to_string_lossy()?.into_owned();
-
-    let full_path = if let Some(dir) = file_entry.directory(line_program.header()) {
-        let dir_str = dwarf.attr_string(unit, dir.clone())?;
-        let dir_name = dir_str.to_string_lossy()?;
-        if !dir_name.is_empty() {
-            format!("{dir_name}/{file_name}")
-        } else {
-            file_name
-        }
-    } else {
-        file_name
-    };
-
-    // If the path is relative, prepend the compilation directory to make it absolute.
-    // This is critical for distinguishing between files with the same relative path
-    // in different crates (e.g., "src/device.rs" in both the user's crate and a dependency).
-    if !full_path.starts_with('/') {
-        if let Some(comp_dir) = &unit.comp_dir {
-            let comp_dir_str = comp_dir.to_string_lossy()?;
-            if !comp_dir_str.is_empty() {
-                return Ok(Some(format!("{comp_dir_str}/{full_path}")));
-            }
-        }
-    }
-
-    Ok(Some(full_path))
+    Ok(Some(resolve_line_file_path(
+        dwarf,
+        unit,
+        file_entry,
+        line_program.header(),
+    )?))
 }
 
 /// Resolve name, file, and line from a DW_AT_specification reference.
@@ -2671,12 +2634,13 @@ pub fn find_callers_with_debug_info(
 
                     // For functions in the crate source, find the actual line where the call originates
                     if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-                        && f.contains(crate_path)
+                        && matches_crate_pattern_validated(f, crate_path, None)
                         && let Ok(Some((crate_line, crate_column))) = get_crate_line_at_address(
                             &dwarf,
                             func.start_address,
                             instruction.address(),
                             crate_path,
+                            None,
                         )
                     {
                         line = Some(crate_line);
@@ -2736,6 +2700,7 @@ fn get_crate_line_at_address<R: Reader>(
     func_start: u64,
     call_site_addr: u64,
     crate_src_path: &str,
+    valid_files: Option<&ValidSourceFiles>,
 ) -> Result<Option<(u32, Option<u32>)>, gimli::Error> {
     let mut units = dwarf.units();
     let mut best_line: Option<u32> = None;
@@ -2756,27 +2721,10 @@ fn get_crate_line_at_address<R: Reader>(
                     && addr <= call_site_addr
                     && let Some(file_entry) = row.file(header)
                 {
-                    let file_name = dwarf
-                        .attr_string(&unit, file_entry.path_name())?
-                        .to_string_lossy()?
-                        .into_owned();
-
-                    let full_path = if let Some(dir) = file_entry.directory(header) {
-                        let dir_str = dwarf
-                            .attr_string(&unit, dir)?
-                            .to_string_lossy()?
-                            .into_owned();
-                        if dir_str.is_empty() {
-                            file_name
-                        } else {
-                            format!("{}/{}", dir_str, file_name)
-                        }
-                    } else {
-                        file_name
-                    };
+                    let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
 
                     // Check if this line is in the crate source
-                    if matches_crate_pattern(&full_path, crate_src_path)
+                    if matches_crate_pattern_validated(&full_path, crate_src_path, valid_files)
                         && let Some(line) = row.line()
                         && addr >= best_addr
                     {
