@@ -10,9 +10,7 @@ use crate::call_tree::{
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
-use crate::heuristics::{
-    ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS, is_stdlib_function,
-};
+use crate::heuristics::{ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
     find_all_symbols_matching, find_symbol_address, find_symbol_containing, load_debug_info,
@@ -446,11 +444,6 @@ pub fn analyze_archive(
         }
 
         for caller_info in merged_graph.get_callers(target_sym) {
-            // Skip standard library functions - we only want user code
-            if is_stdlib_function(&caller_info.caller_name) {
-                continue;
-            }
-
             // Get file from DWARF info, filtering out non-crate code paths
             let dwarf_file = caller_info.caller_file.as_ref().filter(|f| {
                 crate_src_path.is_none_or(|p| {

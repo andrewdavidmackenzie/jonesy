@@ -17,16 +17,10 @@
 //! from the Rust toolchain (like `/rustc/.../option.rs`). Jonesy must distinguish
 //! these from user code to report only panic points the developer controls.
 //!
-//! Two mechanisms handle this:
-//!
-//! - [`is_stdlib_function`] — Checks if a demangled function name belongs to the
-//!   standard library by namespace (`core::`, `std::`, `alloc::`), including trait
-//!   impl forms like `<core::option::Option<T>>::unwrap`.
-//!
-//! - `ValidSourceFiles` / `matches_crate_pattern_validated` (in [`crate::sym`]) —
-//!   Positive matching: checks if a file's absolute path falls under a known
-//!   source directory prefix derived from the project's `Cargo.toml`. All DWARF
-//!   paths are made absolute (via `comp_dir` prepending) at creation time.
+//! `ValidSourceFiles` / `matches_crate_pattern_validated` (in [`crate::sym`])
+//! handles this via positive matching: a file's absolute path must fall under a
+//! known source directory prefix derived from the project's `Cargo.toml`. All
+//! DWARF paths are made absolute (via `comp_dir` prepending) at creation time.
 //!
 //! # Panic Entry Points
 //!
@@ -161,39 +155,6 @@ pub const LIBRARY_PANIC_PATTERNS: &[&str] = &[
     "core::result::Result<T,E>::expect_err",
     "core::result::unwrap_failed",
 ];
-
-// ---------------------------------------------------------------------------
-// Source code ownership heuristics
-// ---------------------------------------------------------------------------
-
-/// Check if a demangled function name belongs to the standard library.
-///
-/// Returns `true` for functions in the `core`, `std`, or `alloc` crates.
-/// Handles multiple name formats that arise from Rust's name mangling:
-///
-/// | Format                       | Example                                  |
-/// |------------------------------|------------------------------------------|
-/// | Direct namespace             | `core::option::Option::unwrap`           |
-/// | Generic bounds               | `<core::option::Option<T>>::unwrap`      |
-/// | Trait impl with space        | `<Foo as core::fmt::Display>::fmt`       |
-/// | Nested module reference      | `mycrate::core::panicking::panic`        |
-///
-/// This function is used during library analysis to skip stdlib callers
-/// and report only user-code panic sources.
-pub fn is_stdlib_function(name: &str) -> bool {
-    name.starts_with("core::")
-        || name.starts_with("std::")
-        || name.starts_with("alloc::")
-        || name.starts_with("<core::")
-        || name.starts_with("<std::")
-        || name.starts_with("<alloc::")
-        || name.contains(" core::")
-        || name.contains(" std::")
-        || name.contains(" alloc::")
-        || name.contains("::core::")
-        || name.contains("::std::")
-        || name.contains("::alloc::")
-}
 
 // ---------------------------------------------------------------------------
 // Direct vs. indirect panic classification
@@ -512,32 +473,6 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
 mod tests {
     use super::*;
     use crate::panic_cause::PanicCause;
-
-    // -- is_stdlib_function tests --
-
-    #[test]
-    fn test_stdlib_direct_namespace() {
-        assert!(is_stdlib_function("core::option::Option::unwrap"));
-        assert!(is_stdlib_function("std::io::Read::read"));
-        assert!(is_stdlib_function("alloc::vec::Vec::push"));
-    }
-
-    #[test]
-    fn test_stdlib_generic_bounds() {
-        assert!(is_stdlib_function("<core::option::Option<T>>::unwrap"));
-        assert!(is_stdlib_function("<std::vec::Vec<T>>::push"));
-    }
-
-    #[test]
-    fn test_stdlib_trait_impl() {
-        assert!(is_stdlib_function("<MyStruct as core::fmt::Display>::fmt"));
-    }
-
-    #[test]
-    fn test_user_function_not_stdlib() {
-        assert!(!is_stdlib_function("my_crate::module::function"));
-        assert!(!is_stdlib_function("cause_an_unwrap"));
-    }
 
     // -- is_panic_triggering_function tests --
 
