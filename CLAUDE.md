@@ -31,7 +31,7 @@ by being able to cite the source information and then explain the logic used.
 - Always run `make test` (not just `cargo test`) before pushing,
 since the Makefile builds nested workspaces (like `examples/workspace_test`) that aren't part of the
   main workspace.
-- Always run `make clippy` and `cargo fmt` before pushing,
+- Always run `make clippy` and `cargo fmt` before committing or pushing changes.
 - Explain your analysis of the problem, and proposed implementation plan before starting to 
 implement changes. Describe what files will be modified what functions added/deleted/modifes
 
