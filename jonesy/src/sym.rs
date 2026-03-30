@@ -51,12 +51,9 @@ pub fn matches_crate_pattern_validated(
     crate_pattern: &str,
     valid_files: Option<&ValidSourceFiles>,
 ) -> bool {
-    // For absolute paths with ValidSourceFiles, use authoritative prefix matching.
-    // This can't be fooled by dependencies with similar relative paths.
+    // With ValidSourceFiles, use authoritative prefix matching.
+    // is_crate_source handles both absolute and relative paths internally.
     if let Some(valid) = valid_files {
-        if file_path.starts_with('/') {
-            return valid.is_crate_source(file_path);
-        }
         return valid.is_crate_source(file_path);
     }
 
