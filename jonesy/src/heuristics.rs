@@ -103,58 +103,38 @@ pub const ABORT_SYMBOL_PATTERNS: &[&str] = &["std::process::abort"];
 /// call graph. This list defines the demangled names that indicate a
 /// relocation target is panic-related.
 ///
-/// The list is checked with `contains()` matching, so `"core::panicking::panic"`
-/// also matches `core::panicking::panic_fmt` etc. Order does not matter.
-///
-/// # Categories
-///
-/// **Direct panic functions** — the low-level panic entry points:
-/// - `core::panicking::panic`, `panic_fmt`, `panic_display`
-/// - `panic_in_cleanup` (panic during drop), `panic_cannot_unwind`
-/// - `panic_const` (compile-time overflow checks)
-/// - `panic_bounds_check`, `panic_nounwind_fmt`
-/// - `assert_failed` (assert/debug_assert macros)
-/// - `std::panicking::begin_panic` / `begin_panic_fmt`
-///
-/// **Option panic functions** — called when unwrapping `None`:
-/// - `core::option::Option<T>::unwrap`, `::expect`
-/// - `core::option::unwrap_failed` (internal panic function)
-///
-/// **Result panic functions** — called when unwrapping `Err`:
-/// - `core::result::Result<T, E>::unwrap`, `::expect`
-/// - `core::result::Result<T, E>::unwrap_err`, `::expect_err`
-/// - `core::result::unwrap_failed` (internal panic function)
-///
-/// # Additional dynamic patterns
-///
-/// At runtime, the library analysis also matches:
-/// - Any symbol containing `core::panicking::` (catches future additions)
-/// - `std::panicking::*` except `set_hook`/`take_hook` (which configures
-///   the panic-handler, not trigger panics)
-pub const LIBRARY_PANIC_PATTERNS: &[&str] = &[
-    // Direct panic functions
-    "core::panicking::panic",
-    "core::panicking::panic_fmt",
-    "core::panicking::panic_display",
-    "core::panicking::panic_in_cleanup",
-    "core::panicking::panic_const",
-    "core::panicking::panic_bounds_check",
-    "core::panicking::panic_nounwind_fmt",
-    "core::panicking::panic_cannot_unwind",
-    "core::panicking::assert_failed",
-    "std::panicking::begin_panic",
-    "std::panicking::begin_panic_fmt",
-    // Option panic functions
-    "core::option::Option<T>::unwrap",
-    "core::option::Option<T>::expect",
+/// Checked with `contains()` matching, so `"core::panicking::"` matches all
+/// functions in that module. `std::panicking::` excludes `set_hook`/`take_hook`
+/// via [`is_library_panic_symbol`].
+const LIBRARY_PANIC_PATTERNS: &[&str] = &[
+    // All core panic functions (panic, panic_fmt, panic_const, assert_failed, etc.)
+    "core::panicking::",
+    // std panic entry points (begin_panic, begin_panic_fmt, etc.)
+    "std::panicking::",
+    // Option/Result unwrap/expect (appear as relocation targets in library analysis)
+    "Option<T>::unwrap",
+    "Option<T>::expect",
+    "Result<T,E>::unwrap",
+    "Result<T,E>::expect",
+    "Result<T,E>::unwrap_err",
+    "Result<T,E>::expect_err",
     "core::option::unwrap_failed",
-    // Result panic functions
-    "core::result::Result<T,E>::unwrap",
-    "core::result::Result<T,E>::expect",
-    "core::result::Result<T,E>::unwrap_err",
-    "core::result::Result<T,E>::expect_err",
+    "core::option::expect_failed",
     "core::result::unwrap_failed",
 ];
+
+/// Check if a demangled symbol name is a panic-related function for library analysis.
+///
+/// Uses [`LIBRARY_PANIC_PATTERNS`] with an exclusion for `set_hook`/`take_hook`
+/// which configure the panic handler but don't trigger panics.
+pub fn is_library_panic_symbol(name: &str) -> bool {
+    if LIBRARY_PANIC_PATTERNS.iter().any(|p| name.contains(p)) {
+        // Exclude panic handler configuration functions
+        !name.contains("set_hook") && !name.contains("take_hook")
+    } else {
+        false
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Direct vs. indirect panic classification
@@ -463,12 +443,19 @@ mod tests {
     }
 
     #[test]
-    fn test_library_panic_patterns_comprehensive() {
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("panic")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("unwrap")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("expect")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("option")));
-        assert!(LIBRARY_PANIC_PATTERNS.iter().any(|p| p.contains("result")));
+    fn test_is_library_panic_symbol() {
+        assert!(is_library_panic_symbol("core::panicking::panic_fmt"));
+        assert!(is_library_panic_symbol(
+            "core::panicking::panic_const::panic_const_add_overflow"
+        ));
+        assert!(is_library_panic_symbol("std::panicking::begin_panic"));
+        assert!(is_library_panic_symbol("core::option::unwrap_failed"));
+        assert!(is_library_panic_symbol("core::result::unwrap_failed"));
+        // set_hook/take_hook are NOT panic functions
+        assert!(!is_library_panic_symbol("std::panicking::set_hook"));
+        assert!(!is_library_panic_symbol("std::panicking::take_hook"));
+        // User code is not a panic symbol
+        assert!(!is_library_panic_symbol("my_crate::process_data"));
     }
 
     // -- detect_panic_cause tests --

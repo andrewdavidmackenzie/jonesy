@@ -10,7 +10,7 @@ use crate::call_tree::{
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
-use crate::heuristics::{ABORT_SYMBOL_PATTERNS, LIBRARY_PANIC_PATTERNS, PANIC_SYMBOL_PATTERNS};
+use crate::heuristics::{ABORT_SYMBOL_PATTERNS, PANIC_SYMBOL_PATTERNS, is_library_panic_symbol};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, ValidSourceFiles,
     find_all_symbols_matching, find_symbol_address, find_symbol_containing, load_debug_info,
@@ -429,17 +429,7 @@ pub fn analyze_archive(
 
     // Search for callers of panic-related symbols
     for target_sym in merged_graph.target_symbols() {
-        // Check if this is a panic-related symbol
-        // Note: be careful with std::panicking:: - set_hook/take_hook are NOT panic functions
-        let is_panic_symbol = LIBRARY_PANIC_PATTERNS
-            .iter()
-            .any(|p| target_sym.contains(p))
-            || target_sym.contains("core::panicking::")
-            || (target_sym.contains("std::panicking::")
-                && !target_sym.contains("set_hook")
-                && !target_sym.contains("take_hook"));
-
-        if !is_panic_symbol {
+        if !is_library_panic_symbol(target_sym) {
             continue;
         }
 
