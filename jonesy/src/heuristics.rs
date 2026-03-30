@@ -239,16 +239,10 @@ use crate::panic_cause::PanicCause;
 
 /// Detect panic cause from a function name in the call chain.
 ///
-/// Walks the priority order described in the module docs:
-///
-/// 1. Exact symbol match (`panic_bounds_check`, `unwrap_failed`, …)
-/// 2. Domain detection (`core::fmt::`, `capacity_overflow`, …)
-/// 3. Contextual disambiguation (file path for Option vs Result)
-/// 4. Collection internals (`hashbrown::raw::`, `std::collections::hash::`)
-/// 5. Fallback → `None` (unknown)
-///
-/// The optional `file_path` helps distinguish Option vs Result for unwrap/expect.
-pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<PanicCause> {
+/// Uses fully qualified demangled function names (from DWARF linkage names)
+/// for disambiguation (e.g., `core::result::unwrap_failed` vs
+/// `core::option::unwrap_failed`).
+pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     // Check for async function resumed after completion
     if func_name.contains("async_fn_resumed") {
         return Some(PanicCause::AsyncFnResumed);
@@ -302,26 +296,13 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         return Some(PanicCause::ExpectErr);
     }
     if func_name.contains("unwrap_failed") {
-        // Check file path first (most reliable), then fall back to function name
-        // Note: file_path may be the crate source file (not stdlib) when called from
-        // rlib analysis, so always check func_name as fallback
-        let is_result = file_path
-            .filter(|f| {
-                f.contains("result.rs")
-                    || f.contains("core/result")
-                    || f.contains("option.rs")
-                    || f.contains("core/option")
-            })
-            .map(|f| f.contains("result.rs") || f.contains("core/result"))
-            .unwrap_or_else(|| func_name.contains("result"));
-        if is_result {
-            // core::result::unwrap_failed - used by Result::unwrap()
-            // (Result::expect is detected above via the caller)
-            return Some(PanicCause::UnwrapErr);
+        // Distinguish Option vs Result by fully qualified function name
+        // e.g. "core::result::unwrap_failed" vs "core::option::unwrap_failed"
+        return if func_name.contains("result") {
+            Some(PanicCause::UnwrapErr)
         } else {
-            // core::option::unwrap_failed
-            return Some(PanicCause::UnwrapNone);
-        }
+            Some(PanicCause::UnwrapNone)
+        };
     }
     if func_name.contains("expect_failed") {
         // Only Option has expect_failed; Result::expect() uses unwrap_failed
@@ -409,22 +390,8 @@ pub fn detect_panic_cause(func_name: &str, file_path: Option<&str>) -> Option<Pa
         }
 
         // Check if it's for str (string slice) vs array/vec (bounds check)
-        // String slicing can be detected via:
-        // 1. Function name containing str:: or core::str::
-        // 2. File path matching known stdlib string module paths
-        let is_string_op = func_name.contains("str::") || func_name.contains("core::str::");
-        let is_string_file = file_path
-            .map(|f| {
-                // Normalize path separators for cross-platform matching
-                let normalized = f.replace('\\', "/");
-                // Only match known stdlib string module paths to avoid false positives
-                // from user directories named "str"
-                normalized.contains("/library/core/src/str/")
-                    || normalized.contains("/library/std/src/str/")
-                    || normalized.contains("/src/libcore/str/")
-            })
-            .unwrap_or(false);
-        if is_string_op || is_string_file {
+        // Fully qualified names like "core::str::traits::...::index" contain "str::"
+        if func_name.contains("str::") {
             return Some(PanicCause::StringSliceError);
         }
         return Some(PanicCause::BoundsCheck);
@@ -522,7 +489,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_bounds_check() {
         assert_eq!(
-            detect_panic_cause("panic_bounds_check", None),
+            detect_panic_cause("panic_bounds_check"),
             Some(PanicCause::BoundsCheck)
         );
     }
@@ -530,15 +497,15 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_arithmetic_overflow() {
         assert_eq!(
-            detect_panic_cause("panic_const_add_overflow", None),
+            detect_panic_cause("panic_const_add_overflow"),
             Some(PanicCause::ArithmeticOverflow("addition".to_string()))
         );
         assert_eq!(
-            detect_panic_cause("panic_const_sub_overflow", None),
+            detect_panic_cause("panic_const_sub_overflow"),
             Some(PanicCause::ArithmeticOverflow("subtraction".to_string()))
         );
         assert_eq!(
-            detect_panic_cause("panic_const_mul_overflow", None),
+            detect_panic_cause("panic_const_mul_overflow"),
             Some(PanicCause::ArithmeticOverflow("multiplication".to_string()))
         );
     }
@@ -546,11 +513,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_shift_overflow() {
         assert_eq!(
-            detect_panic_cause("panic_const_shl_overflow", None),
+            detect_panic_cause("panic_const_shl_overflow"),
             Some(PanicCause::ShiftOverflow("left".to_string()))
         );
         assert_eq!(
-            detect_panic_cause("panic_const_shr_overflow", None),
+            detect_panic_cause("panic_const_shr_overflow"),
             Some(PanicCause::ShiftOverflow("right".to_string()))
         );
     }
@@ -558,19 +525,25 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_division_by_zero() {
         assert_eq!(
-            detect_panic_cause("panic_const_div_by_zero", None),
+            detect_panic_cause("panic_const_div_by_zero"),
             Some(PanicCause::DivisionByZero)
         );
         assert_eq!(
-            detect_panic_cause("panic_const_rem_by_zero", None),
+            detect_panic_cause("panic_const_rem_by_zero"),
             Some(PanicCause::DivisionByZero)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_unwrap_failed_option() {
+        // Fully qualified name distinguishes option vs result
         assert_eq!(
-            detect_panic_cause("unwrap_failed", Some("option.rs")),
+            detect_panic_cause("core::option::unwrap_failed"),
+            Some(PanicCause::UnwrapNone)
+        );
+        // Plain "unwrap_failed" without "result" defaults to Option
+        assert_eq!(
+            detect_panic_cause("unwrap_failed"),
             Some(PanicCause::UnwrapNone)
         );
     }
@@ -578,11 +551,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_unwrap_failed_result() {
         assert_eq!(
-            detect_panic_cause("unwrap_failed", Some("result.rs")),
-            Some(PanicCause::UnwrapErr)
-        );
-        assert_eq!(
-            detect_panic_cause("unwrap_failed", Some("core/result/mod.rs")),
+            detect_panic_cause("core::result::unwrap_failed"),
             Some(PanicCause::UnwrapErr)
         );
     }
@@ -590,7 +559,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_expect_failed() {
         assert_eq!(
-            detect_panic_cause("expect_failed", None),
+            detect_panic_cause("expect_failed"),
             Some(PanicCause::ExpectNone)
         );
     }
@@ -598,7 +567,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_result_expect() {
         assert_eq!(
-            detect_panic_cause("Result::expect", None),
+            detect_panic_cause("Result::expect"),
             Some(PanicCause::ExpectErr)
         );
     }
@@ -606,42 +575,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_assert_failed() {
         assert_eq!(
-            detect_panic_cause("assert_failed", None),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("src/main.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-    }
-
-    #[test]
-    fn test_assert_failed_always_assert_regardless_of_path() {
-        assert_eq!(
-            detect_panic_cause(
-                "assert_failed",
-                Some("/rustc/abc123/library/std/src/time.rs")
-            ),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("/library/core/src/num/mod.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("src/main.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-    }
-
-    #[test]
-    fn test_assert_in_user_path_with_library() {
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("/home/me/library/app/src/main.rs")),
-            Some(PanicCause::AssertFailed)
-        );
-        assert_eq!(
-            detect_panic_cause("assert_failed", Some("/projects/library/core/lib.rs")),
+            detect_panic_cause("assert_failed"),
             Some(PanicCause::AssertFailed)
         );
     }
@@ -649,7 +583,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_panic_display() {
         assert_eq!(
-            detect_panic_cause("panic_display", None),
+            detect_panic_cause("panic_display"),
             Some(PanicCause::ExplicitPanic)
         );
     }
@@ -657,7 +591,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_panic_in_cleanup() {
         assert_eq!(
-            detect_panic_cause("panic_in_cleanup", None),
+            detect_panic_cause("panic_in_cleanup"),
             Some(PanicCause::PanicInDrop)
         );
     }
@@ -665,11 +599,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_panic_cannot_unwind() {
         assert_eq!(
-            detect_panic_cause("panic_cannot_unwind", None),
+            detect_panic_cause("panic_cannot_unwind"),
             Some(PanicCause::CannotUnwind)
         );
         assert_eq!(
-            detect_panic_cause("panic_nounwind", None),
+            detect_panic_cause("panic_nounwind"),
             Some(PanicCause::CannotUnwind)
         );
     }
@@ -677,11 +611,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_formatting() {
         assert_eq!(
-            detect_panic_cause("core::fmt::write", None),
+            detect_panic_cause("core::fmt::write"),
             Some(PanicCause::FormattingError)
         );
         assert_eq!(
-            detect_panic_cause("write_fmt", None),
+            detect_panic_cause("write_fmt"),
             Some(PanicCause::FormattingError)
         );
     }
@@ -689,7 +623,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_capacity_overflow() {
         assert_eq!(
-            detect_panic_cause("capacity_overflow", None),
+            detect_panic_cause("capacity_overflow"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -697,7 +631,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_out_of_memory() {
         assert_eq!(
-            detect_panic_cause("handle_alloc_error", None),
+            detect_panic_cause("handle_alloc_error"),
             Some(PanicCause::OutOfMemory)
         );
     }
@@ -705,11 +639,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_string_slice_error() {
         assert_eq!(
-            detect_panic_cause("slice_error_fail", None),
+            detect_panic_cause("slice_error_fail"),
             Some(PanicCause::StringSliceError)
         );
         assert_eq!(
-            detect_panic_cause("str_index_overflow_fail", None),
+            detect_panic_cause("str_index_overflow_fail"),
             Some(PanicCause::StringSliceError)
         );
     }
@@ -717,23 +651,24 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_index_bounds() {
         assert_eq!(
-            detect_panic_cause("index<T, usize>", None),
+            detect_panic_cause("index<T, usize>"),
             Some(PanicCause::BoundsCheck)
         );
         assert_eq!(
-            detect_panic_cause("Index::index", None),
+            detect_panic_cause("Index::index"),
             Some(PanicCause::BoundsCheck)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_index_string() {
+        // Fully qualified demangled names contain both Index trait pattern and "str::"
         assert_eq!(
-            detect_panic_cause("index<Range>", Some("/library/core/src/str/mod.rs")),
+            detect_panic_cause("core::str::traits::<impl Index<I> for str>::index"),
             Some(PanicCause::StringSliceError)
         );
         assert_eq!(
-            detect_panic_cause("str::index<Range>", None),
+            detect_panic_cause("str::index<Range>"),
             Some(PanicCause::StringSliceError)
         );
     }
@@ -741,7 +676,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_invalid_enum() {
         assert_eq!(
-            detect_panic_cause("panic_invalid_enum_construction", None),
+            detect_panic_cause("panic_invalid_enum_construction"),
             Some(PanicCause::InvalidEnum)
         );
     }
@@ -749,7 +684,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_misaligned_pointer() {
         assert_eq!(
-            detect_panic_cause("panic_misaligned_pointer_dereference", None),
+            detect_panic_cause("panic_misaligned_pointer_dereference"),
             Some(PanicCause::MisalignedPointer)
         );
     }
@@ -757,18 +692,15 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_hashbrown_raw() {
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::TableLayout::calculate_layout_for", None),
+            detect_panic_cause("hashbrown::raw::TableLayout::calculate_layout_for"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause(
-                "hashbrown::raw::RawTableInner::fallible_with_capacity",
-                None
-            ),
+            detect_panic_cause("hashbrown::raw::RawTableInner::fallible_with_capacity"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::RawTableInner::new_uninitialized", None),
+            detect_panic_cause("hashbrown::raw::RawTableInner::new_uninitialized"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -776,17 +708,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_std_collections_hash() {
         assert_eq!(
-            detect_panic_cause(
-                "std::collections::hash::map::HashMap<K,V>::new",
-                Some("/rustc/abc/library/std/src/collections/hash/map.rs")
-            ),
+            detect_panic_cause("std::collections::hash::map::HashMap<K,V>::new"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause(
-                "std::collections::hash::set::HashSet<T>::with_capacity",
-                Some("/rustc/abc/library/std/src/collections/hash/set.rs")
-            ),
+            detect_panic_cause("std::collections::hash::set::HashSet<T>::with_capacity"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -794,24 +720,24 @@ mod tests {
     #[test]
     fn test_detect_hashbrown_specific_causes_take_priority() {
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::Fallibility::capacity_overflow", None),
+            detect_panic_cause("hashbrown::raw::Fallibility::capacity_overflow"),
             Some(PanicCause::CapacityOverflow)
         );
         assert_eq!(
-            detect_panic_cause("hashbrown::raw::Fallibility::alloc_err", None),
+            detect_panic_cause("hashbrown::raw::Fallibility::alloc_err"),
             Some(PanicCause::OutOfMemory)
         );
     }
 
     #[test]
     fn test_detect_panic_cause_unknown() {
-        assert_eq!(detect_panic_cause("some_random_function", None), None);
+        assert_eq!(detect_panic_cause("some_random_function"), None);
     }
 
     #[test]
     fn test_detect_panic_cause_unreachable() {
         assert_eq!(
-            detect_panic_cause("unreachable_panic_handler", None),
+            detect_panic_cause("unreachable_panic_handler"),
             Some(PanicCause::Unreachable)
         );
     }
@@ -819,7 +745,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_raw_vec_grow() {
         assert_eq!(
-            detect_panic_cause("raw_vec::grow", None),
+            detect_panic_cause("raw_vec::grow"),
             Some(PanicCause::CapacityOverflow)
         );
     }
@@ -827,11 +753,11 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_display_fmt() {
         assert_eq!(
-            detect_panic_cause("Display::fmt", None),
+            detect_panic_cause("Display::fmt"),
             Some(PanicCause::FormattingError)
         );
         assert_eq!(
-            detect_panic_cause("Debug::fmt", None),
+            detect_panic_cause("Debug::fmt"),
             Some(PanicCause::FormattingError)
         );
     }
@@ -839,19 +765,16 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_async_fn_resumed() {
         assert_eq!(
-            detect_panic_cause("panic_const_async_fn_resumed", None),
+            detect_panic_cause("panic_const_async_fn_resumed"),
             Some(PanicCause::AsyncFnResumed)
         );
         assert_eq!(
-            detect_panic_cause(
-                "core::panicking::panic_const::panic_const_async_fn_resumed",
-                None
-            ),
+            detect_panic_cause("core::panicking::panic_const::panic_const_async_fn_resumed"),
             Some(PanicCause::AsyncFnResumed)
         );
         // Also matches the "panic" variant
         assert_eq!(
-            detect_panic_cause("panic_const_async_fn_resumed_panic", None),
+            detect_panic_cause("panic_const_async_fn_resumed_panic"),
             Some(PanicCause::AsyncFnResumed)
         );
     }

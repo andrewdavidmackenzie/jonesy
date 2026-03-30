@@ -493,9 +493,7 @@ pub fn analyze_archive(
             let mut causes = std::collections::HashSet::new();
             // Detect panic cause from the panic symbol being called (target),
             // not from the user's function name (caller.name)
-            if let Some(cause) =
-                crate::heuristics::detect_panic_cause(&caller.target, Some(&caller.file))
-            {
+            if let Some(cause) = crate::heuristics::detect_panic_cause(&caller.target) {
                 causes.insert(cause);
             }
             CrateCodePoint {

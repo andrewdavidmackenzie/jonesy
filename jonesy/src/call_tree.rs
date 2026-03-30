@@ -426,8 +426,8 @@ pub fn collect_crate_relationships(
     immediate_callee: Option<&str>, // Name of function this node calls (toward panic)
     valid_files: Option<&ValidSourceFiles>,
 ) {
-    // Try to detect panic cause from this node's function name and file path
-    let detected_cause = detect_panic_cause(&node.name, node.file.as_deref()).or(current_cause);
+    // Try to detect panic cause from this node's function name
+    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
 
     // Check if file matches any of the patterns
     let file_matches = node

@@ -404,29 +404,20 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn bench_detect_panic_cause(c: &mut Criterion) {
     let test_funcs = vec![
-        (
-            "core::option::Option<T>::unwrap",
-            Some("/rustc/xyz/library/core/src/option.rs"),
-        ),
-        (
-            "core::result::Result<T,E>::expect",
-            Some("/rustc/xyz/library/core/src/result.rs"),
-        ),
-        ("std::panicking::begin_panic", None),
-        (
-            "alloc::vec::Vec<T>::index",
-            Some("/rustc/xyz/library/alloc/src/vec/mod.rs"),
-        ),
-        ("core::panicking::panic_bounds_check", None),
-        ("myapp::process_data", Some("src/lib.rs")),
-        ("core::slice::index::slice_index_fail", None),
+        "core::option::Option<T>::unwrap",
+        "core::result::Result<T,E>::expect",
+        "std::panicking::begin_panic",
+        "alloc::vec::Vec<T>::index",
+        "core::panicking::panic_bounds_check",
+        "myapp::process_data",
+        "core::slice::index::slice_index_fail",
     ];
 
     c.bench_function("detect_panic_cause", |b| {
         b.iter(|| {
             for _ in 0..100 {
-                for (func, file) in &test_funcs {
-                    black_box(detect_panic_cause(func, *file));
+                for func in &test_funcs {
+                    black_box(detect_panic_cause(func));
                 }
             }
         })
