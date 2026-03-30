@@ -95,9 +95,6 @@ pub fn build_call_tree_parallel_filtered(
         .collect()
 }
 
-/// Sequential version for recursion within parallel branches.
-/// Filters during construction to avoid creating nodes that would be pruned.
-/// Sequential version with early filtering during construction.
 /// Sequential version with early filtering during construction.
 pub fn build_call_tree_sequential_filtered(
     call_graph: &CallGraph<'_>,
