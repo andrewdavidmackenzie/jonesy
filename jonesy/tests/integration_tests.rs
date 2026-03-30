@@ -1648,3 +1648,50 @@ fn test_called_function_allow_distinguishes_modules() {
         "Config rule should NOT remove 'expect' from main.rs:98 (module2::cause_expect_none)"
     );
 }
+
+/// Test that async functions are detected as panic points (issue #165).
+///
+/// Every async function has a poll-after-completion check that panics with
+/// `panic_const_async_fn_resumed`. Jonesy should detect this as a real panic cause,
+/// not filter it out.
+///
+/// Also verifies that `// jonesy:allow(*)` suppresses the async panic detection.
+#[test]
+fn test_async_fn_resumed_detection() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("panic");
+
+    // Run jonesy with --bin pointing at the workspace-built binary
+    // (async closures are only properly detected with workspace-level paths)
+    let binary_path = workspace_root.join("target").join("debug").join("panic");
+    let stdout = run_jonesy_raw_output(
+        &example_dir,
+        &["--no-hyperlinks", "--bin", binary_path.to_str().unwrap()],
+    );
+
+    // The async function `cause_async_fn_resumed` should be detected with JP024
+    let has_async_detection = stdout.lines().any(|line| {
+        line.contains("JP024") && line.contains("async function polled after completion")
+    });
+
+    assert!(
+        has_async_detection,
+        "Async function should be detected with JP024 (async function polled after completion).\nOutput:\n{}",
+        stdout
+    );
+
+    // The allowed async function `cause_async_fn_resumed_allowed` should NOT be detected
+    // It has `// jonesy:allow(*)` which suppresses all causes
+    let has_allowed_detection = stdout.lines().any(|line| {
+        line.contains("cause_async_fn_resumed_allowed")
+            || line.contains("module/mod.rs:355")
+            || line.contains("module/mod.rs:356")
+    });
+
+    assert!(
+        !has_allowed_detection,
+        "Allowed async function should NOT be detected (has jonesy:allow(*)).\nOutput:\n{}",
+        stdout
+    );
+}

@@ -64,7 +64,6 @@ Last updated: 2026-03-25
 | Scoped function rules  | Allow/deny by function pattern      | —                         | `test_scoped_rule_function_matching`, `test_function_rule_more_specific_than_path`              |
 | Inline allow comments  | `// jonesy:allow(cause)`            | —                         | `test_parse_single_cause`, `test_parse_multiple_causes`, `test_check_inline_allow_with_file`    |
 | Wildcard allow (`*`)   | Allow all causes                    | —                         | `test_parse_wildcard`, `test_check_inline_allow_wildcard`, `test_is_allowed_by_inline_wildcard` |
-| `filter_phantom_async` | Filter phantom async panics         | —                         | `test_filter_phantom_async_default_true`, `test_filter_phantom_async_can_be_disabled`           |
 
 ### 7. Panic Cause Detection
 
@@ -92,6 +91,8 @@ Last updated: 2026-03-25
 | JP020 | `str_slice`      | String/slice error        | `test_panic_example`           | `test_detect_panic_cause_string_slice_error`, `test_detect_panic_cause_index_string` |
 | JP021 | `invalid_enum`   | Invalid enum discriminant | `test_panic_example`           | `test_detect_panic_cause_invalid_enum`                                               |
 | JP022 | `misaligned_ptr` | Misaligned pointer        | `test_panic_example`           | `test_detect_panic_cause_misaligned_pointer`                                         |
+| JP023 | `key_not_found`  | Key not found in map      | `test_panic_example`           | —                                                                                    |
+| JP024 | `async_resumed`  | Async fn polled after done| `test_async_fn_resumed_detection` | `test_detect_panic_cause_async_fn_resumed`, `test_async_fn_resumed_is_panic_triggering` |
 | —     | `div_zero`       | Division by zero          | `test_panic_example`           | `test_detect_panic_cause_division_by_zero`                                           |
 | —     | `unknown`        | Unknown cause             | —                              | `test_detect_panic_cause_unknown`                                                    |
 
@@ -179,7 +180,6 @@ These features have unit test coverage but no end-to-end integration tests:
 |-------------------------------|---------------------------------------------------------------------------------|
 | HTML output format            | `test_generate_html_output_*`                                                   |
 | `--summary-only` flag         | `test_write_text_output_summary_only`, `test_generate_json_output_summary_only` |
-| `filter_phantom_async` config | `test_filter_phantom_async_*`                                                   |
 | Function-scoped rules         | `test_scoped_rule_function_matching`, `test_function_rule_more_specific_than_path` |
 | `drop` panic (JP015)          | `test_detect_panic_cause_panic_in_cleanup`                                      |
 | `unwind` panic (JP016)        | `test_detect_panic_cause_panic_cannot_unwind`                                   |

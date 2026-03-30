@@ -345,3 +345,32 @@ pub fn cause_hashset_capacity_overflow() {
     // let mut set = HashSet::new();
     // if set.try_reserve(n).is_ok() { ... }
 }
+
+/// Empty async function — the compiler generates a poll-after-completion check
+/// that panics with `panic_const_async_fn_resumed` if polled after returning Ready.
+async fn cause_async_fn_resumed() {}
+
+/// Same as above but allowed via inline comment
+// jonesy:allow(*)
+async fn cause_async_fn_resumed_allowed() {}
+
+/// Polls async futures to ensure the compiler generates the state machine code.
+/// Without actually polling, the compiler eliminates the poll implementation entirely.
+#[inline(never)]
+pub fn poll_async_fn() {
+    use std::future::Future;
+    use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+    fn no_op(_: *const ()) {}
+    fn clone(p: *const ()) -> RawWaker {
+        RawWaker::new(p, &VTABLE)
+    }
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+    let mut cx = Context::from_waker(&waker);
+
+    let mut f1 = std::pin::pin!(cause_async_fn_resumed());
+    let _ = f1.as_mut().poll(&mut cx);
+
+    let mut f2 = std::pin::pin!(cause_async_fn_resumed_allowed());
+    let _ = f2.as_mut().poll(&mut cx);
+}
