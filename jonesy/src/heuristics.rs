@@ -195,38 +195,6 @@ pub fn is_stdlib_function(name: &str) -> bool {
         || name.contains("::alloc::")
 }
 
-/// Paths in DWARF that indicate standard library source code.
-///
-/// Used to identify when a file path points to Rust standard library source.
-///
-/// These cover both the modern Rust source layout (`/library/core/src/`) and
-/// the legacy layout (`/src/libcore/`).
-pub const STDLIB_SOURCE_PREFIXES: &[&str] = &[
-    "/rustc/",
-    // Modern layout (absolute)
-    "/library/core/src/",
-    "/library/std/src/",
-    "/library/alloc/src/",
-    // Modern layout (relative — DWARF sometimes omits leading slash)
-    "library/core/src/",
-    "library/std/src/",
-    "library/alloc/src/",
-    // Legacy layout
-    "/src/libstd/",
-    "/src/libcore/",
-    "/src/liballoc/",
-];
-
-/// Check if a file path points to standard library source code.
-///
-/// This is a narrower check than [`is_dependency_path`] — it specifically
-/// identifies Rust stdlib source files, not all dependencies.
-pub fn is_stdlib_source(file_path: &str) -> bool {
-    STDLIB_SOURCE_PREFIXES
-        .iter()
-        .any(|prefix| file_path.contains(prefix))
-}
-
 // ---------------------------------------------------------------------------
 // Direct vs. indirect panic classification
 // ---------------------------------------------------------------------------
@@ -595,24 +563,6 @@ mod tests {
     fn test_user_function_not_triggering() {
         assert!(!is_panic_triggering_function("my_function"));
         assert!(!is_panic_triggering_function("process_data"));
-    }
-
-    // -- is_stdlib_source tests --
-
-    #[test]
-    fn test_stdlib_source_paths() {
-        assert!(is_stdlib_source("/rustc/abc123/library/core/src/option.rs"));
-        assert!(is_stdlib_source("/library/core/src/panicking.rs"));
-        assert!(is_stdlib_source("/library/std/src/io/mod.rs"));
-        // Relative paths (DWARF sometimes omits leading slash)
-        assert!(is_stdlib_source("library/core/src/panicking.rs"));
-        assert!(is_stdlib_source("library/std/src/io/mod.rs"));
-        assert!(is_stdlib_source("library/alloc/src/vec/mod.rs"));
-        // User code and dependencies should not match
-        assert!(!is_stdlib_source("src/main.rs"));
-        assert!(!is_stdlib_source(
-            "/Users/user/.cargo/registry/src/serde/lib.rs"
-        ));
     }
 
     // -- pattern constant tests --
