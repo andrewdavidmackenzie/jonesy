@@ -463,6 +463,89 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    // ========================================================================
+    // Tests for find_dsym
+    // ========================================================================
+
+    #[test]
+    fn test_find_dsym_with_existing_dsym() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_find_dsym_exists");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let binary_path = temp_dir.join("my_binary");
+        fs::write(&binary_path, "fake binary").unwrap();
+
+        // Create the dSYM bundle structure
+        let dwarf_dir = temp_dir
+            .join("my_binary.dSYM")
+            .join("Contents")
+            .join("Resources")
+            .join("DWARF");
+        fs::create_dir_all(&dwarf_dir).unwrap();
+        let dwarf_file = dwarf_dir.join("my_binary");
+        fs::write(&dwarf_file, "fake dwarf").unwrap();
+
+        let result = find_dsym(&binary_path);
+        assert_eq!(result, Some(dwarf_file));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_dsym_no_dsym_bundle() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_find_dsym_none");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let binary_path = temp_dir.join("my_binary");
+        fs::write(&binary_path, "fake binary").unwrap();
+
+        assert_eq!(find_dsym(&binary_path), None);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_dsym_bundle_exists_but_no_dwarf_file() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_find_dsym_empty");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let binary_path = temp_dir.join("my_binary");
+        fs::write(&binary_path, "fake binary").unwrap();
+
+        // Create bundle dir but no DWARF file inside
+        let dwarf_dir = temp_dir
+            .join("my_binary.dSYM")
+            .join("Contents")
+            .join("Resources")
+            .join("DWARF");
+        fs::create_dir_all(&dwarf_dir).unwrap();
+
+        assert_eq!(find_dsym(&binary_path), None);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ========================================================================
+    // Tests for DebugInfo enum
+    // ========================================================================
+
+    #[test]
+    fn test_debug_info_embedded_has_no_debug_macho() {
+        let di = DebugInfo::Embedded;
+        assert!(di.debug_macho().is_none());
+        assert!(di.debug_buffer().is_none());
+    }
+
+    #[test]
+    fn test_debug_info_none_has_no_debug_macho() {
+        let di = DebugInfo::None;
+        assert!(di.debug_macho().is_none());
+        assert!(di.debug_buffer().is_none());
+    }
+
     #[test]
     fn test_is_dsym_stale_dsym_not_found() {
         use std::fs;
