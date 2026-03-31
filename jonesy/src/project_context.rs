@@ -16,8 +16,8 @@ use std::path::Path;
 pub struct ProjectContext {
     /// Absolute path prefixes for source directories (e.g., "/Users/me/project/src/")
     source_prefixes: Vec<String>,
-    /// Project root path, used to resolve relative DWARF paths to absolute
-    project_root: Option<String>,
+    /// Project root path (with trailing /), used to resolve relative DWARF paths
+    project_root: String,
 }
 
 impl ProjectContext {
@@ -67,11 +67,13 @@ impl ProjectContext {
         source_prefixes.sort();
         source_prefixes.dedup();
 
-        let root_str = project_root.to_str().map(|s| format!("{}/", s));
+        let root_str = project_root
+            .to_str()
+            .ok_or_else(|| format!("Non-UTF8 project root: {}", project_root.display()))?;
 
         Ok(Self {
             source_prefixes,
-            project_root: root_str,
+            project_root: format!("{}/", root_str),
         })
     }
 
@@ -139,19 +141,11 @@ impl ProjectContext {
                 .any(|prefix| file_path.starts_with(prefix.as_str()));
         }
 
-        if let Some(root) = &self.project_root {
-            let absolute = format!("{}{}", root, file_path);
-            if self
-                .source_prefixes
-                .iter()
-                .any(|prefix| absolute.starts_with(prefix.as_str()))
-            {
-                let path = std::path::Path::new(&absolute);
-                return path.exists();
-            }
-        }
-
-        false
+        let absolute = format!("{}{}", self.project_root, file_path);
+        self.source_prefixes
+            .iter()
+            .any(|prefix| absolute.starts_with(prefix.as_str()))
+            && std::path::Path::new(&absolute).exists()
     }
 }
 
@@ -163,7 +157,7 @@ mod tests {
     fn test_absolute_path_matching() {
         let ctx = ProjectContext {
             source_prefixes: vec!["/Users/me/project/src/".to_string()],
-            project_root: Some("/Users/me/project/".to_string()),
+            project_root: "/Users/me/project/".to_string(),
         };
 
         assert!(ctx.is_crate_source("/Users/me/project/src/main.rs"));
@@ -184,7 +178,7 @@ mod tests {
                 "/Users/me/workspace/crate_a/src/".to_string(),
                 "/Users/me/workspace/crate_b/src/".to_string(),
             ],
-            project_root: Some("/Users/me/workspace/".to_string()),
+            project_root: "/Users/me/workspace/".to_string(),
         };
 
         assert!(ctx.is_crate_source("/Users/me/workspace/crate_a/src/lib.rs"));
@@ -197,7 +191,7 @@ mod tests {
         let project_root = env!("CARGO_MANIFEST_DIR");
         let ctx = ProjectContext {
             source_prefixes: vec![format!("{}/src/", project_root)],
-            project_root: Some(format!("{}/", project_root)),
+            project_root: format!("{}/", project_root),
         };
 
         assert!(ctx.is_crate_source("src/lib.rs"));
@@ -209,7 +203,7 @@ mod tests {
     fn test_dependency_with_same_relative_path() {
         let ctx = ProjectContext {
             source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
-            project_root: Some("/Users/me/meshchat/".to_string()),
+            project_root: "/Users/me/meshchat/".to_string(),
         };
 
         assert!(ctx.is_crate_source("/Users/me/meshchat/src/device.rs"));
@@ -222,7 +216,7 @@ mod tests {
     fn test_absolute_path_from_comp_dir() {
         let ctx = ProjectContext {
             source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
-            project_root: Some("/Users/me/meshchat/".to_string()),
+            project_root: "/Users/me/meshchat/".to_string(),
         };
 
         let metal_device_rs =
