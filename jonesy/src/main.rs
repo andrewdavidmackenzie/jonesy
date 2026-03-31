@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Create unified analysis result
+    // Create the unified analysis result
     let result = AnalysisResult::new(
         project_name.unwrap_or_else(|| "unknown".to_string()),
         project_root_path.unwrap_or_else(|| ".".to_string()),
@@ -251,7 +251,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         }
 
         // Load configuration once for this member crate (same for all binaries)
-        // If user explicitly provided --config, fail fast on errors
+        // If the user explicitly provided --config, fail fast on errors
         let config = match Config::load_for_project(&member.path, args.config_path.as_deref()) {
             Ok(c) => c,
             Err(e) if args.config_path.is_some() => {
@@ -297,7 +297,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     )
                     .ok()?,
                     SymbolTable::MachO(Fat(_)) => {
-                        return None; // FAT binaries not supported
+                        return None; // FAT binaries are not supported
                     }
                     SymbolTable::Archive(archive) => analyze_archive(
                         archive,
