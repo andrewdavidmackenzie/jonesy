@@ -14,25 +14,6 @@ use jonesy::cargo::{
 };
 use std::collections::HashSet;
 
-/// Merge code points from an analysis result into an accumulator, deduplicating by (file, line).
-/// When a duplicate is found, causes are merged into the existing entry.
-fn merge_code_points(
-    result: &mut BinaryAnalysisResult,
-    seen: &mut HashSet<(String, u32)>,
-    accumulator: &mut Vec<CrateCodePoint>,
-) {
-    for point in result.code_points.drain(..) {
-        let key = (point.file.clone(), point.line);
-        if seen.insert(key) {
-            accumulator.push(point);
-        } else if let Some(existing) = accumulator
-            .iter_mut()
-            .find(|p| p.file == point.file && p.line == point.line)
-        {
-            existing.causes.extend(point.causes);
-        }
-    }
-}
 use jonesy::config::Config;
 use jonesy::lsp;
 use jonesy::output::html::{generate_html_output, generate_workspace_html_output};
@@ -71,6 +52,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         analyze_workspace(workspace_members, &parsed_args)
     } else {
         analyze_package(&parsed_args)
+    }
+}
+
+/// Merge code points from an analysis result into an accumulator, deduplicating by (file, line).
+/// When a duplicate is found, causes are merged into the existing entry.
+fn merge_code_points(
+    result: &mut BinaryAnalysisResult,
+    seen: &mut HashSet<(String, u32)>,
+    accumulator: &mut Vec<CrateCodePoint>,
+) {
+    for point in result.code_points.drain(..) {
+        let key = (point.file.clone(), point.line);
+        if seen.insert(key) {
+            accumulator.push(point);
+        } else if let Some(existing) = accumulator
+            .iter_mut()
+            .find(|p| p.file == point.file && p.line == point.line)
+        {
+            existing.causes.extend(point.causes);
+        }
     }
 }
 
@@ -240,7 +241,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 .iter()
                 .filter_map(|binary_path| derive_crate_src_path(binary_path))
         })
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>()
         .join("|");
