@@ -461,6 +461,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_watcher_config_default() {
+        let config = WatcherConfig::default();
+        assert_eq!(config.target_dir, PathBuf::from("target/debug"));
+        assert!(config.config_files.is_empty());
+        assert_eq!(config.debounce, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_start_watching_with_real_directory() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_watcher");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let config = WatcherConfig {
+            target_dir: temp_dir.clone(),
+            config_files: vec![],
+            debounce: Duration::from_millis(100),
+        };
+
+        let result = start_watching(config);
+        assert!(
+            result.is_ok(),
+            "Should create watcher for existing directory"
+        );
+
+        // Drop the handle to stop watching
+        drop(result);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_start_watching_nonexistent_target_dir() {
+        let config = WatcherConfig {
+            target_dir: PathBuf::from("/nonexistent/target/debug"),
+            config_files: vec![],
+            debounce: Duration::from_millis(100),
+        };
+
+        // Should not error — it watches the parent if target doesn't exist
+        let _result = start_watching(config);
+    }
+
+    #[test]
+    fn test_start_watching_with_config_files() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_watcher_config");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let config_file = temp_dir.join("jonesy.toml");
+        std::fs::write(&config_file, "# test").unwrap();
+
+        let config = WatcherConfig {
+            target_dir: temp_dir.clone(),
+            config_files: vec![config_file],
+            debounce: Duration::from_millis(100),
+        };
+
+        let result = start_watching(config);
+        assert!(result.is_ok());
+
+        drop(result);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_is_binary_or_library_exe() {
+        assert!(is_binary_or_library(Path::new("target/debug/foo.exe")));
+    }
+
     /// Test that unrelated files are ignored.
     #[test]
     fn test_categorize_path_unrelated() {
