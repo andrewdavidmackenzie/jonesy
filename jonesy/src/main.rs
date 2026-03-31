@@ -12,6 +12,27 @@ use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use jonesy::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
+use std::collections::HashSet;
+
+/// Merge code points from an analysis result into an accumulator, deduplicating by (file, line).
+/// When a duplicate is found, causes are merged into the existing entry.
+fn merge_code_points(
+    result: &mut BinaryAnalysisResult,
+    seen: &mut HashSet<(String, u32)>,
+    accumulator: &mut Vec<CrateCodePoint>,
+) {
+    for point in result.code_points.drain(..) {
+        let key = (point.file.clone(), point.line);
+        if seen.insert(key) {
+            accumulator.push(point);
+        } else if let Some(existing) = accumulator
+            .iter_mut()
+            .find(|p| p.file == point.file && p.line == point.line)
+        {
+            existing.causes.extend(point.causes);
+        }
+    }
+}
 use jonesy::config::Config;
 use jonesy::lsp;
 use jonesy::output::html::{generate_html_output, generate_workspace_html_output};
@@ -50,8 +71,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(ref workspace_members) = parsed_args.workspace_members {
         return analyze_workspace(workspace_members, &parsed_args);
     }
-
-    use std::collections::HashSet;
 
     let mut total_summary = AnalysisSummary::default();
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
@@ -122,7 +141,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         match &symbols {
             SymbolTable::MachO(Binary(_)) => {
                 let crate_src_path = derive_crate_src_path(&binary_path);
-                let result = analyze_macho(
+                let mut result = analyze_macho(
                     &symbols,
                     &binary_buffer,
                     &binary_path,
@@ -132,18 +151,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &parsed_args.output,
                 )?;
                 total_summary.add(&result.summary);
-                // Deduplicate code points across binaries, merging causes
-                for point in result.code_points {
-                    let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
-                        all_code_points.push(point);
-                    } else if let Some(existing) = all_code_points
-                        .iter_mut()
-                        .find(|p| p.file == point.file && p.line == point.line)
-                    {
-                        existing.causes.extend(point.causes);
-                    }
-                }
+                merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
             }
             SymbolTable::MachO(Fat(multi_arch)) => {
                 if !parsed_args.output.is_summary_only() {
@@ -153,7 +161,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SymbolTable::Archive(archive) => {
                 // Use relocation-based analysis for library archives
                 let crate_src_path = derive_crate_src_path(&binary_path);
-                let result = analyze_archive(
+                let mut result = analyze_archive(
                     archive,
                     &binary_buffer,
                     &binary_path,
@@ -163,18 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     &parsed_args.output,
                 )?;
                 total_summary.add(&result.summary);
-                // Deduplicate code points across binaries, merging causes
-                for point in result.code_points {
-                    let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
-                        all_code_points.push(point);
-                    } else if let Some(existing) = all_code_points
-                        .iter_mut()
-                        .find(|p| p.file == point.file && p.line == point.line)
-                    {
-                        existing.causes.extend(point.causes);
-                    }
-                }
+                merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
             }
         }
 
@@ -317,26 +314,14 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         // Merge results sequentially
         let mut member_summary = AnalysisSummary::default();
         let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
-        let mut seen_code_points: std::collections::HashSet<(String, u32)> =
-            std::collections::HashSet::new();
+        let mut seen_code_points: HashSet<(String, u32)> = HashSet::new();
 
-        for (binary_path, result) in binary_results {
+        for (binary_path, mut result) in binary_results {
             if args.output.show_progress() {
                 println!("Processed {}", binary_path.display());
             }
             member_summary.add(&result.summary);
-            // Collect code points with deduplication, merging causes
-            for point in result.code_points {
-                let key = (point.file.clone(), point.line);
-                if seen_code_points.insert(key) {
-                    member_code_points.push(point);
-                } else if let Some(existing) = member_code_points
-                    .iter_mut()
-                    .find(|p| p.file == point.file && p.line == point.line)
-                {
-                    existing.causes.extend(point.causes);
-                }
-            }
+            merge_code_points(&mut result, &mut seen_code_points, &mut member_code_points);
         }
 
         // For text output, print immediately; for JSON/HTML, collect for later
