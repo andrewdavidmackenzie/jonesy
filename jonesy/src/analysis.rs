@@ -111,6 +111,35 @@ struct PanicCaller {
     target: String,
 }
 
+/// Find panic and abort entry point addresses in the binary's symbol table.
+/// Returns (mangled_name, demangled_name, address) for each entry point.
+fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
+    let mut entry_points = Vec::new();
+
+    // Find panic entry point (first match from PANIC_SYMBOL_PATTERNS)
+    for pattern in PANIC_SYMBOL_PATTERNS {
+        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
+            && let Some(addr) = symbols.find_symbol_address(&sym)
+        {
+            entry_points.push((sym, dem, addr));
+            break; // Only need one panic entry point
+        }
+    }
+
+    // Find abort entry points
+    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(ABORT_SYMBOL_PATTERNS) {
+        for (sym, dem) in abort_symbols {
+            if let Some(addr) = symbols.find_symbol_address(&sym) {
+                if !entry_points.iter().any(|(_, _, a)| *a == addr) {
+                    entry_points.push((sym, dem, addr));
+                }
+            }
+        }
+    }
+
+    entry_points
+}
+
 /// Analyze a single MachO binary/object for panic points.
 /// Returns a summary of panic code points found, plus code points.
 pub fn analyze_macho(
@@ -137,30 +166,7 @@ pub fn analyze_macho(
     }
     let step_start = show_timings.then(Instant::now);
 
-    // Collect all entry points with their addresses
-    let mut entry_points: Vec<(String, String, u64)> = Vec::new(); // (mangled, demangled, addr)
-
-    // Find panic entry points (first match from PANIC_SYMBOL_PATTERNS)
-    for pattern in PANIC_SYMBOL_PATTERNS {
-        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
-            && let Some(addr) = symbols.find_symbol_address(&sym)
-        {
-            entry_points.push((sym, dem, addr));
-            break; // Only need one panic entry point
-        }
-    }
-
-    // Find abort entry points
-    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(ABORT_SYMBOL_PATTERNS) {
-        for (sym, dem) in abort_symbols {
-            if let Some(addr) = symbols.find_symbol_address(&sym) {
-                // Avoid duplicates
-                if !entry_points.iter().any(|(_, _, a)| *a == addr) {
-                    entry_points.push((sym, dem, addr));
-                }
-            }
-        }
-    }
+    let entry_points = find_entry_points(symbols);
 
     if let Some(step_start) = step_start {
         eprintln!("  [timing] Find entry points: {:?}", step_start.elapsed());
@@ -171,7 +177,7 @@ pub fn analyze_macho(
         return Ok(BinaryAnalysisResult::new());
     }
 
-    if show_progress && entry_points.len() > 1 {
+    if show_progress {
         eprintln!(
             "  Found {} entry points (panic + abort)",
             entry_points.len()
