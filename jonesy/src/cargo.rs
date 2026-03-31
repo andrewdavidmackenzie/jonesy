@@ -27,16 +27,19 @@ pub fn get_project_name(project_root: &Path) -> Option<String> {
 
 /// Find the project root directory for a binary by walking up looking for Cargo.toml.
 /// Returns the directory containing Cargo.toml, or None if not found.
-pub fn find_project_root(binary_path: &Path) -> Option<PathBuf> {
+pub fn find_project_root(binary_path: &Path) -> Result<PathBuf, String> {
     let mut current = binary_path.parent();
     while let Some(dir) = current {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
-            return Some(dir.to_path_buf());
+            return Ok(dir.to_path_buf());
         }
         current = dir.parent();
     }
-    None
+    Err(format!(
+        "Cannot find project root for {}",
+        binary_path.display()
+    ))
 }
 
 /// Try to derive the crate source path from the binary path.
@@ -469,7 +472,7 @@ mod tests {
     #[test]
     fn test_find_project_root_not_found() {
         let result = find_project_root(Path::new("/nonexistent/path/to/binary"));
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -482,7 +485,7 @@ mod tests {
         fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
 
         let result = find_project_root(&binary_path);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap(), temp_dir.path());
     }
 

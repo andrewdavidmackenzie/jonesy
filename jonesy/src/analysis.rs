@@ -124,35 +124,14 @@ pub fn analyze_macho(
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
-) -> BinaryAnalysisResult {
-    // Create SymbolTable for method calls
-    let symbols = match SymbolTable::from(buffer) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error: Failed to create symbol table: {}", e);
-            return BinaryAnalysisResult::empty();
-        }
-    };
+) -> Result<BinaryAnalysisResult, String> {
+    let symbols =
+        SymbolTable::from(buffer).map_err(|e| format!("Failed to create symbol table: {e}"))?;
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 
-    // Build set of valid source files for crate source filtering.
-    // All DWARF paths are absolute, so we need the project root to determine
-    // which files belong to the user's crate.
-    let Some(project_root) = find_project_root(binary_path) else {
-        eprintln!(
-            "Error: Cannot find project root for {}",
-            binary_path.display()
-        );
-        return BinaryAnalysisResult::empty();
-    };
-    let project_context = match ProjectContext::from_project_root(&project_root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return BinaryAnalysisResult::empty();
-        }
-    };
+    let project_root = find_project_root(binary_path)?;
+    let project_context = ProjectContext::from_project_root(&project_root)?;
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -191,7 +170,7 @@ pub fn analyze_macho(
 
     if entry_points.is_empty() {
         // No entry points found in this object
-        return BinaryAnalysisResult::empty();
+        return Ok(BinaryAnalysisResult::empty());
     }
 
     if show_progress && entry_points.len() > 1 {
@@ -337,7 +316,7 @@ pub fn analyze_macho(
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
 
-    final_result
+    Ok(final_result)
 }
 
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
@@ -350,22 +329,9 @@ pub fn analyze_archive(
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
-) -> BinaryAnalysisResult {
-    // Build set of valid source files for crate source filtering.
-    let Some(project_root) = find_project_root(binary_path) else {
-        eprintln!(
-            "Error: Cannot find project root for {}",
-            binary_path.display()
-        );
-        return BinaryAnalysisResult::empty();
-    };
-    let project_context = match ProjectContext::from_project_root(&project_root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return BinaryAnalysisResult::empty();
-        }
-    };
+) -> Result<BinaryAnalysisResult, String> {
+    let project_root = find_project_root(binary_path)?;
+    let project_context = ProjectContext::from_project_root(&project_root)?;
 
     // Helper to check if a file path is within the crate/workspace scope
     let file_in_scope = |file: &str| {
@@ -445,7 +411,7 @@ pub fn analyze_archive(
         if show_progress {
             println!("\nNo call graph data found in archive");
         }
-        return BinaryAnalysisResult::empty();
+        return Ok(BinaryAnalysisResult::empty());
     }
 
     // Find all callers of panic-related functions
@@ -496,7 +462,7 @@ pub fn analyze_archive(
         if show_progress {
             println!("\nNo panics in crate");
         }
-        return BinaryAnalysisResult::empty();
+        return Ok(BinaryAnalysisResult::empty());
     }
 
     // Convert PanicCaller to CrateCodePoint
@@ -592,10 +558,10 @@ pub fn analyze_archive(
         files_affected.insert(point.file.clone());
     }
 
-    BinaryAnalysisResult {
+    Ok(BinaryAnalysisResult {
         summary: AnalysisSummary::from_points(points, files_affected),
         code_points: deduped,
-    }
+    })
 }
 
 #[cfg(test)]

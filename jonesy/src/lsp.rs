@@ -2016,7 +2016,7 @@ fn analyze_single_target(
                 false, // show_timings
                 &config,
                 &output,
-            );
+            )?;
             Ok(result.code_points)
         }
         SymbolTable::MachO(Fat(fat)) => {
@@ -2060,7 +2060,7 @@ fn analyze_single_target(
                         false, // show_timings
                         &config,
                         &output,
-                    );
+                    )?;
                     Ok(result.code_points)
                 }
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
@@ -2075,7 +2075,7 @@ fn analyze_single_target(
                 false, // show_timings
                 &config,
                 &output,
-            );
+            )?;
             Ok(result.code_points)
         }
     }

@@ -677,7 +677,7 @@ fn bench_analyze_macho(c: &mut Criterion) {
                     &config,
                     &output,
                 );
-                black_box(result);
+                black_box(result.ok());
             }
         })
     });

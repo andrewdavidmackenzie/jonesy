@@ -69,35 +69,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Find the project/workspace root from the binary path
-        let project_root = find_project_root(&binary_path);
+        let project_root = find_project_root(&binary_path)?;
 
         // Find the member crate directory for config loading
-        // In workspaces, derive_crate_src_path returns paths like "flowc/src/" or "examples/panic/src/"
-        // We want the crate directory (parent of src/) for config loading
-        let crate_dir = derive_crate_src_path(&binary_path).and_then(|src_path| {
-            // Strip trailing "src/" to get the crate directory
+        let crate_dir = derive_crate_src_path(&binary_path).map(|src_path| {
             let crate_rel = src_path.strip_suffix("src/").unwrap_or(&src_path);
-            project_root
-                .as_ref()
-                .map(|root| root.join(crate_rel.trim_end_matches('/')))
+            project_root.join(crate_rel.trim_end_matches('/'))
         });
 
         // Load configuration: prefer crate-specific config, fall back to workspace root
         let config = if let Some(ref crate_path) = crate_dir
             && crate_path.join("Cargo.toml").exists()
         {
-            // Load from the member crate directory
             Config::load_for_project(crate_path, parsed_args.config_path.as_deref())
-        } else if let Some(ref root) = project_root {
-            // Fall back to workspace/project root
-            Config::load_for_project(root, parsed_args.config_path.as_deref())
         } else {
-            // No project root found - use defaults plus explicit --config only
-            let mut config = Config::with_defaults();
-            if let Some(config_path) = parsed_args.config_path.as_deref() {
-                config.load_from_config_file(config_path)?;
-            }
-            Ok(config)
+            Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
         }
         .unwrap_or_else(|e| {
             eprintln!("Error: {e}");
@@ -125,17 +111,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Capture project info from the first binary processed
         if project_name.is_none() {
             // Prefer project name from Cargo manifest, fall back to the binary filename
-            project_name = project_root
-                .as_ref()
-                .and_then(|root| get_project_name(root))
-                .or_else(|| {
-                    binary_path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                });
-            project_root_path = project_root
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string());
+            project_name = get_project_name(&project_root).or_else(|| {
+                binary_path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+            });
+            project_root_path = Some(project_root.to_string_lossy().to_string());
         }
 
         match symbols {
@@ -149,7 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     parsed_args.show_timings,
                     &config,
                     &parsed_args.output,
-                );
+                )?;
                 total_summary.add(&result.summary);
                 // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
@@ -180,7 +161,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     parsed_args.show_timings,
                     &config,
                     &parsed_args.output,
-                );
+                )?;
                 total_summary.add(&result.summary);
                 // Deduplicate code points across binaries, merging causes
                 for point in result.code_points {
@@ -313,10 +294,10 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         args.show_timings,
                         &config,
                         &args.output,
-                    ),
+                    )
+                    .ok()?,
                     SymbolTable::MachO(Fat(_)) => {
-                        // FAT binaries not fully supported - return empty result
-                        BinaryAnalysisResult::empty()
+                        return None; // FAT binaries not supported
                     }
                     SymbolTable::Archive(archive) => analyze_archive(
                         &archive,
@@ -326,7 +307,8 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         args.show_timings,
                         &config,
                         &args.output,
-                    ),
+                    )
+                    .ok()?,
                 };
                 Some((binary_path, result))
             })
