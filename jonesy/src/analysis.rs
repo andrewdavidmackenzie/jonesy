@@ -334,13 +334,6 @@ pub fn analyze_archive(
     let project_context = ProjectContext::from_project_root(&project_root)?;
 
     // Helper to check if a file path is within the crate/workspace scope
-    let file_in_scope = |file: &str| {
-        crate_src_path.is_none_or(|_| {
-            let file = file.replace('\\', "/");
-            project_context.is_crate_source(&file)
-        })
-    };
-
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 
@@ -437,9 +430,7 @@ pub fn analyze_archive(
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)
-            // Also filter by crate_src_path if provided (for workspace scoping)
             if let Some(file) = dwarf_file
-                && file_in_scope(file)
                 && let Some(line) = caller_info.line
             {
                 panic_callers.insert(PanicCaller {
