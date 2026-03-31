@@ -60,21 +60,8 @@ impl<'a> SymbolTable<'a> {
 
     /// Check if the binary has any DWARF debug sections.
     pub fn has_dwarf_sections(&self) -> bool {
-        let Some(macho) = self.macho() else {
-            return false;
-        };
-        for segment in macho.segments.iter() {
-            if let Ok(sects) = segment.sections() {
-                for (section, _) in sects {
-                    if let Ok(name) = section.name()
-                        && name.starts_with("__debug_")
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        self.macho()
+            .is_some_and(crate::debug_info::has_dwarf_sections)
     }
 
     /// Returns the first symbol found whose name matches the given regex pattern.
