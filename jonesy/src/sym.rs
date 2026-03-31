@@ -1,7 +1,7 @@
 pub use crate::call_graph::{CallGraph, CallerInfo};
 pub use crate::crate_line_table::{CrateLineEntry, CrateLineTable};
 pub use crate::debug_info::load_debug_info;
-pub use crate::debug_info::{DSymInfo, DebugInfo, DebugMapInfo, ObjectFileInfo, find_dsym};
+pub use crate::debug_info::{DSymInfo, DebugInfo, DebugMapInfo, ObjectFileInfo};
 pub use crate::full_line_table::{FullLineEntry, FullLineTable};
 pub(crate) use crate::function_index::resolve_line_file_path;
 pub use crate::function_index::{FunctionIndex, FunctionInfo, get_functions_from_dwarf};
