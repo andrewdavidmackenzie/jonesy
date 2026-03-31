@@ -980,4 +980,113 @@ mod tests {
         let results = scan_branch_instructions(&[], 0x1000);
         assert!(results.is_empty());
     }
+
+    // Tests for parallel_disassemble_arm64
+    #[test]
+    fn test_parallel_disassemble_small_input() {
+        // Small input falls through to sequential scan_branch_instructions
+        let mut code = Vec::new();
+        code.extend_from_slice(&0x94000002_u32.to_le_bytes()); // BL +8
+        code.extend_from_slice(&0x91000000_u32.to_le_bytes()); // ADD (not branch)
+        code.extend_from_slice(&0x14000001_u32.to_le_bytes()); // B +4
+
+        let results = parallel_disassemble_arm64(&code, 0x1000);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].address, 0x1000);
+        assert_eq!(results[1].address, 0x1008);
+    }
+
+    #[test]
+    fn test_parallel_disassemble_empty() {
+        let results = parallel_disassemble_arm64(&[], 0x1000);
+        assert!(results.is_empty());
+    }
+
+    // Tests for sequential_disassemble_arm64
+    #[test]
+    fn test_sequential_disassemble_bl_instruction() {
+        // BL +8 at address 0x1000
+        let code: Vec<u8> = 0x94000002_u32.to_le_bytes().to_vec();
+        let results = sequential_disassemble_arm64(&code, 0x1000);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+        assert!(results[0].call_target.is_some());
+    }
+
+    #[test]
+    fn test_sequential_disassemble_non_branch() {
+        // MOV x0, x1 — not a branch
+        let code: Vec<u8> = 0xAA0103E0_u32.to_le_bytes().to_vec();
+        let results = sequential_disassemble_arm64(&code, 0x1000);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_sequential_disassemble_empty() {
+        let results = sequential_disassemble_arm64(&[], 0x1000);
+        assert!(results.is_empty());
+    }
+
+    // Tests for CallGraph::build using real binary
+    #[test]
+    fn test_call_graph_build_from_real_binary() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(macho) = MachO::parse(&buffer, 0) {
+                let symbol_index = SymbolIndex::new(&macho);
+                let graph = CallGraph::build(&macho, &buffer, symbol_index.as_ref());
+                assert!(graph.is_ok());
+                let graph = graph.unwrap();
+                // A real binary should have many call edges
+                // Just verify it built without panic
+                let _ = graph.get_callers(0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_call_graph_build_no_symbol_index() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(macho) = MachO::parse(&buffer, 0) {
+                // Build without symbol index — should still work but find no callers
+                let graph = CallGraph::build(&macho, &buffer, None);
+                assert!(graph.is_ok());
+            }
+        }
+    }
+
+    // Tests for CallerInfo
+    #[test]
+    fn test_caller_info_construction() {
+        let info = CallerInfo {
+            caller_name: Cow::Owned("my_function".to_string()),
+            caller_start_address: 0x1000,
+            caller_file: Some("src/main.rs".to_string()),
+            call_site_addr: 0x1010,
+            file: Some("src/main.rs".to_string()),
+            line: Some(42),
+            column: Some(5),
+        };
+        assert_eq!(info.caller_start_address, 0x1000);
+        assert_eq!(info.call_site_addr, 0x1010);
+        assert_eq!(info.line, Some(42));
+    }
+
+    #[test]
+    fn test_caller_info_borrowed_name() {
+        let name = "borrowed_function".to_string();
+        let info = CallerInfo {
+            caller_name: Cow::Borrowed(&name),
+            caller_start_address: 0x2000,
+            caller_file: None,
+            call_site_addr: 0x2020,
+            file: None,
+            line: None,
+            column: None,
+        };
+        assert_eq!(&*info.caller_name, "borrowed_function");
+        assert!(info.caller_file.is_none());
+        assert!(info.line.is_none());
+    }
 }
