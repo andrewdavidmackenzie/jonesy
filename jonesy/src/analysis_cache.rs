@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Cache file location within target directory.
+/// Cache file location within the target directory.
 const CACHE_FILE: &str = "jonesy/cache.json";
 
 /// Cached state for a single target (binary or library).
@@ -24,7 +24,7 @@ pub struct TargetState {
     pub path: PathBuf,
     /// Last modification time (as milliseconds since epoch for subsecond precision).
     pub mtime: u128,
-    /// Number of panic points found in last analysis.
+    /// Number of panic points found in the last analysis.
     pub panic_count: usize,
 }
 
@@ -75,7 +75,7 @@ impl AnalysisCache {
             .filter(|cache| cache.version == Self::VERSION)
             .unwrap_or_default();
 
-        // Return with current version
+        // Return with the current version
         Self {
             version: Self::VERSION,
             ..cache
@@ -103,7 +103,7 @@ impl AnalysisCache {
             return true; // Not in cache, needs analysis
         };
 
-        // Check if file has been modified
+        // Check if the file has been modified
         let current_mtime = get_mtime(target_path).unwrap_or(0);
         current_mtime != cached.mtime
     }
@@ -124,7 +124,7 @@ impl AnalysisCache {
     /// Check if a config file has changed.
     pub fn config_changed(&self, config_path: &Path) -> bool {
         let Some(cached) = self.configs.get(config_path) else {
-            return true; // Not in cache
+            return true; // Not in the cache
         };
 
         let current_hash = hash_file_content(config_path).unwrap_or(0);
@@ -322,11 +322,11 @@ pub fn build_workspace_state(workspace_root: &Path) -> WorkspaceState {
     if let Some(workspace) = &manifest.workspace {
         for member in &workspace.members {
             if member.contains('*') {
-                // Expand glob - use path relative to workspace root for uniqueness
+                // Expand glob - use the path relative to the workspace root for uniqueness
                 if let Ok(paths) = glob::glob(&workspace_root.join(member).to_string_lossy()) {
                     for path in paths.flatten() {
                         if path.is_dir() && path.join("Cargo.toml").exists() {
-                            // Use relative path to avoid collisions (crates/foo vs examples/foo)
+                            // Use relative path to avoid collisions (crates/foo vs. examples/foo)
                             if let Ok(rel_path) = path.strip_prefix(workspace_root) {
                                 state.members.push(rel_path.to_string_lossy().to_string());
                             }
@@ -339,7 +339,7 @@ pub fn build_workspace_state(workspace_root: &Path) -> WorkspaceState {
         }
     }
 
-    // Collect targets from root manifest
+    // Collect targets from the root manifest
     collect_targets_from_manifest(&manifest, workspace_root, &mut state);
 
     // Collect targets from workspace members
@@ -468,7 +468,7 @@ mod tests {
                 "crate_c".to_string(), // Added
             ],
             binaries: [
-                ("app".to_string(), PathBuf::from("src/bin/app.rs")), // Changed path
+                ("app".to_string(), PathBuf::from("src/bin/app.rs")), // Changed the path
                 ("cli".to_string(), PathBuf::from("src/bin/cli.rs")), // Added
             ]
             .into_iter()
@@ -668,7 +668,7 @@ mod tests {
         // Default should have version 0
         assert_eq!(cache.version, 0);
 
-        // After loading, version should be set to current
+        // After loading, the version should be set to current
         // (we can't easily test this without filesystem)
     }
 
@@ -691,7 +691,7 @@ mod tests {
         // Same content: no change detected
         assert!(!cache.config_changed(&config_path));
 
-        // Modify the config (e.g., user adds an allow rule via quick fix)
+        // Modify the config (e.g., the user adds an "allow" rule via quick fix)
         fs::write(&config_path, "allow = [\"capacity\"]\ndeny = [\"unwrap\"]").unwrap();
 
         // Should detect the content change
@@ -728,7 +728,7 @@ mod tests {
 
         let cache = AnalysisCache::load(&temp_dir);
 
-        // Should return default with current version
+        // Should return default with the current version
         assert_eq!(cache.version, AnalysisCache::VERSION);
         assert!(cache.targets.is_empty());
         assert!(cache.configs.is_empty());
@@ -796,11 +796,11 @@ mod tests {
         let cache_dir = temp_dir.join("target/jonesy");
         fs::create_dir_all(&cache_dir).unwrap();
 
-        // Write cache with old version
+        // Write cache with the old version
         let old_cache = r#"{"version": 0, "targets": {}, "configs": {}, "workspace": {"members": [], "binaries": {}, "libraries": {}}}"#;
         fs::write(cache_dir.join("cache.json"), old_cache).unwrap();
 
-        // Should return fresh cache since version doesn't match
+        // Should return the fresh cache since the version doesn't match
         let cache = AnalysisCache::load(&temp_dir);
         assert_eq!(cache.version, AnalysisCache::VERSION);
 
