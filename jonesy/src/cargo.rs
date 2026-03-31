@@ -360,47 +360,20 @@ pub fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
     // Convert crate name to lib name (replace - with _)
     let lib_name = name.replace('-', "_");
 
-    // Try platform-specific extensions
-    #[cfg(target_os = "macos")]
-    {
-        let dylib = dir.join(format!("lib{}.dylib", lib_name));
-        if dylib.exists() {
-            return Some(dylib);
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let so = dir.join(format!("lib{}.so", lib_name));
-        if so.exists() {
-            return Some(so);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let dll = dir.join(format!("{}.dll", lib_name));
-        if dll.exists() {
-            return Some(dll);
-        }
+    // Try macOS-specific extensions
+    let dylib = dir.join(format!("lib{}.dylib", lib_name));
+    if dylib.exists() {
+        return Some(dylib);
     }
     // Also try .rlib (Rust static library)
     let rlib = dir.join(format!("lib{}.rlib", lib_name));
     if rlib.exists() {
         return Some(rlib);
     }
-    // Also try staticlib artifacts (.a on Unix, .lib on Windows)
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        let staticlib = dir.join(format!("lib{}.a", lib_name));
-        if staticlib.exists() {
-            return Some(staticlib);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let staticlib = dir.join(format!("{}.lib", lib_name));
-        if staticlib.exists() {
-            return Some(staticlib);
-        }
+    // Also try staticlib artifacts (.a on macOS)
+    let staticlib = dir.join(format!("lib{}.a", lib_name));
+    if staticlib.exists() {
+        return Some(staticlib);
     }
     None
 }
