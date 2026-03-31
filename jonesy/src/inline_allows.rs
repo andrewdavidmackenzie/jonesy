@@ -11,79 +11,19 @@
 //! The comment applies to the line it's on, making it easy to place at the
 //! end of lines with potential panics.
 
-#![allow(dead_code)] // Some functions reserved for future batch scanning use
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-/// Map of (file, line) -> set of allowed cause IDs
-pub type InlineAllows = HashMap<(String, u32), HashSet<String>>;
-
-/// Parse inline allow comments from a source file.
-/// Returns a map of line numbers to allowed cause IDs.
-fn parse_file_allows(content: &str) -> HashMap<u32, HashSet<String>> {
-    let mut allows: HashMap<u32, HashSet<String>> = HashMap::new();
-
-    for (idx, line) in content.lines().enumerate() {
-        let line_num = (idx + 1) as u32;
-
-        // Look for // jonesy:allow(...) pattern
-        if let Some(start) = line.find("// jonesy:allow(") {
-            let rest = &line[start + 16..]; // Skip "// jonesy:allow("
-            if let Some(end) = rest.find(')') {
-                let causes_str = &rest[..end];
-                let causes: HashSet<String> = causes_str
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
-                if !causes.is_empty() {
-                    allows.insert(line_num, causes);
-                }
-            }
-        }
-    }
-
-    allows
-}
-
-/// Scan source files and collect inline allow comments.
-/// Takes a list of file paths to scan.
-pub fn scan_inline_allows(file_paths: &[&str]) -> InlineAllows {
-    let mut all_allows = InlineAllows::new();
-
-    for file_path in file_paths {
-        if let Ok(content) = fs::read_to_string(file_path) {
-            let file_allows = parse_file_allows(&content);
-            for (line, causes) in file_allows {
-                all_allows.insert((file_path.to_string(), line), causes);
-            }
-        }
-    }
-
-    all_allows
-}
-
-/// Scan a single source file for inline allows.
-pub fn scan_file_allows(file_path: &str) -> HashMap<u32, HashSet<String>> {
-    if let Ok(content) = fs::read_to_string(file_path) {
-        parse_file_allows(&content)
-    } else {
-        HashMap::new()
-    }
-}
-
 /// Check if a cause is allowed at a specific file:line by inline comment.
 /// Also checks the previous line (for comments above the code).
-pub fn is_allowed_by_inline(
-    allows: &InlineAllows,
+#[cfg(test)]
+fn is_allowed_by_inline(
+    allows: &std::collections::HashMap<(String, u32), HashSet<String>>,
     file_path: &str,
     line: u32,
     cause_id: &str,
 ) -> bool {
-    // Normalize the file path for matching
     let key = (file_path.to_string(), line);
 
     if let Some(causes) = allows.get(&key) {
@@ -92,7 +32,6 @@ pub fn is_allowed_by_inline(
         }
     }
 
-    // Also check the line above (comment on previous line)
     if line > 1 {
         let prev_key = (file_path.to_string(), line - 1);
         if let Some(causes) = allows.get(&prev_key) {
@@ -103,6 +42,20 @@ pub fn is_allowed_by_inline(
     }
 
     false
+}
+
+/// Parse inline allow comments from source content (test helper).
+#[cfg(test)]
+fn parse_file_allows(content: &str) -> std::collections::HashMap<u32, HashSet<String>> {
+    let mut allows: std::collections::HashMap<u32, HashSet<String>> =
+        std::collections::HashMap::new();
+    for (idx, line) in content.lines().enumerate() {
+        let line_num = (idx + 1) as u32;
+        if let Some(causes) = parse_line_allows(line) {
+            allows.insert(line_num, causes);
+        }
+    }
+    allows
 }
 
 /// Lazily scan and check inline allows for a specific file and line.
@@ -309,7 +262,7 @@ fn foo() {
 
     #[test]
     fn test_is_allowed_by_inline_exact_match() {
-        let mut allows = InlineAllows::new();
+        let mut allows = std::collections::HashMap::new();
         let mut causes = HashSet::new();
         causes.insert("unwrap".to_string());
         allows.insert(("test.rs".to_string(), 10), causes);
@@ -320,7 +273,7 @@ fn foo() {
 
     #[test]
     fn test_is_allowed_by_inline_wildcard() {
-        let mut allows = InlineAllows::new();
+        let mut allows = std::collections::HashMap::new();
         let mut causes = HashSet::new();
         causes.insert("*".to_string());
         allows.insert(("test.rs".to_string(), 10), causes);
@@ -332,7 +285,7 @@ fn foo() {
 
     #[test]
     fn test_is_allowed_by_inline_previous_line() {
-        let mut allows = InlineAllows::new();
+        let mut allows = std::collections::HashMap::new();
         let mut causes = HashSet::new();
         causes.insert("unwrap".to_string());
         // Comment on line 9
@@ -346,66 +299,19 @@ fn foo() {
 
     #[test]
     fn test_is_allowed_by_inline_no_match() {
-        let allows = InlineAllows::new();
+        let allows = std::collections::HashMap::new();
         assert!(!is_allowed_by_inline(&allows, "test.rs", 10, "unwrap"));
     }
 
     #[test]
     fn test_is_allowed_by_inline_line_one() {
-        let mut allows = InlineAllows::new();
+        let mut allows = std::collections::HashMap::new();
         let mut causes = HashSet::new();
         causes.insert("unwrap".to_string());
         allows.insert(("test.rs".to_string(), 1), causes);
 
         // Line 1 should not try to check line 0 (which doesn't exist)
         assert!(is_allowed_by_inline(&allows, "test.rs", 1, "unwrap"));
-    }
-
-    #[test]
-    fn test_scan_file_allows_nonexistent() {
-        let allows = scan_file_allows("/nonexistent/path/to/file.rs");
-        assert!(allows.is_empty());
-    }
-
-    #[test]
-    fn test_scan_file_allows_with_content() {
-        use std::io::Write;
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("test.rs");
-        let mut file = std::fs::File::create(&file_path).unwrap();
-        writeln!(file, "fn foo() {{").unwrap();
-        writeln!(file, "    bar(); // jonesy:allow(panic)").unwrap();
-        writeln!(file, "}}").unwrap();
-
-        let allows = scan_file_allows(file_path.to_str().unwrap());
-        assert_eq!(allows.len(), 1);
-        assert!(allows.get(&2).unwrap().contains("panic"));
-    }
-
-    #[test]
-    fn test_scan_inline_allows_multiple_files() {
-        use std::io::Write;
-        let temp_dir = tempfile::TempDir::new().unwrap();
-
-        let file1 = temp_dir.path().join("file1.rs");
-        let mut f1 = std::fs::File::create(&file1).unwrap();
-        writeln!(f1, "foo(); // jonesy:allow(unwrap)").unwrap();
-
-        let file2 = temp_dir.path().join("file2.rs");
-        let mut f2 = std::fs::File::create(&file2).unwrap();
-        writeln!(f2, "bar(); // jonesy:allow(panic)").unwrap();
-
-        let paths = [file1.to_str().unwrap(), file2.to_str().unwrap()];
-        let allows = scan_inline_allows(&paths);
-
-        assert_eq!(allows.len(), 2);
-    }
-
-    #[test]
-    fn test_scan_inline_allows_nonexistent_file_skipped() {
-        let paths = ["/nonexistent/file.rs"];
-        let allows = scan_inline_allows(&paths);
-        assert!(allows.is_empty());
     }
 
     #[test]
@@ -489,7 +395,7 @@ fn foo() {
 
     #[test]
     fn test_is_allowed_by_inline_wrong_cause() {
-        let mut allows = InlineAllows::new();
+        let mut allows = std::collections::HashMap::new();
         let mut causes = HashSet::new();
         causes.insert("unwrap".to_string());
         allows.insert(("test.rs".to_string(), 10), causes);
@@ -500,7 +406,7 @@ fn foo() {
 
     #[test]
     fn test_is_allowed_by_inline_prev_line_wildcard() {
-        let mut allows = InlineAllows::new();
+        let mut allows = std::collections::HashMap::new();
         let mut causes = HashSet::new();
         causes.insert("*".to_string());
         // Comment on line 9

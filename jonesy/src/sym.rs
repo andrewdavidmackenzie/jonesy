@@ -1,10 +1,7 @@
-#![allow(unused_variables)] // TODO Just for now
-#![allow(dead_code)] // TODO Just for now
-
 pub use crate::call_graph::{CallGraph, CallerInfo};
 pub use crate::crate_line_table::{CrateLineEntry, CrateLineTable};
 pub use crate::debug_info::load_debug_info;
-pub use crate::debug_info::{DSymInfo, DebugInfo, DebugMapInfo, ObjectFileInfo, find_dsym};
+pub use crate::debug_info::{DSymInfo, DebugInfo, DebugMapInfo, ObjectFileInfo};
 pub use crate::full_line_table::{FullLineEntry, FullLineTable};
 pub(crate) use crate::function_index::resolve_line_file_path;
 pub use crate::function_index::{FunctionIndex, FunctionInfo, get_functions_from_dwarf};
@@ -49,32 +46,13 @@ impl<'a> SymbolTable<'a> {
         }
     }
 
-    /// Get the MachO binary, if this is a MachO (not an archive).
-    /// Panics on fat binaries — callers should handle that case.
-    pub fn macho(&self) -> Option<&MachO<'_>> {
+    /// Get the MachO binary if this is a MachO (not an archive).
+    /// Panics on fat binaries — callers should handle that case
+    fn macho(&self) -> Option<&MachO<'_>> {
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => Some(macho),
             _ => None,
         }
-    }
-
-    /// Check if the binary has any DWARF debug sections.
-    pub fn has_dwarf_sections(&self) -> bool {
-        let Some(macho) = self.macho() else {
-            return false;
-        };
-        for segment in macho.segments.iter() {
-            if let Ok(sects) = segment.sections() {
-                for (section, _) in sects {
-                    if let Ok(name) = section.name()
-                        && name.starts_with("__debug_")
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
     }
 
     /// Returns the first symbol found whose name matches the given regex pattern.
@@ -151,8 +129,9 @@ impl<'a> SymbolTable<'a> {
 }
 
 /// Entry in the symbol index with lazy demangling.
-/// Stores mangled name and caches demangled result on first access.
+/// Stores mangled name and caches the demangled result on first access.
 /// Uses OnceLock for thread-safe lazy initialization (required for rayon).
+#[derive(Debug)]
 struct SymbolEntry {
     address: u64,
     /// Mangled symbol name (without leading underscore)
@@ -174,16 +153,6 @@ impl SymbolEntry {
     fn demangled(&self) -> &str {
         self.demangled
             .get_or_init(|| format!("{:#}", demangle(&self.mangled)))
-    }
-}
-
-impl std::fmt::Debug for SymbolEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SymbolEntry")
-            .field("address", &self.address)
-            .field("mangled", &self.mangled)
-            .field("demangled", &self.demangled.get())
-            .finish()
     }
 }
 
@@ -301,18 +270,6 @@ mod tests {
     }
 
     // -- SymbolTable method tests (using real binary) --
-
-    #[test]
-    fn test_has_dwarf_sections_on_real_binary() {
-        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
-        if let Ok(buffer) = std::fs::read(&binary_path) {
-            if let Ok(symbols) = SymbolTable::from(&buffer) {
-                // Debug binary should have DWARF sections (or a dSYM)
-                // Either way, this exercises the code path
-                let _has_dwarf = symbols.has_dwarf_sections();
-            }
-        }
-    }
 
     #[test]
     fn test_find_symbol_containing_on_real_binary() {

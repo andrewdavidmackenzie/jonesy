@@ -1,4 +1,3 @@
-#![allow(dead_code)] // TODO Just for now
 use goblin::Object;
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
@@ -45,62 +44,8 @@ pub enum DebugInfo {
     None,
 }
 
-impl DebugInfo {
-    /// Returns a reference to the debug MachO if this is a DSym variant
-    pub fn debug_macho(&self) -> Option<&Mach<'_>> {
-        match self {
-            DebugInfo::DSym(info) => Some(info.borrow_debug_macho()),
-            _ => None,
-        }
-    }
-
-    /// Returns a reference to the debug buffer if this is a DSym variant
-    pub fn debug_buffer(&self) -> Option<&[u8]> {
-        match self {
-            DebugInfo::DSym(info) => Some(info.borrow_debug_buffer()),
-            _ => None,
-        }
-    }
-}
-
-pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
-    // dSYM is typically at: /path/to/binary.dSYM/Contents/Resources/DWARF/binary
-    let dsym_bundle = binary_path.with_extension("dSYM");
-
-    if dsym_bundle.exists() {
-        let binary_name = binary_path.file_name()?;
-        let dwarf_path = dsym_bundle
-            .join("Contents")
-            .join("Resources")
-            .join("DWARF")
-            .join(binary_name);
-
-        if dwarf_path.exists() {
-            return Some(dwarf_path);
-        }
-    }
-    None
-}
-
-/// Check if the binary has any DWARF debug sections
-/// This is a standalone helper for callers that only have a raw MachO reference.
-pub fn has_dwarf_sections(macho: &MachO) -> bool {
-    for segment in macho.segments.iter() {
-        if let Ok(sects) = segment.sections() {
-            for (section, _) in sects {
-                if let Ok(name) = section.name()
-                    && name.starts_with("__debug_")
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 /// Return true if `macho` has a `__DWARF` segment or a section named `__debug_*` in any segment
-pub(crate) fn has_dwarf_info(macho: &MachO) -> bool {
+fn has_dwarf_sections(macho: &MachO) -> bool {
     for segment in macho.segments.iter() {
         if let Ok(name) = segment.name()
             && name == "__DWARF"
@@ -461,89 +406,6 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    // ========================================================================
-    // Tests for find_dsym
-    // ========================================================================
-
-    #[test]
-    fn test_find_dsym_with_existing_dsym() {
-        let temp_dir = std::env::temp_dir().join("jonesy_test_find_dsym_exists");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        let binary_path = temp_dir.join("my_binary");
-        fs::write(&binary_path, "fake binary").unwrap();
-
-        // Create the dSYM bundle structure
-        let dwarf_dir = temp_dir
-            .join("my_binary.dSYM")
-            .join("Contents")
-            .join("Resources")
-            .join("DWARF");
-        fs::create_dir_all(&dwarf_dir).unwrap();
-        let dwarf_file = dwarf_dir.join("my_binary");
-        fs::write(&dwarf_file, "fake dwarf").unwrap();
-
-        let result = find_dsym(&binary_path);
-        assert_eq!(result, Some(dwarf_file));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_find_dsym_no_dsym_bundle() {
-        let temp_dir = std::env::temp_dir().join("jonesy_test_find_dsym_none");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        let binary_path = temp_dir.join("my_binary");
-        fs::write(&binary_path, "fake binary").unwrap();
-
-        assert_eq!(find_dsym(&binary_path), None);
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_find_dsym_bundle_exists_but_no_dwarf_file() {
-        let temp_dir = std::env::temp_dir().join("jonesy_test_find_dsym_empty");
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        let binary_path = temp_dir.join("my_binary");
-        fs::write(&binary_path, "fake binary").unwrap();
-
-        // Create bundle dir but no DWARF file inside
-        let dwarf_dir = temp_dir
-            .join("my_binary.dSYM")
-            .join("Contents")
-            .join("Resources")
-            .join("DWARF");
-        fs::create_dir_all(&dwarf_dir).unwrap();
-
-        assert_eq!(find_dsym(&binary_path), None);
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    // ========================================================================
-    // Tests for DebugInfo enum
-    // ========================================================================
-
-    #[test]
-    fn test_debug_info_embedded_has_no_debug_macho() {
-        let di = DebugInfo::Embedded;
-        assert!(di.debug_macho().is_none());
-        assert!(di.debug_buffer().is_none());
-    }
-
-    #[test]
-    fn test_debug_info_none_has_no_debug_macho() {
-        let di = DebugInfo::None;
-        assert!(di.debug_macho().is_none());
-        assert!(di.debug_buffer().is_none());
     }
 
     #[test]

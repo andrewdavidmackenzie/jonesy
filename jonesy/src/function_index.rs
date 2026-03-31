@@ -1,10 +1,7 @@
-#![allow(dead_code)] // TODO Just for now
-
-use crate::project_context::ProjectContext;
 use crate::string_tables::StringTables;
 use gimli::{
-    AttributeValue, ColumnType, DebuggingInformationEntry, Dwarf, EndianSlice, Reader,
-    RunTimeEndian, SectionId, Unit,
+    AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian,
+    SectionId, Unit,
 };
 use goblin::mach::MachO;
 use rayon::prelude::*;
@@ -38,7 +35,6 @@ pub struct FunctionInfo {
 /// Bucket size for spatial partitioning of inlined functions.
 /// Using 64 bytes provides fine-grained partitioning with low per-bucket counts.
 const INLINED_BUCKET_SHIFT: u32 = 12; // 2^12 = 4096 bytes (optimal per benchmarking)
-const INLINED_BUCKET_SIZE: u64 = 1 << INLINED_BUCKET_SHIFT;
 
 /// Index for O(log n) function lookup by address.
 /// Functions are sorted by start_address for binary search.
@@ -671,53 +667,4 @@ fn resolve_specification<R: Reader>(
     }
 
     Ok((name, file, line))
-}
-
-/// Find the user code line and column closest to a specific address within a function.
-/// This finds the last line entry in user code before the given call site address.
-pub(crate) fn get_crate_line_at_address<R: Reader>(
-    dwarf: &Dwarf<R>,
-    func_start: u64,
-    call_site_addr: u64,
-    project_context: &ProjectContext,
-) -> Result<Option<(u32, Option<u32>)>, gimli::Error> {
-    let mut units = dwarf.units();
-    let mut best_line: Option<u32> = None;
-    let mut best_column: Option<u32> = None;
-    let mut best_addr: u64 = 0;
-
-    while let Some(header) = units.next()? {
-        let unit = dwarf.unit(header)?;
-
-        if let Some(program) = &unit.line_program {
-            let mut rows = program.clone().rows();
-
-            while let Some((header, row)) = rows.next_row()? {
-                let addr = row.address();
-
-                // Look for entries between function start and call site
-                if addr >= func_start
-                    && addr <= call_site_addr
-                    && let Some(file_entry) = row.file(header)
-                {
-                    let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
-
-                    // Check if this line is in the crate source
-                    if project_context.is_crate_source(&full_path)
-                        && let Some(line) = row.line()
-                        && addr >= best_addr
-                    {
-                        best_addr = addr;
-                        best_line = Some(line.get() as u32);
-                        best_column = match row.column() {
-                            ColumnType::LeftEdge => None,
-                            ColumnType::Column(c) => Some(c.get() as u32),
-                        };
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(best_line.map(|l| (l, best_column)))
 }

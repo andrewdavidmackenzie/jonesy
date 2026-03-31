@@ -461,6 +461,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_watcher_config_default() {
+        let config = WatcherConfig::default();
+        assert_eq!(config.target_dir, PathBuf::from("target/debug"));
+        assert!(config.config_files.is_empty());
+        assert_eq!(config.debounce, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_start_watching_with_real_directory() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_watcher");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let config = WatcherConfig {
+            target_dir: temp_dir.clone(),
+            config_files: vec![],
+            debounce: Duration::from_millis(100),
+        };
+
+        let result = start_watching(config);
+        assert!(
+            result.is_ok(),
+            "Should create watcher for existing directory"
+        );
+
+        // Drop the handle to stop watching
+        drop(result);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_start_watching_nonexistent_target_dir() {
+        let config = WatcherConfig {
+            target_dir: PathBuf::from("/nonexistent/target/debug"),
+            config_files: vec![],
+            debounce: Duration::from_millis(100),
+        };
+
+        // Should not error — it watches the parent if target doesn't exist
+        let _result = start_watching(config);
+    }
+
+    #[test]
+    fn test_start_watching_with_config_files() {
+        let temp_dir = std::env::temp_dir().join("jonesy_test_watcher_config");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let config_file = temp_dir.join("jonesy.toml");
+        std::fs::write(&config_file, "# test").unwrap();
+
+        let config = WatcherConfig {
+            target_dir: temp_dir.clone(),
+            config_files: vec![config_file],
+            debounce: Duration::from_millis(100),
+        };
+
+        let result = start_watching(config);
+        assert!(result.is_ok());
+
+        drop(result);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_is_binary_or_library_exe() {
+        assert!(is_binary_or_library(Path::new("target/debug/foo.exe")));
+    }
+
     /// Test that unrelated files are ignored.
     #[test]
     fn test_categorize_path_unrelated() {
@@ -503,6 +571,81 @@ mod tests {
         assert!(
             evt.is_none(),
             "Dependency files in target should be ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_debounced_events_single_event() {
+        let (tx, rx) = mpsc::channel(10);
+        let mut triggers = debounced_events(rx, Duration::from_millis(50)).await;
+
+        // Send a binary change event
+        tx.send(WatchEvent::BinaryChanged(PathBuf::from(
+            "target/debug/myapp",
+        )))
+        .await
+        .unwrap();
+
+        // Should get a trigger after debounce
+        let result = tokio::time::timeout(Duration::from_millis(200), triggers.recv()).await;
+        assert!(result.is_ok(), "Should receive trigger after debounce");
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_debounced_events_coalesces_multiple() {
+        let (tx, rx) = mpsc::channel(10);
+        let mut triggers = debounced_events(rx, Duration::from_millis(100)).await;
+
+        // Send multiple events rapidly
+        tx.send(WatchEvent::BinaryChanged(PathBuf::from("a")))
+            .await
+            .unwrap();
+        tx.send(WatchEvent::BinaryChanged(PathBuf::from("b")))
+            .await
+            .unwrap();
+        tx.send(WatchEvent::ConfigChanged(PathBuf::from("c")))
+            .await
+            .unwrap();
+
+        // Should get ONE trigger (coalesced)
+        let result = tokio::time::timeout(Duration::from_millis(300), triggers.recv()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+
+        // No second trigger immediately
+        let result2 = tokio::time::timeout(Duration::from_millis(50), triggers.recv()).await;
+        assert!(result2.is_err(), "Should not get a second trigger");
+    }
+
+    #[tokio::test]
+    async fn test_debounced_events_error_does_not_trigger() {
+        let (tx, rx) = mpsc::channel(10);
+        let mut triggers = debounced_events(rx, Duration::from_millis(50)).await;
+
+        // Send an error event — should NOT trigger analysis
+        tx.send(WatchEvent::Error("test error".to_string()))
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_millis(150), triggers.recv()).await;
+        assert!(result.is_err(), "Error events should not trigger analysis");
+    }
+
+    #[tokio::test]
+    async fn test_debounced_events_channel_close() {
+        let (tx, rx) = mpsc::channel(10);
+        let mut triggers = debounced_events(rx, Duration::from_millis(50)).await;
+
+        // Drop sender to close the channel
+        drop(tx);
+
+        // Receiver should get None (closed)
+        let result = tokio::time::timeout(Duration::from_millis(200), triggers.recv()).await;
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_none(),
+            "Should get None when channel closes"
         );
     }
 }

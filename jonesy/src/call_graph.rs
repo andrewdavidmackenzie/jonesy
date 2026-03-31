@@ -1,18 +1,12 @@
-#![allow(unused_variables)] // TODO Just for now
-#![allow(dead_code)] // TODO Just for now
-
 use crate::crate_line_table::CrateLineTable;
 use crate::full_line_table::FullLineTable;
-use crate::function_index::{
-    FunctionIndex, get_crate_line_at_address, get_functions_from_dwarf, load_dwarf_sections,
-};
+use crate::function_index::{FunctionIndex, get_functions_from_dwarf, load_dwarf_sections};
 use crate::project_context::ProjectContext;
 use crate::sym::SymbolIndex;
 use capstone::arch::BuildsCapstone;
-use capstone::{Capstone, Insn, arch};
+use capstone::{Capstone, arch};
 use dashmap::DashMap;
-use goblin::Object;
-use goblin::mach::{Mach, MachO};
+use goblin::mach::MachO;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
 use std::borrow::Cow;
@@ -180,11 +174,7 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
 /// Get the __text section's address and data from a MachO binary.
 /// This is a standalone helper for callers that only have a raw MachO reference.
 /// Get a named section's address and data from a MachO binary.
-pub fn get_section_by_name<'a>(
-    macho: &MachO,
-    buffer: &'a [u8],
-    name: &str,
-) -> Option<(u64, &'a [u8])> {
+fn get_section_by_name<'a>(macho: &MachO, buffer: &'a [u8], name: &str) -> Option<(u64, &'a [u8])> {
     for segment in &macho.segments {
         for (section, _section_data) in segment.sections().unwrap() {
             if section.name().unwrap() == name {
@@ -252,40 +242,6 @@ impl<'a> CallGraph<'a> {
         for callers in edges.values_mut() {
             callers.sort_by_key(|c| c.call_site_addr);
         }
-        Ok(Self { edges })
-    }
-
-    /// Build a call graph by scanning all instructions once (no debug info).
-    /// Non-parallel version for comparison or single-threaded mode.
-    #[allow(dead_code)]
-    pub fn build_sequential(
-        macho: &MachO,
-        buffer: &[u8],
-        symbol_index: Option<&'a SymbolIndex>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = HashMap::new();
-
-        let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
-            return Ok(Self { edges });
-        };
-
-        let cs = Capstone::new()
-            .arm64()
-            .mode(arch::arm64::ArchMode::Arm)
-            .build()?;
-
-        let instructions = cs
-            .disasm_all(text_data, text_addr)
-            .map_err(|e| format!("Disassembly failed: {e}"))?;
-
-        for instruction in instructions.iter() {
-            if let Some((call_target, caller_info)) =
-                process_instruction_basic(symbol_index, instruction)
-            {
-                edges.entry(call_target).or_default().push(caller_info);
-            }
-        }
-
         Ok(Self { edges })
     }
 
@@ -380,7 +336,7 @@ impl<'a> CallGraph<'a> {
         let edges: DashMap<u64, Vec<CallerInfo<'a>>> = DashMap::new();
 
         insn_data.par_iter().for_each(|data| {
-            if let Some(call_target) = data.call_target
+            if let Some(_call_target) = data.call_target
                 && let Some((target, caller_info)) = process_instruction_data_with_crate_table(
                     data,
                     &function_index,
@@ -425,36 +381,6 @@ impl<'a> CallGraph<'a> {
 
 /// Process a single instruction and extract call information (basic version without debug info).
 /// Returns (call_target, CallerInfo) if this is a bl/b instruction, None otherwise.
-fn process_instruction_basic<'a>(
-    symbol_index: Option<&'a SymbolIndex>,
-    instruction: &Insn,
-) -> Option<(u64, CallerInfo<'a>)> {
-    // Match both BL (branch with link) and B (branch) for tail call detection
-    let mnemonic = instruction.mnemonic();
-    if mnemonic != Some("bl") && mnemonic != Some("b") {
-        return None;
-    }
-
-    let operand = instruction.op_str()?;
-    let addr_str = operand.trim_start_matches("#0x");
-    let call_target = u64::from_str_radix(addr_str, 16).ok()?;
-    let (func_addr, func_name) =
-        symbol_index.and_then(|idx| idx.find_containing(instruction.address()))?;
-
-    Some((
-        call_target,
-        CallerInfo {
-            caller_name: Cow::Borrowed(func_name),
-            caller_start_address: func_addr,
-            caller_file: None,
-            call_site_addr: instruction.address(),
-            file: None,
-            line: None,
-            column: None,
-        },
-    ))
-}
-
 /// Process instruction data using pre-built line tables for fast O(log n) lookups.
 /// Falls back to symbol table lookup if DWARF doesn't contain the function.
 /// DWARF names use Cow::Owned, symbol fallback uses Cow::Borrowed from SymbolIndex.
@@ -497,7 +423,7 @@ fn process_instruction_data_with_crate_table<'a>(
 
         // For functions in the crate source, find actual call line using pre-built table
         let file_in_crate = file.as_ref().is_some_and(|f| {
-            crate_src_path.is_some_and(|crate_path| project_context.is_crate_source(f))
+            crate_src_path.is_some_and(|_crate_path| project_context.is_crate_source(f))
         });
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
@@ -597,260 +523,6 @@ fn process_instruction_data_with_crate_table<'a>(
         // Function not found in DWARF or symbol table - skip this edge
         None
     }
-}
-
-// TODO Note that the address passed in is an n_value or Symbol table offset,
-// which is not necessarily the same as the address of the symbol in memory.
-// How can we fix that?
-// TODO using [cfg] have implementations for other architectures
-pub(crate) fn find_callers(
-    macho: &MachO,
-    buffer: &[u8],
-    target_addr: u64,
-) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
-    let mut callers = Vec::new();
-
-    let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
-        return Ok(callers);
-    };
-
-    let cs = Capstone::new()
-        .arm64()
-        .mode(arch::arm64::ArchMode::Arm)
-        .build()?;
-
-    let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
-        return Ok(callers);
-    };
-
-    // Precompute symbol index once for efficient lookups
-    let symbol_index = SymbolIndex::new(macho);
-
-    for instruction in instructions.iter() {
-        // Match both BL (branch with link) and B (branch) for tail call detection
-        let mnemonic = instruction.mnemonic();
-        if (mnemonic == Some("bl") || mnemonic == Some("b"))
-            && let Some(operand) = instruction.op_str()
-        {
-            let addr_str = operand.trim_start_matches("#0x");
-            if let Ok(call_target) = u64::from_str_radix(addr_str, 16)
-                && call_target == target_addr
-                && let Some((func_addr, func_name)) = symbol_index
-                    .as_ref()
-                    .and_then(|idx| idx.find_containing(instruction.address()))
-            {
-                callers.push(CallerInfo {
-                    caller_name: Cow::Owned(func_name.to_string()),
-                    caller_start_address: func_addr,
-                    caller_file: None,
-                    call_site_addr: instruction.address(),
-                    file: None,
-                    line: None,
-                    column: None,
-                });
-            }
-        }
-    }
-
-    Ok(callers)
-}
-
-/// Find all functions that call a target address, with source info
-///
-/// # Arguments
-/// * `binary_macho` - Parsed MachO from the executable binary (contains __text section)
-/// * `binary_buffer` - Raw bytes of the executable binary
-/// * `debug_macho` - Parsed MachO containing DWARF info (can be same as binary_macho, or from dSYM)
-/// * `debug_buffer` - Raw bytes containing DWARF info (can be same as binary_buffer, or from dSYM)
-/// * `target_addr` - Address of the function to find callers for
-/// * `crate_src_path` - Optional crate source path for precise line numbers in user code
-pub fn find_callers_with_debug_info(
-    binary_macho: &MachO,
-    binary_buffer: &[u8],
-    debug_macho: &MachO,
-    debug_buffer: &[u8],
-    target_addr: u64,
-    crate_src_path: Option<&str>,
-    project_context: &ProjectContext,
-) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
-    // Get function info and DWARF from debug info (dSYM or embedded)
-    let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
-    // Build function index for O(log n) lookups
-    let function_index = FunctionIndex::new_with_inlined(functions, inlined, strings);
-    let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
-    // Build line table for consistent source location lookups (first entry semantics)
-    let full_line_table = FullLineTable::build(&dwarf)?;
-    let mut callers = Vec::new();
-
-    // Get __text section from the binary (not dSYM)
-    let Some((text_addr, text_data)) = get_section_by_name(binary_macho, binary_buffer, "__text")
-    else {
-        return Ok(callers);
-    };
-
-    // Use capstone for ARM64 disassembly
-    let cs = Capstone::new()
-        .arm64()
-        .mode(arch::arm64::ArchMode::Arm)
-        .build()?;
-
-    let instructions = cs.disasm_all(text_data, text_addr)?;
-
-    // Precompute symbol index once for efficient fallback lookups
-    let symbol_index = SymbolIndex::new(binary_macho);
-
-    for instruction in instructions.iter() {
-        // Look for BL (branch with link) and B (branch) instructions
-        // B is used for tail calls where the compiler optimizes `call; ret` into a single jump
-        let mnemonic = instruction.mnemonic();
-        if (mnemonic == Some("bl") || mnemonic == Some("b"))
-            && let Some(operand) = instruction.op_str()
-        {
-            let addr_str = operand.trim_start_matches("#0x");
-            if let Ok(call_target) = u64::from_str_radix(addr_str, 16)
-                && call_target == target_addr
-            {
-                // Find the function containing this call - try DWARF first, fall back to symbol table
-                // Uses O(log n) binary search instead of O(n) linear search
-                if let Some(func) = function_index.find_containing(instruction.address()) {
-                    // Found in DWARF - use full debug info with first-entry semantics
-                    let (line_file, line_line, line_column) =
-                        full_line_table.get_source_location(func.start_address);
-
-                    // Prefer function's declaration file/line if available, then function start's line info
-                    let decl_file = function_index.get_file(func).map(|s| s.to_string());
-                    let decl_line = function_index.get_line(func);
-                    let file = decl_file.clone().or(line_file);
-                    let mut line = decl_line.or(line_line);
-                    let mut column = line_column;
-
-                    // For functions in the crate source, find the actual line where the call originates
-                    if let (Some(f), Some(crate_path)) = (&file, crate_src_path)
-                        && project_context.is_crate_source(f)
-                        && let Ok(Some((crate_line, crate_column))) = get_crate_line_at_address(
-                            &dwarf,
-                            func.start_address,
-                            instruction.address(),
-                            project_context,
-                        )
-                    {
-                        line = Some(crate_line);
-                        column = crate_column;
-                    }
-
-                    // Get the most specific function name (checks inlined functions first)
-                    // Demangle if it's a mangled Rust name
-                    let func_name = function_index.get_name(func);
-                    let display_name = function_index
-                        .find_function_name(instruction.address())
-                        .map(|s| {
-                            let stripped = s.strip_prefix('_').unwrap_or(s);
-                            format!("{:#}", demangle(stripped))
-                        })
-                        .unwrap_or_else(|| func_name.to_string());
-
-                    // Note: See comment in process_instruction_data_with_crate_table
-                    // for why we use inlined name but containing function's address range
-                    callers.push(CallerInfo {
-                        caller_name: Cow::Owned(display_name),
-                        caller_start_address: func.start_address,
-                        caller_file: decl_file,
-                        call_site_addr: instruction.address(),
-                        file,
-                        line,
-                        column,
-                    });
-                } else if let Some((func_addr, func_name)) = symbol_index
-                    .as_ref()
-                    .and_then(|idx| idx.find_containing(instruction.address()))
-                {
-                    // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
-                    let (file, line, column) = full_line_table.get_source_location(func_addr);
-
-                    callers.push(CallerInfo {
-                        caller_name: Cow::Owned(func_name.to_string()),
-                        caller_start_address: func_addr,
-                        caller_file: None,
-                        call_site_addr: instruction.address(),
-                        file,
-                        line,
-                        column,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(callers)
-}
-
-/// Find callers with source info using the debug map
-/// This searches all object files for DWARF info
-pub fn find_callers_with_debug_map(
-    binary_macho: &MachO,
-    binary_buffer: &[u8],
-    debug_map: &crate::debug_info::DebugMapInfo,
-    target_addr: u64,
-    _crate_src_path: Option<&str>,
-) -> Result<Vec<CallerInfo<'static>>, Box<dyn std::error::Error>> {
-    // First, get callers from the binary's text section
-    let mut callers = find_callers(binary_macho, binary_buffer, target_addr)?;
-
-    // Build a map of function name -> source info from all object files
-    let mut func_source_map: HashMap<String, (Option<String>, Option<u32>)> = HashMap::new();
-
-    for obj_info in &debug_map.object_files {
-        // Parse the object file
-        let Ok(Object::Mach(Mach::Binary(obj_macho))) = Object::parse(&obj_info.buffer) else {
-            continue;
-        };
-
-        // Get functions from this object file
-        // TODO: _inlined is currently unused in the debug-map fallback path.
-        // Using inlined functions here would require mapping object file addresses
-        // to binary addresses, which is complex. The main path (dSYM/embedded DWARF)
-        // handles inlined functions correctly via FunctionIndex.find_function_name().
-        let Ok((functions, _inlined, strings)) =
-            get_functions_from_dwarf(&obj_macho, &obj_info.buffer)
-        else {
-            continue;
-        };
-
-        // Store source info by function name (both mangled and demangled)
-        for func in functions {
-            let file = strings.get_file(func.file_idx);
-            if file.is_some() {
-                let name = strings.get_name(func.name_idx);
-                let line = if func.line == 0 {
-                    None
-                } else {
-                    Some(func.line)
-                };
-                // Store by original name
-                func_source_map.insert(name.to_string(), (file.map(|s| s.to_string()), line));
-
-                // Also store by demangled name for matching
-                let stripped = name.strip_prefix("_").unwrap_or(name);
-                let demangled = format!("{:#}", demangle(stripped));
-                if demangled != name {
-                    func_source_map.insert(demangled, (file.map(|s| s.to_string()), line));
-                }
-            }
-        }
-    }
-
-    // Enrich caller info with source locations from DWARF by matching function names
-    for caller in &mut callers {
-        // Try to find source info by function name
-        // Note: caller_name is Cow<'static, str>, convert to string for lookup
-        if let Some((file, line)) = func_source_map.get(caller.caller_name.as_ref()) {
-            caller.caller_file = file.clone();
-            caller.file = file.clone();
-            caller.line = *line;
-        }
-    }
-
-    Ok(callers)
 }
 
 #[cfg(test)]
@@ -979,5 +651,114 @@ mod tests {
     fn test_scan_branch_instructions_empty_input() {
         let results = scan_branch_instructions(&[], 0x1000);
         assert!(results.is_empty());
+    }
+
+    // Tests for parallel_disassemble_arm64
+    #[test]
+    fn test_parallel_disassemble_small_input() {
+        // Small input falls through to sequential scan_branch_instructions
+        let mut code = Vec::new();
+        code.extend_from_slice(&0x94000002_u32.to_le_bytes()); // BL +8
+        code.extend_from_slice(&0x91000000_u32.to_le_bytes()); // ADD (not branch)
+        code.extend_from_slice(&0x14000001_u32.to_le_bytes()); // B +4
+
+        let results = parallel_disassemble_arm64(&code, 0x1000);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].address, 0x1000);
+        assert_eq!(results[1].address, 0x1008);
+    }
+
+    #[test]
+    fn test_parallel_disassemble_empty() {
+        let results = parallel_disassemble_arm64(&[], 0x1000);
+        assert!(results.is_empty());
+    }
+
+    // Tests for sequential_disassemble_arm64
+    #[test]
+    fn test_sequential_disassemble_bl_instruction() {
+        // BL +8 at address 0x1000
+        let code: Vec<u8> = 0x94000002_u32.to_le_bytes().to_vec();
+        let results = sequential_disassemble_arm64(&code, 0x1000);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+        assert!(results[0].call_target.is_some());
+    }
+
+    #[test]
+    fn test_sequential_disassemble_non_branch() {
+        // MOV x0, x1 — not a branch
+        let code: Vec<u8> = 0xAA0103E0_u32.to_le_bytes().to_vec();
+        let results = sequential_disassemble_arm64(&code, 0x1000);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_sequential_disassemble_empty() {
+        let results = sequential_disassemble_arm64(&[], 0x1000);
+        assert!(results.is_empty());
+    }
+
+    // Tests for CallGraph::build using real binary
+    #[test]
+    fn test_call_graph_build_from_real_binary() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(macho) = MachO::parse(&buffer, 0) {
+                let symbol_index = SymbolIndex::new(&macho);
+                let graph = CallGraph::build(&macho, &buffer, symbol_index.as_ref());
+                assert!(graph.is_ok());
+                let graph = graph.unwrap();
+                // A real binary should have many call edges
+                // Just verify it built without panic
+                let _ = graph.get_callers(0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_call_graph_build_no_symbol_index() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(macho) = MachO::parse(&buffer, 0) {
+                // Build without symbol index — should still work but find no callers
+                let graph = CallGraph::build(&macho, &buffer, None);
+                assert!(graph.is_ok());
+            }
+        }
+    }
+
+    // Tests for CallerInfo
+    #[test]
+    fn test_caller_info_construction() {
+        let info = CallerInfo {
+            caller_name: Cow::Owned("my_function".to_string()),
+            caller_start_address: 0x1000,
+            caller_file: Some("src/main.rs".to_string()),
+            call_site_addr: 0x1010,
+            file: Some("src/main.rs".to_string()),
+            line: Some(42),
+            column: Some(5),
+        };
+        assert_eq!(info.caller_start_address, 0x1000);
+        assert_eq!(info.call_site_addr, 0x1010);
+        assert_eq!(info.line, Some(42));
+    }
+
+    #[test]
+    fn test_caller_info_borrowed_name() {
+        let name = "borrowed_function".to_string();
+        let info = CallerInfo {
+            caller_name: Cow::Borrowed(&name),
+            caller_start_address: 0x2000,
+            caller_file: None,
+            call_site_addr: 0x2020,
+            file: None,
+            line: None,
+            column: None,
+        };
+        assert_eq!(&*info.caller_name, "borrowed_function");
+        assert!(info.caller_file.is_none());
+        assert!(info.line.is_none());
     }
 }
