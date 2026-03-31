@@ -33,7 +33,7 @@ impl ProjectContext {
         let project_root = project_root.as_path();
 
         let cargo_toml = project_root.join("Cargo.toml");
-        let content = std::fs::read_to_string(&cargo_toml)
+        let content = fs::read_to_string(&cargo_toml)
             .map_err(|e| format!("Cannot read {}: {}", cargo_toml.display(), e))?;
         let manifest = cargo_toml::Manifest::from_slice(content.as_bytes())
             .map_err(|e| format!("Cannot parse {}: {}", cargo_toml.display(), e))?;
@@ -87,7 +87,7 @@ impl ProjectContext {
         // (e.g., bin[].path = "src/main.rs" if src/main.rs exists)
         let _ = manifest.complete_from_path_and_workspace::<toml::Value>(
             &cargo_toml,
-            None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
+            None::<(&cargo_toml::Manifest<toml::Value>, &Path)>,
         );
 
         // Collect source directories from lib and bin target paths
@@ -192,7 +192,7 @@ mod tests {
         assert!(!ctx.source_prefixes.is_empty());
 
         // Should correctly identify jonesy's own source files
-        // Build absolute path to a known file
+        // Build the absolute path to a known file
         let src_lib = project_root.join("src/lib.rs");
         if let Some(src_lib_str) = src_lib.to_str() {
             assert!(
@@ -202,7 +202,7 @@ mod tests {
             );
         }
 
-        // Should NOT recognize random absolute paths as crate source
+        // Should NOT recognize random absolute paths as the crate source
         assert!(!ctx.is_crate_source("/tmp/random_file.rs"));
         assert!(!ctx.is_crate_source(
             "/Users/someone/.cargo/registry/src/index.crates.io-abc/serde-1.0.0/src/lib.rs"

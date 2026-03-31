@@ -12,7 +12,9 @@ use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use jonesy::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
+use jonesy::output::OutputFormat;
 use std::collections::HashSet;
+use std::path::Path;
 
 use jonesy::config::Config;
 use jonesy::lsp;
@@ -142,41 +144,18 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             project_root_path = Some(project_root.to_string_lossy().to_string());
         }
 
-        match &symbols {
-            SymbolTable::MachO(Binary(_)) => {
-                let crate_src_path = derive_crate_src_path(&binary_path);
-                let mut result = analyze_macho(
-                    &symbols,
-                    &binary_buffer,
-                    &binary_path,
-                    crate_src_path.as_deref(),
-                    parsed_args.show_timings,
-                    &config,
-                    &parsed_args.output,
-                )?;
-                total_summary.add(&result.summary);
-                merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
-            }
-            SymbolTable::MachO(Fat(multi_arch)) => {
-                if !parsed_args.output.is_summary_only() {
-                    println!("FAT: {:?} architectures", multi_arch.arches()?);
-                }
-            }
-            SymbolTable::Archive(archive) => {
-                // Use relocation-based analysis for library archives
-                let crate_src_path = derive_crate_src_path(&binary_path);
-                let mut result = analyze_archive(
-                    archive,
-                    &binary_buffer,
-                    &binary_path,
-                    crate_src_path.as_deref(),
-                    parsed_args.show_timings,
-                    &config,
-                    &parsed_args.output,
-                )?;
-                total_summary.add(&result.summary);
-                merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
-            }
+        let crate_src_path = derive_crate_src_path(&binary_path);
+        if let Some(mut result) = analyze_binary(
+            &symbols,
+            &binary_buffer,
+            &binary_path,
+            crate_src_path.as_deref(),
+            parsed_args.show_timings,
+            &config,
+            &parsed_args.output,
+        )? {
+            total_summary.add(&result.summary);
+            merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
         }
 
         if parsed_args.output.show_progress() {
@@ -214,6 +193,42 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     // Exit with the number of panic points found (0 = passed, >0 = found panics)
     // Note: Unix exit codes are 8-bit (0-255), the values above wrap around
     std::process::exit(result.panic_points() as i32);
+}
+
+/// Analyze a binary or archive based on its SymbolTable type.
+/// Returns the analysis result, or None for unsupported formats (fat binaries).
+fn analyze_binary(
+    symbols: &SymbolTable,
+    buffer: &[u8],
+    binary_path: &Path,
+    crate_src_path: Option<&str>,
+    show_timings: bool,
+    config: &Config,
+    output: &OutputFormat,
+) -> Result<Option<BinaryAnalysisResult>, String> {
+    match symbols {
+        SymbolTable::MachO(Binary(_)) => analyze_macho(
+            symbols,
+            buffer,
+            binary_path,
+            crate_src_path,
+            show_timings,
+            config,
+            output,
+        )
+        .map(Some),
+        SymbolTable::MachO(Fat(_)) => Ok(None),
+        SymbolTable::Archive(archive) => analyze_archive(
+            archive,
+            buffer,
+            binary_path,
+            crate_src_path,
+            show_timings,
+            config,
+            output,
+        )
+        .map(Some),
+    }
 }
 
 /// Analyze a workspace with multiple member crates.
@@ -286,31 +301,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 let binary_buffer = fs::read(&binary_path).ok()?;
                 let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
-                let result = match &symbols {
-                    SymbolTable::MachO(Binary(_)) => analyze_macho(
-                        &symbols,
-                        &binary_buffer,
-                        &binary_path,
-                        Some(&workspace_src_path),
-                        args.show_timings,
-                        &config,
-                        &args.output,
-                    )
-                    .ok()?,
-                    SymbolTable::MachO(Fat(_)) => {
-                        return None; // FAT binaries are not supported
-                    }
-                    SymbolTable::Archive(archive) => analyze_archive(
-                        archive,
-                        &binary_buffer,
-                        &binary_path,
-                        Some(&workspace_src_path),
-                        args.show_timings,
-                        &config,
-                        &args.output,
-                    )
-                    .ok()?,
-                };
+                let result = analyze_binary(
+                    &symbols,
+                    &binary_buffer,
+                    &binary_path,
+                    Some(&workspace_src_path),
+                    args.show_timings,
+                    &config,
+                    &args.output,
+                )
+                .ok()??;
                 Some((binary_path, result))
             })
             .collect();
