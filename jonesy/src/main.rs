@@ -67,11 +67,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_global()
         .ok(); // Ignore error if pool already initialized
 
-    // Handle workspace mode differently
     if let Some(ref workspace_members) = parsed_args.workspace_members {
-        return analyze_workspace(workspace_members, &parsed_args);
+        analyze_workspace(workspace_members, &parsed_args)
+    } else {
+        analyze_package(&parsed_args)
     }
+}
 
+/// Analyze a single package (non-workspace) with one or more binary targets.
+fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut total_summary = AnalysisSummary::default();
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut seen_code_points: HashSet<(String, u32)> = HashSet::new();
@@ -79,7 +83,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut project_root_path: Option<String> = None;
 
     for binary_path in &parsed_args.binaries {
-        // Canonicalize the binary path to ensure absolute paths for clickable links
         let binary_path = binary_path
             .canonicalize()
             .unwrap_or_else(|_| binary_path.clone());
