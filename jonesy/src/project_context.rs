@@ -24,7 +24,7 @@ impl ProjectContext {
     /// Build source directory prefixes from the project root.
     ///
     /// Uses `cargo_toml::Manifest::complete_from_path_and_workspace` to discover
-    /// all target source paths (bin, lib, examples, etc.), then extracts their
+    /// target source paths (bin, lib), then extracts their
     /// parent directories as source prefixes. This handles custom layouts like
     /// `[[bin]] path = "crates/core/main.rs"` automatically.
     pub fn from_project_root(project_root: &Path) -> Result<Self, String> {
@@ -75,13 +75,15 @@ impl ProjectContext {
         })
     }
 
-    /// Collect source directories from a crate's Cargo.toml targets.
+    /// Collect source directories from a crate's Cargo.toml bin and lib targets.
     ///
     /// Uses `complete_from_path_and_workspace` to resolve default target paths
     /// (e.g., `src/main.rs`, `src/lib.rs`), then extracts parent directories.
+    /// Silently skips unreadable/unparseable manifests (workspace members may
+    /// not all be present).
     fn collect_source_dirs_from_manifest(crate_root: &Path, prefixes: &mut Vec<String>) {
         let cargo_toml = crate_root.join("Cargo.toml");
-        let Ok(content) = std::fs::read_to_string(&cargo_toml) else {
+        let Ok(content) = fs::read_to_string(&cargo_toml) else {
             return;
         };
         let Ok(mut manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) else {
@@ -95,17 +97,15 @@ impl ProjectContext {
             None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
         );
 
-        // Collect source directories from all targets
+        // Collect source file paths from lib and bin targets
         let mut target_paths: Vec<&str> = Vec::new();
 
-        // Library target
         if let Some(lib) = &manifest.lib {
             if let Some(path) = &lib.path {
                 target_paths.push(path);
             }
         }
 
-        // Binary targets
         for bin in &manifest.bin {
             if let Some(path) = &bin.path {
                 target_paths.push(path);
@@ -114,10 +114,13 @@ impl ProjectContext {
 
         // Convert target source file paths to directory prefixes
         for path in target_paths {
-            let source_path = std::path::Path::new(path);
+            let source_path = Path::new(path);
             if let Some(parent) = source_path.parent() {
+                // Join handles empty parent (e.g., path = "main.rs") correctly —
+                // crate_root.join("") returns crate_root
                 let abs_dir = crate_root.join(parent);
                 if let Some(prefix) = abs_dir.to_str() {
+                    let prefix = prefix.trim_end_matches('/');
                     prefixes.push(format!("{}/", prefix));
                 }
             }
