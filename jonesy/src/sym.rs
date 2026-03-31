@@ -58,7 +58,7 @@ impl<'a> SymbolTable<'a> {
         }
     }
 
-    /// Check if the binary has any DWARF debug sections.
+    /// Check if the binary has any DWARF debug info.
     pub fn has_dwarf_sections(&self) -> bool {
         self.macho()
             .is_some_and(crate::debug_info::has_dwarf_sections)

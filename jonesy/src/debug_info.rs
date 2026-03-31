@@ -82,25 +82,8 @@ pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Check if the binary has any DWARF debug sections
-/// This is a standalone helper for callers that only have a raw MachO reference.
-pub fn has_dwarf_sections(macho: &MachO) -> bool {
-    for segment in macho.segments.iter() {
-        if let Ok(sects) = segment.sections() {
-            for (section, _) in sects {
-                if let Ok(name) = section.name()
-                    && name.starts_with("__debug_")
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 /// Return true if `macho` has a `__DWARF` segment or a section named `__debug_*` in any segment
-pub(crate) fn has_dwarf_info(macho: &MachO) -> bool {
+pub(crate) fn has_dwarf_sections(macho: &MachO) -> bool {
     for segment in macho.segments.iter() {
         if let Ok(name) = segment.name()
             && name == "__DWARF"
