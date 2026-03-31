@@ -90,34 +90,23 @@ impl ProjectContext {
             None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
         );
 
-        // Collect source file paths from lib and bin targets
-        let mut target_paths: Vec<&str> = Vec::new();
-
-        if let Some(lib) = &manifest.lib {
-            if let Some(path) = &lib.path {
-                target_paths.push(path);
-            }
-        }
-
-        for bin in &manifest.bin {
-            if let Some(path) = &bin.path {
-                target_paths.push(path);
-            }
-        }
-
-        // Convert target source file paths to directory prefixes
-        for path in target_paths {
-            let source_path = Path::new(path);
-            if let Some(parent) = source_path.parent() {
-                // Join handles empty parent (e.g., path = "main.rs") correctly —
-                // crate_root.join("") returns crate_root
-                let abs_dir = crate_root.join(parent);
-                if let Some(prefix) = abs_dir.to_str() {
-                    let prefix = prefix.trim_end_matches('/');
-                    prefixes.push(format!("{}/", prefix));
-                }
-            }
-        }
+        // Collect source directories from lib and bin target paths
+        prefixes.extend(
+            manifest
+                .lib
+                .iter()
+                .chain(manifest.bin.iter())
+                .filter_map(|t| t.path.as_deref())
+                .filter_map(|p| Path::new(p).parent())
+                .filter_map(|parent| {
+                    let prefix = crate_root
+                        .join(parent)
+                        .to_str()?
+                        .trim_end_matches('/')
+                        .to_string();
+                    Some(format!("{}/", prefix))
+                }),
+        );
     }
 
     /// Check if a DWARF file path belongs to this project's source code.
