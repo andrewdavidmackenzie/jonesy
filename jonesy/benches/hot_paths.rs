@@ -667,9 +667,9 @@ fn bench_analyze_macho(c: &mut Criterion) {
     c.bench_function("analyze_macho_jonesy", |b| {
         b.iter(|| {
             let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
-            if let SymbolTable::MachO(Binary(ref macho)) = symbols {
+            if let SymbolTable::MachO(Binary(_)) = &symbols {
                 let result = analyze_macho(
-                    macho,
+                    &symbols,
                     &buffer,
                     &binary_path,
                     Some("jonesy/src/"),

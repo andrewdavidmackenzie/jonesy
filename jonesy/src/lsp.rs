@@ -2006,10 +2006,10 @@ fn analyze_single_target(
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
 
-    match symbols {
-        SymbolTable::MachO(Binary(macho)) => {
+    match &symbols {
+        SymbolTable::MachO(Binary(_)) => {
             let result = analyze_macho(
-                &macho,
+                &symbols,
                 &binary_buffer,
                 target_path,
                 Some(src_filter),
@@ -2051,9 +2051,12 @@ fn analyze_single_target(
             }
 
             match selected_macho {
-                Some(macho) => {
+                Some(_macho) => {
+                    // Fat binary: re-parse buffer to get SymbolTable for selected arch
+                    let fat_symbols = SymbolTable::from(&binary_buffer)
+                        .map_err(|e| format!("Failed to parse fat binary: {e}"))?;
                     let result = analyze_macho(
-                        &macho,
+                        &fat_symbols,
                         &binary_buffer,
                         target_path,
                         Some(src_filter),
@@ -2068,7 +2071,7 @@ fn analyze_single_target(
         }
         SymbolTable::Archive(archive) => {
             let result = analyze_archive(
-                &archive,
+                archive,
                 &binary_buffer,
                 target_path,
                 Some(src_filter),

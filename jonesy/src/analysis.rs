@@ -113,9 +113,8 @@ struct PanicCaller {
 
 /// Analyze a single MachO binary/object for panic points.
 /// Returns a summary of panic code points found, plus code points.
-#[allow(clippy::too_many_arguments)]
 pub fn analyze_macho(
-    macho: &MachO,
+    symbols: &SymbolTable,
     buffer: &[u8],
     binary_path: &Path,
     crate_src_path: Option<&str>,
@@ -123,8 +122,9 @@ pub fn analyze_macho(
     config: &Config,
     output: &OutputFormat,
 ) -> Result<BinaryAnalysisResult, String> {
-    let symbols =
-        SymbolTable::from(buffer).map_err(|e| format!("Failed to create symbol table: {e}"))?;
+    let macho = symbols
+        .macho()
+        .ok_or_else(|| "Expected MachO binary, got archive or fat binary".to_string())?;
     let show_progress = output.show_progress();
     let total_start = Instant::now();
 

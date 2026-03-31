@@ -119,11 +119,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             project_root_path = Some(project_root.to_string_lossy().to_string());
         }
 
-        match symbols {
-            SymbolTable::MachO(Binary(macho)) => {
+        match &symbols {
+            SymbolTable::MachO(Binary(_)) => {
                 let crate_src_path = derive_crate_src_path(&binary_path);
                 let result = analyze_macho(
-                    &macho,
+                    &symbols,
                     &binary_buffer,
                     &binary_path,
                     crate_src_path.as_deref(),
@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 // Use relocation-based analysis for library archives
                 let crate_src_path = derive_crate_src_path(&binary_path);
                 let result = analyze_archive(
-                    &archive,
+                    archive,
                     &binary_buffer,
                     &binary_path,
                     crate_src_path.as_deref(),
@@ -285,9 +285,9 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 let binary_buffer = fs::read(&binary_path).ok()?;
                 let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
-                let result = match symbols {
-                    SymbolTable::MachO(Binary(macho)) => analyze_macho(
-                        &macho,
+                let result = match &symbols {
+                    SymbolTable::MachO(Binary(_)) => analyze_macho(
+                        &symbols,
                         &binary_buffer,
                         &binary_path,
                         Some(&workspace_src_path),
@@ -300,7 +300,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                         return None; // FAT binaries not supported
                     }
                     SymbolTable::Archive(archive) => analyze_archive(
-                        &archive,
+                        archive,
                         &binary_buffer,
                         &binary_path,
                         Some(&workspace_src_path),
