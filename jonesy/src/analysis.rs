@@ -126,7 +126,7 @@ pub fn analyze_macho(
         .macho()
         .ok_or_else(|| "Expected MachO binary, got archive or fat binary".to_string())?;
     let show_progress = output.show_progress();
-    let total_start = Instant::now();
+    let total_start = show_timings.then(Instant::now);
 
     let project_root = find_project_root(binary_path)?;
     let project_context = ProjectContext::from_project_root(&project_root)?;
@@ -135,7 +135,7 @@ pub fn analyze_macho(
     if show_progress {
         eprintln!("  Finding entry points...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     // Collect all entry points with their addresses
     let mut entry_points: Vec<(String, String, u64)> = Vec::new(); // (mangled, demangled, addr)
@@ -162,7 +162,7 @@ pub fn analyze_macho(
         }
     }
 
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Find entry points: {:?}", step_start.elapsed());
     }
 
@@ -181,16 +181,16 @@ pub fn analyze_macho(
     if show_progress {
         eprintln!("  Loading debug information...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
     let debug_info = load_debug_info(macho, binary_path, !show_progress);
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
 
     // Pre-compute the call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
     let spinner = create_spinner(show_progress, "Scanning for function calls...");
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     // Create SymbolIndex once - CallGraph borrows from it to avoid allocations in hot path
     let symbol_index = SymbolIndex::new(macho);
@@ -251,7 +251,7 @@ pub fn analyze_macho(
         }
     };
     finish_spinner(spinner, "Scanning complete");
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
@@ -262,7 +262,7 @@ pub fn analyze_macho(
     let visited = Arc::new(DashSet::new());
 
     let spinner = create_spinner(show_progress, "Building call trees...");
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     for (_mangled, demangled, target_addr) in &entry_points {
         // Skip if we've already visited this address from another entry point
@@ -306,7 +306,7 @@ pub fn analyze_macho(
             entry_points.len()
         ),
     );
-    if show_timings {
+    if let (Some(step_start), Some(total_start)) = (step_start, total_start) {
         eprintln!(
             "  [timing] Build call trees (with pruning): {:?}",
             step_start.elapsed()
@@ -333,12 +333,12 @@ pub fn analyze_archive(
 
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
-    let total_start = Instant::now();
+    let total_start = show_timings.then(Instant::now);
 
     if show_progress {
         eprintln!("  Building library call graph from relocations...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     // Build a merged call graph from all .o files in the archive
     let mut merged_graph = LibraryCallGraph::empty();
@@ -391,7 +391,7 @@ pub fn analyze_archive(
         }
     }
 
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!(
             "  [timing] Build library call graph: {:?}",
             step_start.elapsed()
@@ -410,7 +410,7 @@ pub fn analyze_archive(
     if show_progress {
         eprintln!("  Finding panic callers...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     let mut panic_callers: HashSet<PanicCaller> = HashSet::new();
 
@@ -443,7 +443,7 @@ pub fn analyze_archive(
         }
     }
 
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Find panic callers: {:?}", step_start.elapsed());
     }
 
@@ -537,7 +537,7 @@ pub fn analyze_archive(
         }
     }
 
-    if show_timings {
+    if let Some(total_start) = total_start {
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
 
