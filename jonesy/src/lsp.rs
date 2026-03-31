@@ -2006,17 +2006,17 @@ fn analyze_single_target(
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
 
-    match symbols {
-        SymbolTable::MachO(Binary(macho)) => {
+    match &symbols {
+        SymbolTable::MachO(Binary(_)) => {
             let result = analyze_macho(
-                &macho,
+                &symbols,
                 &binary_buffer,
                 target_path,
                 Some(src_filter),
                 false, // show_timings
                 &config,
                 &output,
-            );
+            )?;
             Ok(result.code_points)
         }
         SymbolTable::MachO(Fat(fat)) => {
@@ -2051,16 +2051,19 @@ fn analyze_single_target(
             }
 
             match selected_macho {
-                Some(macho) => {
+                Some(_macho) => {
+                    // Fat binary: re-parse buffer to get SymbolTable for selected arch
+                    let fat_symbols = SymbolTable::from(&binary_buffer)
+                        .map_err(|e| format!("Failed to parse fat binary: {e}"))?;
                     let result = analyze_macho(
-                        &macho,
+                        &fat_symbols,
                         &binary_buffer,
                         target_path,
                         Some(src_filter),
                         false, // show_timings
                         &config,
                         &output,
-                    );
+                    )?;
                     Ok(result.code_points)
                 }
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
@@ -2068,14 +2071,14 @@ fn analyze_single_target(
         }
         SymbolTable::Archive(archive) => {
             let result = analyze_archive(
-                &archive,
+                archive,
                 &binary_buffer,
                 target_path,
                 Some(src_filter),
                 false, // show_timings
                 &config,
                 &output,
-            );
+            )?;
             Ok(result.code_points)
         }
     }

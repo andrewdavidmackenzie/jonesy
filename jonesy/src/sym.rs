@@ -48,7 +48,7 @@ impl<'a> SymbolTable<'a> {
 
     /// Get the MachO binary if this is a MachO (not an archive).
     /// Panics on fat binaries — callers should handle that case
-    fn macho(&self) -> Option<&MachO<'_>> {
+    pub fn macho(&self) -> Option<&MachO<'_>> {
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => Some(macho),
             _ => None,

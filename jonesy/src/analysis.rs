@@ -50,22 +50,20 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
 }
 
 /// Result of analyzing a single binary, includes summary and optionally code points.
+#[derive(Default)]
 pub struct BinaryAnalysisResult {
     pub summary: AnalysisSummary,
     pub code_points: Vec<CrateCodePoint>,
 }
 
 impl BinaryAnalysisResult {
-    pub fn empty() -> Self {
-        Self {
-            summary: AnalysisSummary::default(),
-            code_points: Vec::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Merge another result into this one, combining code points.
     /// Code points at the same location have their causes merged.
-    pub fn merge(&mut self, other: BinaryAnalysisResult) {
+    fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
         // Build a map of existing code points by (file, line)
@@ -113,51 +111,12 @@ struct PanicCaller {
     target: String,
 }
 
-/// Analyze a single MachO binary/object for panic points.
-/// Returns a summary of panic code points found, plus code points.
-#[allow(clippy::too_many_arguments)]
-pub fn analyze_macho(
-    macho: &MachO,
-    buffer: &[u8],
-    binary_path: &Path,
-    crate_src_path: Option<&str>,
-    show_timings: bool,
-    config: &Config,
-    output: &OutputFormat,
-) -> BinaryAnalysisResult {
-    // Create SymbolTable for method calls
-    let symbols = match SymbolTable::from(buffer) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error: Failed to create symbol table: {}", e);
-            return BinaryAnalysisResult::empty();
-        }
-    };
-    let show_progress = output.show_progress();
-    let total_start = Instant::now();
+/// Find panic and abort entry point addresses in the binary's symbol table.
+/// Returns (mangled_name, demangled_name, address) for each entry point.
+fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
+    let mut entry_points = Vec::new();
 
-    // Build set of valid source files for crate source filtering.
-    // All DWARF paths are absolute, so we need the project root to determine
-    // which files belong to the user's crate.
-    let Some(project_root) = find_project_root(binary_path) else {
-        eprintln!(
-            "Error: Cannot find project root for {}",
-            binary_path.display()
-        );
-        return BinaryAnalysisResult::empty();
-    };
-    let project_context = ProjectContext::from_project_root(&project_root);
-
-    // Find all entry points: panic symbols + abort symbols
-    if show_progress {
-        eprintln!("  Finding entry points...");
-    }
-    let step_start = Instant::now();
-
-    // Collect all entry points with their addresses
-    let mut entry_points: Vec<(String, String, u64)> = Vec::new(); // (mangled, demangled, addr)
-
-    // Find panic entry points (first match from PANIC_SYMBOL_PATTERNS)
+    // Find panic entry point (first match from PANIC_SYMBOL_PATTERNS)
     for pattern in PANIC_SYMBOL_PATTERNS {
         if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
             && let Some(addr) = symbols.find_symbol_address(&sym)
@@ -171,7 +130,6 @@ pub fn analyze_macho(
     if let Ok(abort_symbols) = symbols.find_all_symbols_matching(ABORT_SYMBOL_PATTERNS) {
         for (sym, dem) in abort_symbols {
             if let Some(addr) = symbols.find_symbol_address(&sym) {
-                // Avoid duplicates
                 if !entry_points.iter().any(|(_, _, a)| *a == addr) {
                     entry_points.push((sym, dem, addr));
                 }
@@ -179,16 +137,47 @@ pub fn analyze_macho(
         }
     }
 
-    if show_timings {
+    entry_points
+}
+
+/// Analyze a single MachO binary/object for panic points.
+/// Returns a summary of panic code points found, plus code points.
+pub fn analyze_macho(
+    symbols: &SymbolTable,
+    buffer: &[u8],
+    binary_path: &Path,
+    crate_src_path: Option<&str>,
+    show_timings: bool,
+    config: &Config,
+    output: &OutputFormat,
+) -> Result<BinaryAnalysisResult, String> {
+    let macho = symbols
+        .macho()
+        .ok_or_else(|| "Expected MachO binary, got archive or fat binary".to_string())?;
+    let show_progress = output.show_progress();
+    let total_start = show_timings.then(Instant::now);
+
+    let project_root = find_project_root(binary_path)?;
+    let project_context = ProjectContext::from_project_root(&project_root)?;
+
+    // Find all entry points: panic symbols + abort symbols
+    if show_progress {
+        eprintln!("  Finding entry points...");
+    }
+    let step_start = show_timings.then(Instant::now);
+
+    let entry_points = find_entry_points(symbols);
+
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Find entry points: {:?}", step_start.elapsed());
     }
 
     if entry_points.is_empty() {
-        // No entry points found in this object
-        return BinaryAnalysisResult::empty();
+        // Not an error — binary has no panic symbols, so zero panic points
+        return Ok(BinaryAnalysisResult::new());
     }
 
-    if show_progress && entry_points.len() > 1 {
+    if show_progress {
         eprintln!(
             "  Found {} entry points (panic + abort)",
             entry_points.len()
@@ -198,16 +187,16 @@ pub fn analyze_macho(
     if show_progress {
         eprintln!("  Loading debug information...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
     let debug_info = load_debug_info(macho, binary_path, !show_progress);
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
 
     // Pre-compute the call graph by scanning all instructions once
     // Use debug info variant for source file/line enrichment
     let spinner = create_spinner(show_progress, "Scanning for function calls...");
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     // Create SymbolIndex once - CallGraph borrows from it to avoid allocations in hot path
     let symbol_index = SymbolIndex::new(macho);
@@ -268,18 +257,18 @@ pub fn analyze_macho(
         }
     };
     finish_spinner(spinner, "Scanning complete");
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
     // Build call trees for all entry points and merge results
-    let mut final_result = BinaryAnalysisResult::empty();
+    let mut final_result = BinaryAnalysisResult::new();
 
     // Track visited addresses across all entry points to avoid redundant work
     let visited = Arc::new(DashSet::new());
 
     let spinner = create_spinner(show_progress, "Building call trees...");
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     for (_mangled, demangled, target_addr) in &entry_points {
         // Skip if we've already visited this address from another entry point
@@ -323,7 +312,7 @@ pub fn analyze_macho(
             entry_points.len()
         ),
     );
-    if show_timings {
+    if let (Some(step_start), Some(total_start)) = (step_start, total_start) {
         eprintln!(
             "  [timing] Build call trees (with pruning): {:?}",
             step_start.elapsed()
@@ -331,7 +320,7 @@ pub fn analyze_macho(
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
 
-    final_result
+    Ok(final_result)
 }
 
 /// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
@@ -344,32 +333,18 @@ pub fn analyze_archive(
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
-) -> BinaryAnalysisResult {
-    // Build set of valid source files for crate source filtering.
-    let Some(project_root) = find_project_root(binary_path) else {
-        eprintln!(
-            "Error: Cannot find project root for {}",
-            binary_path.display()
-        );
-        return BinaryAnalysisResult::empty();
-    };
-    let project_context = ProjectContext::from_project_root(&project_root);
+) -> Result<BinaryAnalysisResult, String> {
+    let project_root = find_project_root(binary_path)?;
+    let project_context = ProjectContext::from_project_root(&project_root)?;
 
     // Helper to check if a file path is within the crate/workspace scope
-    let file_in_scope = |file: &str| {
-        crate_src_path.is_none_or(|_| {
-            let file = file.replace('\\', "/");
-            project_context.is_crate_source(&file)
-        })
-    };
-
     let show_progress = output.show_progress();
-    let total_start = Instant::now();
+    let total_start = show_timings.then(Instant::now);
 
     if show_progress {
         eprintln!("  Building library call graph from relocations...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     // Build a merged call graph from all .o files in the archive
     let mut merged_graph = LibraryCallGraph::empty();
@@ -422,7 +397,7 @@ pub fn analyze_archive(
         }
     }
 
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!(
             "  [timing] Build library call graph: {:?}",
             step_start.elapsed()
@@ -430,17 +405,18 @@ pub fn analyze_archive(
     }
 
     if merged_graph.is_empty() {
+        // Not an error — archive has no relocations to panic functions
         if show_progress {
             println!("\nNo call graph data found in archive");
         }
-        return BinaryAnalysisResult::empty();
+        return Ok(BinaryAnalysisResult::new());
     }
 
     // Find all callers of panic-related functions
     if show_progress {
         eprintln!("  Finding panic callers...");
     }
-    let step_start = Instant::now();
+    let step_start = show_timings.then(Instant::now);
 
     let mut panic_callers: HashSet<PanicCaller> = HashSet::new();
 
@@ -459,9 +435,7 @@ pub fn analyze_archive(
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)
-            // Also filter by crate_src_path if provided (for workspace scoping)
             if let Some(file) = dwarf_file
-                && file_in_scope(file)
                 && let Some(line) = caller_info.line
             {
                 panic_callers.insert(PanicCaller {
@@ -475,16 +449,17 @@ pub fn analyze_archive(
         }
     }
 
-    if show_timings {
+    if let Some(step_start) = step_start {
         eprintln!("  [timing] Find panic callers: {:?}", step_start.elapsed());
     }
 
     // Report results
     if panic_callers.is_empty() {
+        // Not an error — analysis succeeded but found no panic points in user code
         if show_progress {
             println!("\nNo panics in crate");
         }
-        return BinaryAnalysisResult::empty();
+        return Ok(BinaryAnalysisResult::new());
     }
 
     // Convert PanicCaller to CrateCodePoint
@@ -568,7 +543,7 @@ pub fn analyze_archive(
         }
     }
 
-    if show_timings {
+    if let Some(total_start) = total_start {
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
 
@@ -580,10 +555,10 @@ pub fn analyze_archive(
         files_affected.insert(point.file.clone());
     }
 
-    BinaryAnalysisResult {
+    Ok(BinaryAnalysisResult {
         summary: AnalysisSummary::from_points(points, files_affected),
         code_points: deduped,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -597,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_binary_analysis_result_empty() {
-        let result = BinaryAnalysisResult::empty();
+        let result = BinaryAnalysisResult::new();
         assert!(result.code_points.is_empty());
         assert_eq!(result.summary.panic_points(), 0);
         assert_eq!(result.summary.files_affected(), 0);
@@ -692,7 +667,7 @@ mod tests {
             code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
         };
 
-        let result2 = BinaryAnalysisResult::empty();
+        let result2 = BinaryAnalysisResult::new();
 
         result1.merge(result2);
 

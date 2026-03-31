@@ -16,125 +16,107 @@ use std::path::Path;
 pub struct ProjectContext {
     /// Absolute path prefixes for source directories (e.g., "/Users/me/project/src/")
     source_prefixes: Vec<String>,
-    /// Project root path, used to resolve relative DWARF paths to absolute
-    project_root: Option<String>,
 }
 
 impl ProjectContext {
     /// Build source directory prefixes from the project root.
     ///
-    /// Reads Cargo.toml to find workspace members and their source directories.
-    /// For single crates, uses `{project_root}/src/`.
-    /// For workspaces, uses `{project_root}/{member}/src/` for each member.
-    pub fn from_project_root(project_root: &Path) -> Self {
+    /// Uses `cargo_toml::Manifest::complete_from_path_and_workspace` to discover
+    /// target source paths (bin, lib), then extracts their
+    /// parent directories as source prefixes. This handles custom layouts like
+    /// `[[bin]] path = "crates/core/main.rs"` automatically.
+    pub fn from_project_root(project_root: &Path) -> Result<Self, String> {
         let mut source_prefixes = Vec::new();
 
         // Canonicalize to get an absolute path for reliable matching
         let project_root = fs::canonicalize(project_root).unwrap_or(project_root.to_path_buf());
         let project_root = project_root.as_path();
 
-        // TODO I think here we should use the Cargo crate to read and understand the
-        // project (workspace or crate)
-
         let cargo_toml = project_root.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                if let Some(workspace) = &manifest.workspace {
-                    // Workspace: add each member's src directory
-                    for member_pattern in &workspace.members {
-                        let member_paths =
-                            crate::cargo::expand_workspace_members(project_root, member_pattern);
-                        for member_path in member_paths {
-                            let src_dir = member_path.join("src");
-                            if let Some(prefix) = src_dir.to_str() {
-                                source_prefixes.push(format!("{}/", prefix));
-                            }
-                        }
-                    }
-                }
+        let content = std::fs::read_to_string(&cargo_toml)
+            .map_err(|e| format!("Cannot read {}: {}", cargo_toml.display(), e))?;
+        let manifest = cargo_toml::Manifest::from_slice(content.as_bytes())
+            .map_err(|e| format!("Cannot parse {}: {}", cargo_toml.display(), e))?;
 
-                if manifest.package.is_some() {
-                    // Single crate (or workspace root with its own package)
-                    let src_dir = project_root.join("src");
-                    if let Some(prefix) = src_dir.to_str() {
-                        source_prefixes.push(format!("{}/", prefix));
-                    }
+        // Process workspace members
+        if let Some(workspace) = &manifest.workspace {
+            for member_pattern in &workspace.members {
+                let member_paths =
+                    crate::cargo::expand_workspace_members(project_root, member_pattern);
+                for member_path in member_paths {
+                    Self::collect_source_dirs_from_manifest(&member_path, &mut source_prefixes);
                 }
             }
         }
 
-        // Fallback: if no prefixes found, use project_root/src/
+        // Process the root package (single crate or workspace root with its own package)
+        if manifest.package.is_some() {
+            Self::collect_source_dirs_from_manifest(project_root, &mut source_prefixes);
+        }
+
         if source_prefixes.is_empty() {
-            let src_dir = project_root.join("src");
-            if let Some(prefix) = src_dir.to_str() {
-                source_prefixes.push(format!("{}/", prefix));
-            }
+            return Err(format!(
+                "No source targets found in {}",
+                cargo_toml.display()
+            ));
         }
 
-        // For resolving relative DWARF paths, we need the workspace root
-        // (where cargo build actually runs), not just the member's project root.
-        // Walk up from project_root to find the top-level workspace Cargo.toml.
-        let workspace_root = Self::find_workspace_root(project_root);
-        let root_str = workspace_root.to_str().map(|s| format!("{}/", s));
+        // Deduplicate prefixes
+        source_prefixes.sort();
+        source_prefixes.dedup();
 
-        Self {
-            source_prefixes,
-            project_root: root_str,
-        }
+        Ok(Self { source_prefixes })
     }
 
-    /// Find the workspace root for a project.
-    fn find_workspace_root(project_root: &Path) -> std::path::PathBuf {
-        if Self::has_workspace_section(project_root) {
-            return project_root.to_path_buf();
-        }
+    /// Collect source directories from a crate's Cargo.toml bin and lib targets.
+    ///
+    /// Uses `complete_from_path_and_workspace` to resolve default target paths
+    /// (e.g., `src/main.rs`, `src/lib.rs`), then extracts parent directories.
+    /// Silently skips unreadable/unparseable manifests (workspace members may
+    /// not all be present).
+    fn collect_source_dirs_from_manifest(crate_root: &Path, prefixes: &mut Vec<String>) {
+        let cargo_toml = crate_root.join("Cargo.toml");
+        let Ok(content) = fs::read_to_string(&cargo_toml) else {
+            return;
+        };
+        let Ok(mut manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) else {
+            return;
+        };
 
-        let mut current = project_root.parent();
-        while let Some(dir) = current {
-            if Self::has_workspace_section(dir) {
-                return dir.to_path_buf();
-            }
-            current = dir.parent();
-        }
-        project_root.to_path_buf()
-    }
+        // complete_from_path_and_workspace populates default paths for targets
+        // (e.g., bin[].path = "src/main.rs" if src/main.rs exists)
+        let _ = manifest.complete_from_path_and_workspace::<toml::Value>(
+            &cargo_toml,
+            None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
+        );
 
-    /// Check if a directory's Cargo.toml has a [workspace] section.
-    fn has_workspace_section(dir: &Path) -> bool {
-        let cargo_toml = dir.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                return manifest.workspace.is_some();
-            }
-        }
-        false
+        // Collect source directories from lib and bin target paths
+        prefixes.extend(
+            manifest
+                .lib
+                .iter()
+                .chain(manifest.bin.iter())
+                .filter_map(|t| t.path.as_deref())
+                .filter_map(|p| Path::new(p).parent())
+                .filter_map(|parent| {
+                    let prefix = crate_root
+                        .join(parent)
+                        .to_str()?
+                        .trim_end_matches('/')
+                        .to_string();
+                    Some(format!("{}/", prefix))
+                }),
+        );
     }
 
     /// Check if a DWARF file path belongs to this project's source code.
     ///
-    /// For absolute paths: checks if the path starts with any source directory prefix.
-    /// For relative paths: resolves against workspace root and checks if the file exists.
+    /// All DWARF paths are absolute (comp_dir prepended at creation time),
+    /// so this is a simple prefix check.
     pub fn is_crate_source(&self, file_path: &str) -> bool {
-        if file_path.starts_with('/') {
-            return self
-                .source_prefixes
-                .iter()
-                .any(|prefix| file_path.starts_with(prefix.as_str()));
-        }
-
-        if let Some(root) = &self.project_root {
-            let absolute = format!("{}{}", root, file_path);
-            if self
-                .source_prefixes
-                .iter()
-                .any(|prefix| absolute.starts_with(prefix.as_str()))
-            {
-                let path = std::path::Path::new(&absolute);
-                return path.exists();
-            }
-        }
-
-        false
+        self.source_prefixes
+            .iter()
+            .any(|prefix| file_path.starts_with(prefix.as_str()))
     }
 }
 
@@ -146,7 +128,6 @@ mod tests {
     fn test_absolute_path_matching() {
         let ctx = ProjectContext {
             source_prefixes: vec!["/Users/me/project/src/".to_string()],
-            project_root: Some("/Users/me/project/".to_string()),
         };
 
         assert!(ctx.is_crate_source("/Users/me/project/src/main.rs"));
@@ -167,7 +148,6 @@ mod tests {
                 "/Users/me/workspace/crate_a/src/".to_string(),
                 "/Users/me/workspace/crate_b/src/".to_string(),
             ],
-            project_root: Some("/Users/me/workspace/".to_string()),
         };
 
         assert!(ctx.is_crate_source("/Users/me/workspace/crate_a/src/lib.rs"));
@@ -176,23 +156,9 @@ mod tests {
     }
 
     #[test]
-    fn test_relative_paths() {
-        let project_root = env!("CARGO_MANIFEST_DIR");
-        let ctx = ProjectContext {
-            source_prefixes: vec![format!("{}/src/", project_root)],
-            project_root: Some(format!("{}/", project_root)),
-        };
-
-        assert!(ctx.is_crate_source("src/lib.rs"));
-        assert!(!ctx.is_crate_source("src/nonexistent_file.rs"));
-        assert!(!ctx.is_crate_source("tests/test.rs"));
-    }
-
-    #[test]
     fn test_dependency_with_same_relative_path() {
         let ctx = ProjectContext {
             source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
-            project_root: Some("/Users/me/meshchat/".to_string()),
         };
 
         assert!(ctx.is_crate_source("/Users/me/meshchat/src/device.rs"));
@@ -205,7 +171,6 @@ mod tests {
     fn test_absolute_path_from_comp_dir() {
         let ctx = ProjectContext {
             source_prefixes: vec!["/Users/me/meshchat/src/".to_string()],
-            project_root: Some("/Users/me/meshchat/".to_string()),
         };
 
         let metal_device_rs =
@@ -220,7 +185,8 @@ mod tests {
     fn test_from_project_root_with_jonesy_project() {
         // Test using the actual jonesy project root
         let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let ctx = ProjectContext::from_project_root(project_root);
+        let ctx = ProjectContext::from_project_root(project_root)
+            .expect("Should create context for jonesy project");
 
         // Should have at least one source prefix
         assert!(!ctx.source_prefixes.is_empty());
