@@ -50,22 +50,20 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
 }
 
 /// Result of analyzing a single binary, includes summary and optionally code points.
+#[derive(Default)]
 pub struct BinaryAnalysisResult {
     pub summary: AnalysisSummary,
     pub code_points: Vec<CrateCodePoint>,
 }
 
 impl BinaryAnalysisResult {
-    pub fn empty() -> Self {
-        Self {
-            summary: AnalysisSummary::default(),
-            code_points: Vec::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Merge another result into this one, combining code points.
     /// Code points at the same location have their causes merged.
-    pub fn merge(&mut self, other: BinaryAnalysisResult) {
+    fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
         // Build a map of existing code points by (file, line)
@@ -169,8 +167,8 @@ pub fn analyze_macho(
     }
 
     if entry_points.is_empty() {
-        // No entry points found in this object
-        return Ok(BinaryAnalysisResult::empty());
+        // Not an error — binary has no panic symbols, so zero panic points
+        return Ok(BinaryAnalysisResult::new());
     }
 
     if show_progress && entry_points.len() > 1 {
@@ -258,7 +256,7 @@ pub fn analyze_macho(
     }
 
     // Build call trees for all entry points and merge results
-    let mut final_result = BinaryAnalysisResult::empty();
+    let mut final_result = BinaryAnalysisResult::new();
 
     // Track visited addresses across all entry points to avoid redundant work
     let visited = Arc::new(DashSet::new());
@@ -401,10 +399,11 @@ pub fn analyze_archive(
     }
 
     if merged_graph.is_empty() {
+        // Not an error — archive has no relocations to panic functions
         if show_progress {
             println!("\nNo call graph data found in archive");
         }
-        return Ok(BinaryAnalysisResult::empty());
+        return Ok(BinaryAnalysisResult::new());
     }
 
     // Find all callers of panic-related functions
@@ -450,10 +449,11 @@ pub fn analyze_archive(
 
     // Report results
     if panic_callers.is_empty() {
+        // Not an error — analysis succeeded but found no panic points in user code
         if show_progress {
             println!("\nNo panics in crate");
         }
-        return Ok(BinaryAnalysisResult::empty());
+        return Ok(BinaryAnalysisResult::new());
     }
 
     // Convert PanicCaller to CrateCodePoint
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_binary_analysis_result_empty() {
-        let result = BinaryAnalysisResult::empty();
+        let result = BinaryAnalysisResult::new();
         assert!(result.code_points.is_empty());
         assert_eq!(result.summary.panic_points(), 0);
         assert_eq!(result.summary.files_affected(), 0);
@@ -661,7 +661,7 @@ mod tests {
             code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
         };
 
-        let result2 = BinaryAnalysisResult::empty();
+        let result2 = BinaryAnalysisResult::new();
 
         result1.merge(result2);
 
