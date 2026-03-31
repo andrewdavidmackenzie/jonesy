@@ -111,16 +111,7 @@ pub fn derive_crate_src_path(binary_path: &Path) -> Option<String> {
 
 /// Expand a workspace member pattern to concrete directory paths.
 /// Handles glob patterns like "examples/*" by enumerating directories.
-pub fn expand_workspace_members(
-    workspace_root: &Path,
-    member_pattern: &str,
-) -> Vec<std::path::PathBuf> {
-    expand_workspace_member(workspace_root, member_pattern)
-}
-
-/// Expand a workspace member pattern to concrete paths.
-/// Handles glob patterns like "examples/*" by enumerating directories.
-fn expand_workspace_member(workspace_root: &Path, member_pattern: &str) -> Vec<std::path::PathBuf> {
+pub fn expand_workspace_members(workspace_root: &Path, member_pattern: &str) -> Vec<PathBuf> {
     if member_pattern.contains('*') {
         let base = member_pattern.trim_end_matches("/*");
         let base_path = workspace_root.join(base);
@@ -168,7 +159,7 @@ pub fn find_bin_src_path(workspace_root: &Path, bin_name: &str) -> Option<String
     let workspace = manifest.workspace.as_ref()?;
 
     for member_pattern in &workspace.members {
-        let member_paths = expand_workspace_member(workspace_root, member_pattern);
+        let member_paths = expand_workspace_members(workspace_root, member_pattern);
 
         for member_path in member_paths {
             let member_cargo_toml = member_path.join("Cargo.toml");
@@ -257,7 +248,7 @@ pub fn find_lib_src_path(workspace_root: &Path, lib_name: &str) -> Option<String
     let workspace = manifest.workspace.as_ref()?;
 
     for member_pattern in &workspace.members {
-        let member_paths = expand_workspace_member(workspace_root, member_pattern);
+        let member_paths = expand_workspace_members(workspace_root, member_pattern);
 
         for member_path in member_paths {
             let member_cargo_toml = member_path.join("Cargo.toml");
@@ -309,7 +300,7 @@ pub fn detect_library_type(binary_path: &Path) -> Option<String> {
             if let Some(workspace) = &manifest.workspace {
                 for member_pattern in &workspace.members {
                     // Handle glob patterns (e.g., "examples/*")
-                    let member_paths = expand_workspace_member(dir, member_pattern);
+                    let member_paths = expand_workspace_members(dir, member_pattern);
                     for member_path in member_paths {
                         if let Some(lib_type) = check_member_lib_type(&member_path, lib_name) {
                             return Some(lib_type);
@@ -582,7 +573,7 @@ version = "0.1.0"
     #[test]
     fn test_expand_workspace_member_no_glob() {
         let temp_dir = TempDir::new().unwrap();
-        let result = expand_workspace_member(temp_dir.path(), "crates/mylib");
+        let result = expand_workspace_members(temp_dir.path(), "crates/mylib");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], temp_dir.path().join("crates/mylib"));
     }
@@ -595,14 +586,14 @@ version = "0.1.0"
         fs::create_dir(crates_dir.join("lib_a")).unwrap();
         fs::create_dir(crates_dir.join("lib_b")).unwrap();
 
-        let result = expand_workspace_member(temp_dir.path(), "crates/*");
+        let result = expand_workspace_members(temp_dir.path(), "crates/*");
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_expand_workspace_member_glob_no_matches() {
         let temp_dir = TempDir::new().unwrap();
-        let result = expand_workspace_member(temp_dir.path(), "nonexistent/*");
+        let result = expand_workspace_members(temp_dir.path(), "nonexistent/*");
         assert!(result.is_empty());
     }
 

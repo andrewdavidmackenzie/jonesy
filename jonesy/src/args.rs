@@ -1,4 +1,4 @@
-use crate::cargo::{find_binary, find_library};
+use crate::cargo::{expand_workspace_members, find_binary, find_library};
 use cargo_toml::Manifest;
 use std::path::{Path, PathBuf};
 
@@ -246,7 +246,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     // Check if running from a workspace root first
     let at_workspace_root = is_workspace_root();
 
-    // Reject --bin and --lib at workspace level
+    // Reject --bin and --lib at the workspace level
     if at_workspace_root && (has_bin_flag || has_lib_flag) {
         return Err("--bin and --lib are not supported at workspace level. \
              cd into a member crate directory for target-specific analysis."
@@ -258,7 +258,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     } else if has_lib_flag {
         (parse_lib_args(&filtered_args)?, None)
     } else if filtered_args.len() == 1 {
-        // No arguments besides program name - try to find binaries from Cargo.toml
+        // No arguments besides the program name - try to find binaries from Cargo.toml
         // Check if this is a workspace root first
         if let Some(members) = find_workspace_members()? {
             (vec![], Some(members))
@@ -400,7 +400,7 @@ fn find_target_dir() -> Result<PathBuf, String> {
             && let Ok(content) = std::fs::read_to_string(&cargo_toml)
             && content.contains("[workspace]")
         {
-            // This is workspace root but no target/debug
+            // This is the workspace root but no target/debug
             return Err("target/debug/ directory not found. Run 'cargo build' first.".to_string());
         }
 
@@ -473,7 +473,7 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
         let mut root_manifest = manifest.clone();
         let _ = root_manifest.complete_from_path_and_workspace::<toml::Value>(
             &cargo_toml_path,
-            None::<(&Manifest<toml::Value>, &std::path::Path)>, // No parent workspace for the root
+            None::<(&Manifest<toml::Value>, &Path)>, // No parent workspace for the root
         );
         let binaries = collect_binaries_from_manifest(&root_manifest, &pkg_name, &target_dir);
         if !binaries.is_empty() {
@@ -486,29 +486,9 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
     }
 
     // Iterate through workspace members
+    let cwd = PathBuf::from(".");
     for member_pattern in &workspace.members {
-        // Handle glob patterns (e.g., "examples/*")
-        let member_paths = if member_pattern.contains('*') {
-            let base = member_pattern.trim_end_matches("/*").trim_end_matches("/*");
-            let base_path = PathBuf::from(base);
-            if base_path.is_dir() {
-                std::fs::read_dir(&base_path)
-                    .map(|entries| {
-                        entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().is_dir())
-                            .map(|e| e.path())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            }
-        } else {
-            vec![PathBuf::from(member_pattern)]
-        };
-
-        for member_path in member_paths {
+        for member_path in expand_workspace_members(&cwd, member_pattern) {
             let member_cargo_toml = member_path.join("Cargo.toml");
             if !member_cargo_toml.exists() {
                 continue;
@@ -531,7 +511,7 @@ fn find_workspace_members() -> Result<Option<Vec<WorkspaceMember>>, String> {
                 let binaries =
                     collect_binaries_from_manifest(&member_manifest, &pkg_name, &target_dir);
 
-                // Only add member if it has binaries
+                // Only add a member if it has binaries
                 if !binaries.is_empty() {
                     members.push(WorkspaceMember {
                         name: pkg_name,
@@ -598,30 +578,9 @@ fn find_workspace_binaries(manifest: &Manifest) -> Result<Vec<PathBuf>, String> 
     let mut binaries = Vec::new();
 
     // Iterate through workspace members
+    let cwd = PathBuf::from(".");
     for member_pattern in &workspace.members {
-        // Handle glob patterns (e.g., "examples/*")
-        let member_paths = if member_pattern.contains('*') {
-            // Simple glob expansion for common patterns like "examples/*"
-            let base = member_pattern.trim_end_matches("/*").trim_end_matches("/*");
-            let base_path = PathBuf::from(base);
-            if base_path.is_dir() {
-                std::fs::read_dir(&base_path)
-                    .map(|entries| {
-                        entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| e.path().is_dir())
-                            .map(|e| e.path())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            }
-        } else {
-            vec![PathBuf::from(member_pattern)]
-        };
-
-        for member_path in member_paths {
+        for member_path in expand_workspace_members(&cwd, member_pattern) {
             let member_cargo_toml = member_path.join("Cargo.toml");
             if !member_cargo_toml.exists() {
                 continue;
@@ -688,7 +647,7 @@ fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
 
     let package_name = &package.name;
 
-    // Look for target/debug in current directory or walk up to find workspace root
+    // Look for the target/debug in the current directory or walk up to find the workspace root
     let target_dir = find_target_dir()?;
 
     let mut binaries = Vec::new();
@@ -713,7 +672,7 @@ fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
 
     // Check for library target
     if manifest.lib.is_some() {
-        // Library name defaults to package name with hyphens replaced by underscores
+        // Library name defaults to the package name with hyphens replaced by underscores
         let lib_name = manifest
             .lib
             .as_ref()
@@ -794,7 +753,7 @@ fn find_bin_in_manifest(bin_name: &str, manifest: &Manifest, target_dir: &Path) 
         }
     }
 
-    // Check package name (default binary)
+    // Check the package name (default binary)
     if let Some(pkg) = &manifest.package {
         if pkg.name == bin_name || pkg.name.replace('-', "_") == bin_name {
             let bin_path = target_dir.join(&pkg.name);

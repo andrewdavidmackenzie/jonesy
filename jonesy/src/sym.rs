@@ -158,7 +158,7 @@ impl SymbolEntry {
 
 /// Precomputed sorted symbol index for efficient function lookups.
 /// Build once with `SymbolIndex::new()` and reuse for many lookups.
-/// Uses lazy demangling to avoid upfront cost of demangling all symbols.
+/// Uses lazy demangling to avoid the upfront cost of demangling all symbols.
 #[derive(Debug)]
 pub struct SymbolIndex {
     /// Sorted by address, with lazy demangling
