@@ -19,8 +19,6 @@ use goblin::mach::Mach::Binary;
 #[cfg(target_os = "macos")]
 use jonesy::analysis::analyze_macho;
 #[cfg(target_os = "macos")]
-use jonesy::args::OutputFormat;
-#[cfg(target_os = "macos")]
 use jonesy::call_tree::{
     CallTreeNode, CodePointMap, build_call_tree_parallel_filtered,
     build_call_tree_sequential_filtered, build_shallow_callers_filtered,
@@ -34,6 +32,8 @@ use jonesy::heuristics::PANIC_SYMBOL_PATTERNS;
 use jonesy::heuristics::detect_panic_cause;
 #[cfg(target_os = "macos")]
 use jonesy::inline_allows::check_inline_allow;
+#[cfg(target_os = "macos")]
+use jonesy::output::OutputFormat;
 #[cfg(target_os = "macos")]
 use jonesy::sym::{
     CallGraph, FunctionIndex, ProjectContext, SymbolIndex, SymbolTable, get_functions_from_dwarf,

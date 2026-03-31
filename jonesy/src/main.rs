@@ -13,12 +13,12 @@ use jonesy::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
 use jonesy::config::Config;
-use jonesy::html_output::{generate_html_output, generate_workspace_html_output};
-use jonesy::json_output::{
+use jonesy::lsp;
+use jonesy::output::html::{generate_html_output, generate_workspace_html_output};
+use jonesy::output::json::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
-use jonesy::lsp;
-use jonesy::text_output::generate_text_output;
+use jonesy::output::text::generate_text_output;
 use rayon::prelude::*;
 use std::error::Error;
 use std::fs;

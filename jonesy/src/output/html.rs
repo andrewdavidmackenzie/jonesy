@@ -3,9 +3,9 @@
 //! This module generates self-contained HTML reports with inline CSS
 //! for viewing panic analysis results in a browser.
 
+use super::json::WorkspaceResult;
 use crate::args::VERSION;
 use crate::call_tree::{AnalysisResult, CrateCodePoint};
-use crate::json_output::WorkspaceResult;
 
 /// Generate HTML output from analysis results.
 ///
@@ -755,7 +755,7 @@ pub fn generate_workspace_html_output(
 mod tests {
     use super::*;
     use crate::call_tree::AnalysisSummary;
-    use crate::json_output::WorkspaceMemberResult;
+    use crate::output::json::WorkspaceMemberResult;
     use crate::panic_cause::PanicCause;
     use std::collections::HashSet;
 
