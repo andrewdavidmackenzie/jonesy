@@ -12,13 +12,17 @@ use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
 use jonesy::cargo::{
     derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
 };
+use jonesy::output::OutputFormat;
+use std::collections::HashSet;
+use std::path::Path;
+
 use jonesy::config::Config;
-use jonesy::html_output::{generate_html_output, generate_workspace_html_output};
-use jonesy::json_output::{
+use jonesy::lsp;
+use jonesy::output::html::{generate_html_output, generate_workspace_html_output};
+use jonesy::output::json::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
-use jonesy::lsp;
-use jonesy::text_output::generate_text_output;
+use jonesy::output::text::generate_text_output;
 use rayon::prelude::*;
 use std::error::Error;
 use std::fs;
@@ -46,13 +50,35 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_global()
         .ok(); // Ignore error if pool already initialized
 
-    // Handle workspace mode differently
     if let Some(ref workspace_members) = parsed_args.workspace_members {
-        return analyze_workspace(workspace_members, &parsed_args);
+        analyze_workspace(workspace_members, &parsed_args)
+    } else {
+        analyze_package(&parsed_args)
     }
+}
 
-    use std::collections::HashSet;
+/// Merge code points from an analysis result into an accumulator, deduplicating by (file, line).
+/// When a duplicate is found, causes are merged into the existing entry.
+fn merge_code_points(
+    result: &mut BinaryAnalysisResult,
+    seen: &mut HashSet<(String, u32)>,
+    accumulator: &mut Vec<CrateCodePoint>,
+) {
+    for point in result.code_points.drain(..) {
+        let key = (point.file.clone(), point.line);
+        if seen.insert(key) {
+            accumulator.push(point);
+        } else if let Some(existing) = accumulator
+            .iter_mut()
+            .find(|p| p.file == point.file && p.line == point.line)
+        {
+            existing.causes.extend(point.causes);
+        }
+    }
+}
 
+/// Analyze a single package (non-workspace) with one or more binary targets.
+fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut total_summary = AnalysisSummary::default();
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut seen_code_points: HashSet<(String, u32)> = HashSet::new();
@@ -60,7 +86,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut project_root_path: Option<String> = None;
 
     for binary_path in &parsed_args.binaries {
-        // Canonicalize the binary path to ensure absolute paths for clickable links
         let binary_path = binary_path
             .canonicalize()
             .unwrap_or_else(|_| binary_path.clone());
@@ -119,63 +144,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             project_root_path = Some(project_root.to_string_lossy().to_string());
         }
 
-        match &symbols {
-            SymbolTable::MachO(Binary(_)) => {
-                let crate_src_path = derive_crate_src_path(&binary_path);
-                let result = analyze_macho(
-                    &symbols,
-                    &binary_buffer,
-                    &binary_path,
-                    crate_src_path.as_deref(),
-                    parsed_args.show_timings,
-                    &config,
-                    &parsed_args.output,
-                )?;
-                total_summary.add(&result.summary);
-                // Deduplicate code points across binaries, merging causes
-                for point in result.code_points {
-                    let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
-                        all_code_points.push(point);
-                    } else if let Some(existing) = all_code_points
-                        .iter_mut()
-                        .find(|p| p.file == point.file && p.line == point.line)
-                    {
-                        existing.causes.extend(point.causes);
-                    }
-                }
-            }
-            SymbolTable::MachO(Fat(multi_arch)) => {
-                if !parsed_args.output.is_summary_only() {
-                    println!("FAT: {:?} architectures", multi_arch.arches()?);
-                }
-            }
-            SymbolTable::Archive(archive) => {
-                // Use relocation-based analysis for library archives
-                let crate_src_path = derive_crate_src_path(&binary_path);
-                let result = analyze_archive(
-                    archive,
-                    &binary_buffer,
-                    &binary_path,
-                    crate_src_path.as_deref(),
-                    parsed_args.show_timings,
-                    &config,
-                    &parsed_args.output,
-                )?;
-                total_summary.add(&result.summary);
-                // Deduplicate code points across binaries, merging causes
-                for point in result.code_points {
-                    let key = (point.file.clone(), point.line);
-                    if seen_code_points.insert(key) {
-                        all_code_points.push(point);
-                    } else if let Some(existing) = all_code_points
-                        .iter_mut()
-                        .find(|p| p.file == point.file && p.line == point.line)
-                    {
-                        existing.causes.extend(point.causes);
-                    }
-                }
-            }
+        let crate_src_path = derive_crate_src_path(&binary_path);
+        if let Some(mut result) = analyze_binary(
+            &symbols,
+            &binary_buffer,
+            &binary_path,
+            crate_src_path.as_deref(),
+            parsed_args.show_timings,
+            &config,
+            &parsed_args.output,
+        )? {
+            total_summary.add(&result.summary);
+            merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
         }
 
         if parsed_args.output.show_progress() {
@@ -183,7 +163,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Create unified analysis result
+    // Create the unified analysis result
     let result = AnalysisResult::new(
         project_name.unwrap_or_else(|| "unknown".to_string()),
         project_root_path.unwrap_or_else(|| ".".to_string()),
@@ -215,6 +195,42 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::process::exit(result.panic_points() as i32);
 }
 
+/// Analyze a binary or archive based on its SymbolTable type.
+/// Returns the analysis result, or None for unsupported formats (fat binaries).
+fn analyze_binary(
+    symbols: &SymbolTable,
+    buffer: &[u8],
+    binary_path: &Path,
+    crate_src_path: Option<&str>,
+    show_timings: bool,
+    config: &Config,
+    output: &OutputFormat,
+) -> Result<Option<BinaryAnalysisResult>, String> {
+    match symbols {
+        SymbolTable::MachO(Binary(_)) => analyze_macho(
+            symbols,
+            buffer,
+            binary_path,
+            crate_src_path,
+            show_timings,
+            config,
+            output,
+        )
+        .map(Some),
+        SymbolTable::MachO(Fat(_)) => Ok(None),
+        SymbolTable::Archive(archive) => analyze_archive(
+            archive,
+            buffer,
+            binary_path,
+            crate_src_path,
+            show_timings,
+            config,
+            output,
+        )
+        .map(Some),
+    }
+}
+
 /// Analyze a workspace with multiple member crates.
 /// Produces per-crate reports and an aggregate workspace summary.
 fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box<dyn Error>> {
@@ -240,7 +256,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 .iter()
                 .filter_map(|binary_path| derive_crate_src_path(binary_path))
         })
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>()
         .join("|");
@@ -251,7 +267,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         }
 
         // Load configuration once for this member crate (same for all binaries)
-        // If user explicitly provided --config, fail fast on errors
+        // If the user explicitly provided --config, fail fast on errors
         let config = match Config::load_for_project(&member.path, args.config_path.as_deref()) {
             Ok(c) => c,
             Err(e) if args.config_path.is_some() => {
@@ -285,31 +301,16 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 let binary_buffer = fs::read(&binary_path).ok()?;
                 let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
-                let result = match &symbols {
-                    SymbolTable::MachO(Binary(_)) => analyze_macho(
-                        &symbols,
-                        &binary_buffer,
-                        &binary_path,
-                        Some(&workspace_src_path),
-                        args.show_timings,
-                        &config,
-                        &args.output,
-                    )
-                    .ok()?,
-                    SymbolTable::MachO(Fat(_)) => {
-                        return None; // FAT binaries not supported
-                    }
-                    SymbolTable::Archive(archive) => analyze_archive(
-                        archive,
-                        &binary_buffer,
-                        &binary_path,
-                        Some(&workspace_src_path),
-                        args.show_timings,
-                        &config,
-                        &args.output,
-                    )
-                    .ok()?,
-                };
+                let result = analyze_binary(
+                    &symbols,
+                    &binary_buffer,
+                    &binary_path,
+                    Some(&workspace_src_path),
+                    args.show_timings,
+                    &config,
+                    &args.output,
+                )
+                .ok()??;
                 Some((binary_path, result))
             })
             .collect();
@@ -317,26 +318,14 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         // Merge results sequentially
         let mut member_summary = AnalysisSummary::default();
         let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
-        let mut seen_code_points: std::collections::HashSet<(String, u32)> =
-            std::collections::HashSet::new();
+        let mut seen_code_points: HashSet<(String, u32)> = HashSet::new();
 
-        for (binary_path, result) in binary_results {
+        for (binary_path, mut result) in binary_results {
             if args.output.show_progress() {
                 println!("Processed {}", binary_path.display());
             }
             member_summary.add(&result.summary);
-            // Collect code points with deduplication, merging causes
-            for point in result.code_points {
-                let key = (point.file.clone(), point.line);
-                if seen_code_points.insert(key) {
-                    member_code_points.push(point);
-                } else if let Some(existing) = member_code_points
-                    .iter_mut()
-                    .find(|p| p.file == point.file && p.line == point.line)
-                {
-                    existing.causes.extend(point.causes);
-                }
-            }
+            merge_code_points(&mut result, &mut seen_code_points, &mut member_code_points);
         }
 
         // For text output, print immediately; for JSON/HTML, collect for later
