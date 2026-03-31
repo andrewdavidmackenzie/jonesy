@@ -11,8 +11,6 @@
 //! The comment applies to the line it's on, making it easy to place at the
 //! end of lines with potential panics.
 
-#![allow(dead_code)] // Some functions reserved for future batch scanning use
-
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;

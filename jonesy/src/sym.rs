@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO Just for now
-#![allow(dead_code)] // TODO Just for now
-
 pub use crate::call_graph::{CallGraph, CallerInfo};
 pub use crate::crate_line_table::{CrateLineEntry, CrateLineTable};
 pub use crate::debug_info::load_debug_info;
@@ -51,17 +48,11 @@ impl<'a> SymbolTable<'a> {
 
     /// Get the MachO binary, if this is a MachO (not an archive).
     /// Panics on fat binaries — callers should handle that case.
-    pub fn macho(&self) -> Option<&MachO<'_>> {
+    fn macho(&self) -> Option<&MachO<'_>> {
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => Some(macho),
             _ => None,
         }
-    }
-
-    /// Check if the binary has any DWARF debug info.
-    pub fn has_dwarf_sections(&self) -> bool {
-        self.macho()
-            .is_some_and(crate::debug_info::has_dwarf_sections)
     }
 
     /// Returns the first symbol found whose name matches the given regex pattern.
@@ -288,18 +279,6 @@ mod tests {
     }
 
     // -- SymbolTable method tests (using real binary) --
-
-    #[test]
-    fn test_has_dwarf_sections_on_real_binary() {
-        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
-        if let Ok(buffer) = std::fs::read(&binary_path) {
-            if let Ok(symbols) = SymbolTable::from(&buffer) {
-                // Debug binary should have DWARF sections (or a dSYM)
-                // Either way, this exercises the code path
-                let _has_dwarf = symbols.has_dwarf_sections();
-            }
-        }
-    }
 
     #[test]
     fn test_find_symbol_containing_on_real_binary() {

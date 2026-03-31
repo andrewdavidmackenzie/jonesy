@@ -31,7 +31,6 @@
 
 /// Known panic causes with explanations and suggestions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // Some variants reserved for future detection
 pub enum PanicCause {
     /// Explicit panic!() macro
     ExplicitPanic,
@@ -499,7 +498,6 @@ impl PanicCause {
     /// # References
     /// - Cargo profiles: <https://doc.rust-lang.org/cargo/reference/profiles.html>
     /// - Undefined behavior: <https://doc.rust-lang.org/reference/behavior-considered-undefined.html>
-    #[allow(dead_code)] // May be useful for future filtering features
     pub fn is_debug_only(&self) -> bool {
         matches!(
             self,

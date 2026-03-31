@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO Just for now
-
 use crate::project_context::ProjectContext;
 use crate::string_tables::StringTables;
 use gimli::{
@@ -38,7 +36,6 @@ pub struct FunctionInfo {
 /// Bucket size for spatial partitioning of inlined functions.
 /// Using 64 bytes provides fine-grained partitioning with low per-bucket counts.
 const INLINED_BUCKET_SHIFT: u32 = 12; // 2^12 = 4096 bytes (optimal per benchmarking)
-const INLINED_BUCKET_SIZE: u64 = 1 << INLINED_BUCKET_SHIFT;
 
 /// Index for O(log n) function lookup by address.
 /// Functions are sorted by start_address for binary search.

@@ -1,4 +1,3 @@
-#![allow(dead_code)] // TODO Just for now
 use goblin::Object;
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
@@ -83,7 +82,7 @@ pub fn find_dsym(binary_path: &Path) -> Option<PathBuf> {
 }
 
 /// Return true if `macho` has a `__DWARF` segment or a section named `__debug_*` in any segment
-pub(crate) fn has_dwarf_sections(macho: &MachO) -> bool {
+fn has_dwarf_sections(macho: &MachO) -> bool {
     for segment in macho.segments.iter() {
         if let Ok(name) = segment.name()
             && name == "__DWARF"

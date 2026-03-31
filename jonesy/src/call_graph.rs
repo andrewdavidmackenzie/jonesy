@@ -1,5 +1,4 @@
 #![allow(unused_variables)] // TODO Just for now
-#![allow(dead_code)] // TODO Just for now
 
 use crate::crate_line_table::CrateLineTable;
 use crate::full_line_table::FullLineTable;
@@ -9,7 +8,7 @@ use crate::function_index::{
 use crate::project_context::ProjectContext;
 use crate::sym::SymbolIndex;
 use capstone::arch::BuildsCapstone;
-use capstone::{Capstone, Insn, arch};
+use capstone::{Capstone, arch};
 use dashmap::DashMap;
 use goblin::Object;
 use goblin::mach::{Mach, MachO};
@@ -255,40 +254,6 @@ impl<'a> CallGraph<'a> {
         Ok(Self { edges })
     }
 
-    /// Build a call graph by scanning all instructions once (no debug info).
-    /// Non-parallel version for comparison or single-threaded mode.
-    #[allow(dead_code)]
-    pub fn build_sequential(
-        macho: &MachO,
-        buffer: &[u8],
-        symbol_index: Option<&'a SymbolIndex>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = HashMap::new();
-
-        let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
-            return Ok(Self { edges });
-        };
-
-        let cs = Capstone::new()
-            .arm64()
-            .mode(arch::arm64::ArchMode::Arm)
-            .build()?;
-
-        let instructions = cs
-            .disasm_all(text_data, text_addr)
-            .map_err(|e| format!("Disassembly failed: {e}"))?;
-
-        for instruction in instructions.iter() {
-            if let Some((call_target, caller_info)) =
-                process_instruction_basic(symbol_index, instruction)
-            {
-                edges.entry(call_target).or_default().push(caller_info);
-            }
-        }
-
-        Ok(Self { edges })
-    }
-
     /// Build a call graph with debug info enrichment.
     /// Uses parallel disassembly and parallel processing for faster analysis.
     /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
@@ -425,36 +390,6 @@ impl<'a> CallGraph<'a> {
 
 /// Process a single instruction and extract call information (basic version without debug info).
 /// Returns (call_target, CallerInfo) if this is a bl/b instruction, None otherwise.
-fn process_instruction_basic<'a>(
-    symbol_index: Option<&'a SymbolIndex>,
-    instruction: &Insn,
-) -> Option<(u64, CallerInfo<'a>)> {
-    // Match both BL (branch with link) and B (branch) for tail call detection
-    let mnemonic = instruction.mnemonic();
-    if mnemonic != Some("bl") && mnemonic != Some("b") {
-        return None;
-    }
-
-    let operand = instruction.op_str()?;
-    let addr_str = operand.trim_start_matches("#0x");
-    let call_target = u64::from_str_radix(addr_str, 16).ok()?;
-    let (func_addr, func_name) =
-        symbol_index.and_then(|idx| idx.find_containing(instruction.address()))?;
-
-    Some((
-        call_target,
-        CallerInfo {
-            caller_name: Cow::Borrowed(func_name),
-            caller_start_address: func_addr,
-            caller_file: None,
-            call_site_addr: instruction.address(),
-            file: None,
-            line: None,
-            column: None,
-        },
-    ))
-}
-
 /// Process instruction data using pre-built line tables for fast O(log n) lookups.
 /// Falls back to symbol table lookup if DWARF doesn't contain the function.
 /// DWARF names use Cow::Owned, symbol fallback uses Cow::Borrowed from SymbolIndex.
