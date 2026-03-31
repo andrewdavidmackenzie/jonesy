@@ -1,4 +1,4 @@
-.PHONY: all clippy build test clean build-examples
+.PHONY: all clippy build test clean build-examples coverage
 
 all: clippy test
 
@@ -18,3 +18,6 @@ build-examples: build
 
 test: build-examples
 	cargo test -p jonesy
+
+coverage: build-examples
+	cargo llvm-cov -p jonesy
