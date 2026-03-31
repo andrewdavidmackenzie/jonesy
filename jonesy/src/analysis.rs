@@ -27,7 +27,7 @@ use std::time::Instant;
 
 /// Create a spinner for long-running operations.
 /// Returns None if progress display is disabled or stderr is not a terminal.
-pub fn create_spinner(show_progress: bool, message: &str) -> Option<ProgressBar> {
+fn create_spinner(show_progress: bool, message: &str) -> Option<ProgressBar> {
     if !show_progress || !io::stderr().is_terminal() {
         return None;
     }
@@ -43,7 +43,7 @@ pub fn create_spinner(show_progress: bool, message: &str) -> Option<ProgressBar>
 }
 
 /// Finish a spinner with a completion message.
-pub fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
+fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
     if let Some(s) = spinner {
         s.finish_with_message(message.to_string());
     }
