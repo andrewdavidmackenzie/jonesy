@@ -220,7 +220,8 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
             return;
         }
 
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
+            .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -259,7 +260,8 @@ fn bench_is_crate_source(c: &mut Criterion) {
     ensure_jonesy_debug_built();
 
     let root = workspace_root();
-    let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
+    let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
+        .expect("Failed to create project context");
 
     let test_paths = vec![
         "jonesy/src/main.rs",
@@ -317,7 +319,8 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             return;
         }
 
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
+            .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,
@@ -437,7 +440,8 @@ fn bench_call_graph_build(c: &mut Criterion) {
     let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
+            .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
 
         c.bench_function("call_graph_build_jonesy", |b| {
@@ -532,7 +536,8 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
             return;
         }
 
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"));
+        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
+            .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
         let call_graph = CallGraph::build_with_debug_info(
             macho,

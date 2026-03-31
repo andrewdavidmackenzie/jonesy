@@ -23,91 +23,105 @@ pub struct ProjectContext {
 impl ProjectContext {
     /// Build source directory prefixes from the project root.
     ///
-    /// Reads Cargo.toml to find workspace members and their source directories.
-    /// For single crates, uses `{project_root}/src/`.
-    /// For workspaces, uses `{project_root}/{member}/src/` for each member.
-    pub fn from_project_root(project_root: &Path) -> Self {
+    /// Uses `cargo_toml::Manifest::complete_from_path_and_workspace` to discover
+    /// all target source paths (bin, lib, examples, etc.), then extracts their
+    /// parent directories as source prefixes. This handles custom layouts like
+    /// `[[bin]] path = "crates/core/main.rs"` automatically.
+    pub fn from_project_root(project_root: &Path) -> Result<Self, String> {
         let mut source_prefixes = Vec::new();
 
         // Canonicalize to get an absolute path for reliable matching
         let project_root = fs::canonicalize(project_root).unwrap_or(project_root.to_path_buf());
         let project_root = project_root.as_path();
 
-        // TODO I think here we should use the Cargo crate to read and understand the
-        // project (workspace or crate)
-
         let cargo_toml = project_root.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                if let Some(workspace) = &manifest.workspace {
-                    // Workspace: add each member's src directory
-                    for member_pattern in &workspace.members {
-                        let member_paths =
-                            crate::cargo::expand_workspace_members(project_root, member_pattern);
-                        for member_path in member_paths {
-                            let src_dir = member_path.join("src");
-                            if let Some(prefix) = src_dir.to_str() {
-                                source_prefixes.push(format!("{}/", prefix));
-                            }
-                        }
-                    }
-                }
+        let content = std::fs::read_to_string(&cargo_toml)
+            .map_err(|e| format!("Cannot read {}: {}", cargo_toml.display(), e))?;
+        let manifest = cargo_toml::Manifest::from_slice(content.as_bytes())
+            .map_err(|e| format!("Cannot parse {}: {}", cargo_toml.display(), e))?;
 
-                if manifest.package.is_some() {
-                    // Single crate (or workspace root with its own package)
-                    let src_dir = project_root.join("src");
-                    if let Some(prefix) = src_dir.to_str() {
-                        source_prefixes.push(format!("{}/", prefix));
-                    }
+        // Process workspace members
+        if let Some(workspace) = &manifest.workspace {
+            for member_pattern in &workspace.members {
+                let member_paths =
+                    crate::cargo::expand_workspace_members(project_root, member_pattern);
+                for member_path in member_paths {
+                    Self::collect_source_dirs_from_manifest(&member_path, &mut source_prefixes);
                 }
             }
         }
 
-        // Fallback: if no prefixes found, use project_root/src/
+        // Process the root package (single crate or workspace root with its own package)
+        if manifest.package.is_some() {
+            Self::collect_source_dirs_from_manifest(project_root, &mut source_prefixes);
+        }
+
         if source_prefixes.is_empty() {
-            let src_dir = project_root.join("src");
-            if let Some(prefix) = src_dir.to_str() {
-                source_prefixes.push(format!("{}/", prefix));
-            }
+            return Err(format!(
+                "No source targets found in {}",
+                cargo_toml.display()
+            ));
         }
 
-        // For resolving relative DWARF paths, we need the workspace root
-        // (where cargo build actually runs), not just the member's project root.
-        // Walk up from project_root to find the top-level workspace Cargo.toml.
-        let workspace_root = Self::find_workspace_root(project_root);
-        let root_str = workspace_root.to_str().map(|s| format!("{}/", s));
+        // Deduplicate prefixes
+        source_prefixes.sort();
+        source_prefixes.dedup();
 
-        Self {
+        let root_str = project_root.to_str().map(|s| format!("{}/", s));
+
+        Ok(Self {
             source_prefixes,
             project_root: root_str,
-        }
+        })
     }
 
-    /// Find the workspace root for a project.
-    fn find_workspace_root(project_root: &Path) -> std::path::PathBuf {
-        if Self::has_workspace_section(project_root) {
-            return project_root.to_path_buf();
+    /// Collect source directories from a crate's Cargo.toml targets.
+    ///
+    /// Uses `complete_from_path_and_workspace` to resolve default target paths
+    /// (e.g., `src/main.rs`, `src/lib.rs`), then extracts parent directories.
+    fn collect_source_dirs_from_manifest(crate_root: &Path, prefixes: &mut Vec<String>) {
+        let cargo_toml = crate_root.join("Cargo.toml");
+        let Ok(content) = std::fs::read_to_string(&cargo_toml) else {
+            return;
+        };
+        let Ok(mut manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) else {
+            return;
+        };
+
+        // complete_from_path_and_workspace populates default paths for targets
+        // (e.g., bin[].path = "src/main.rs" if src/main.rs exists)
+        let _ = manifest.complete_from_path_and_workspace::<toml::Value>(
+            &cargo_toml,
+            None::<(&cargo_toml::Manifest<toml::Value>, &std::path::Path)>,
+        );
+
+        // Collect source directories from all targets
+        let mut target_paths: Vec<&str> = Vec::new();
+
+        // Library target
+        if let Some(lib) = &manifest.lib {
+            if let Some(path) = &lib.path {
+                target_paths.push(path);
+            }
         }
 
-        let mut current = project_root.parent();
-        while let Some(dir) = current {
-            if Self::has_workspace_section(dir) {
-                return dir.to_path_buf();
+        // Binary targets
+        for bin in &manifest.bin {
+            if let Some(path) = &bin.path {
+                target_paths.push(path);
             }
-            current = dir.parent();
         }
-        project_root.to_path_buf()
-    }
 
-    /// Check if a directory's Cargo.toml has a [workspace] section.
-    fn has_workspace_section(dir: &Path) -> bool {
-        let cargo_toml = dir.join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(manifest) = cargo_toml::Manifest::from_slice(content.as_bytes()) {
-                return manifest.workspace.is_some();
+        // Convert target source file paths to directory prefixes
+        for path in target_paths {
+            let source_path = std::path::Path::new(path);
+            if let Some(parent) = source_path.parent() {
+                let abs_dir = crate_root.join(parent);
+                if let Some(prefix) = abs_dir.to_str() {
+                    prefixes.push(format!("{}/", prefix));
+                }
             }
         }
-        false
     }
 
     /// Check if a DWARF file path belongs to this project's source code.
@@ -220,7 +234,8 @@ mod tests {
     fn test_from_project_root_with_jonesy_project() {
         // Test using the actual jonesy project root
         let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let ctx = ProjectContext::from_project_root(project_root);
+        let ctx = ProjectContext::from_project_root(project_root)
+            .expect("Should create context for jonesy project");
 
         // Should have at least one source prefix
         assert!(!ctx.source_prefixes.is_empty());

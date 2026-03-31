@@ -146,7 +146,13 @@ pub fn analyze_macho(
         );
         return BinaryAnalysisResult::empty();
     };
-    let project_context = ProjectContext::from_project_root(&project_root);
+    let project_context = match ProjectContext::from_project_root(&project_root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return BinaryAnalysisResult::empty();
+        }
+    };
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -353,7 +359,13 @@ pub fn analyze_archive(
         );
         return BinaryAnalysisResult::empty();
     };
-    let project_context = ProjectContext::from_project_root(&project_root);
+    let project_context = match ProjectContext::from_project_root(&project_root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return BinaryAnalysisResult::empty();
+        }
+    };
 
     // Helper to check if a file path is within the crate/workspace scope
     let file_in_scope = |file: &str| {
