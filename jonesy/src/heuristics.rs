@@ -146,7 +146,7 @@ enum Match {
 /// Rule table for panic cause classification.
 ///
 /// Each entry is `(pattern, match_kind, cause)`. Rules are checked in order;
-/// first match wins. Uses `ends_with` for method names (avoids `unwrap_or*`
+/// the first match wins. Uses `ends_with` for method names (avoids `unwrap_or*`
 /// false positives) and `contains` for internal runtime function names.
 const PANIC_CAUSE_RULES: &[(&str, Match, PanicCause)] = &[
     // Async
@@ -310,7 +310,7 @@ const PANIC_CAUSE_RULES: &[(&str, Match, PanicCause)] = &[
         Match::ContainsBoth("grow"),
         PanicCause::CapacityOverflow,
     ),
-    // Index trait — sub-classify by collection type (before generic Index entries)
+    // Index trait — subclassify by collection type (before generic Index entries)
     (
         ">::index",
         Match::ContainsBoth("HashMap"),
@@ -336,13 +336,13 @@ const PANIC_CAUSE_RULES: &[(&str, Match, PanicCause)] = &[
         Match::ContainsBoth("str::"),
         PanicCause::StringSliceError,
     ),
-    // Index trait — str sub-classification for index< patterns
+    // Index trait — str subclassification for index< patterns
     (
         "index<",
         Match::ContainsBoth("str::"),
         PanicCause::StringSliceError,
     ),
-    // Index trait — generic (after sub-classifications)
+    // Index trait — generic (after subclassifications)
     (">::index", Match::Contains, PanicCause::BoundsCheck),
     ("Index::index", Match::Contains, PanicCause::BoundsCheck),
     ("index<", Match::Contains, PanicCause::BoundsCheck),
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_detect_panic_cause_index_string() {
-        // Fully qualified demangled names contain both Index trait pattern and "str::"
+        // Fully qualified demangled names contain both the Index trait pattern and "str::"
         assert_eq!(
             detect_panic_cause("core::str::traits::<impl Index<I> for str>::index"),
             Some(PanicCause::StringSliceError)
