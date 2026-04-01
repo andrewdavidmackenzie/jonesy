@@ -146,10 +146,10 @@ pub fn analyze_macho(
     symbols: &SymbolTable,
     buffer: &[u8],
     binary_path: &Path,
-    crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
+    project_context: &ProjectContext,
 ) -> Result<BinaryAnalysisResult, String> {
     let macho = symbols
         .macho()
@@ -158,7 +158,6 @@ pub fn analyze_macho(
     let total_start = show_timings.then(Instant::now);
 
     let project_root = find_project_root(binary_path)?;
-    let project_context = ProjectContext::from_project_root(&project_root)?;
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -208,10 +207,9 @@ pub fn analyze_macho(
                 buffer,
                 macho,
                 buffer,
-                crate_src_path,
                 show_timings,
                 symbol_index.as_ref(),
-                &project_context,
+                project_context,
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -229,10 +227,9 @@ pub fn analyze_macho(
                     buffer,
                     debug_mach,
                     dsym_info.borrow_debug_buffer(),
-                    crate_src_path,
                     show_timings,
                     symbol_index.as_ref(),
-                    &project_context,
+                    project_context,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -280,27 +277,17 @@ pub fn analyze_macho(
         let mut root = CallTreeNode::new_root(demangled.clone());
 
         // Build the call tree for this entry point
-        root.callers = build_call_tree_parallel_filtered(
-            &call_graph,
-            *target_addr,
-            &visited,
-            &project_context,
-        );
+        root.callers =
+            build_call_tree_parallel_filtered(&call_graph, *target_addr, &visited, project_context);
 
         // Collect code points from this tree
-        if crate_src_path.is_some() {
-            let (code_points, _summary) = collect_crate_code_points(
-                &root,
-                config,
-                &project_context,
-                Some(project_root.as_path()),
-            );
-            let entry_result = BinaryAnalysisResult {
-                summary: AnalysisSummary::default(),
-                code_points,
-            };
-            final_result.merge(entry_result);
-        }
+        let (code_points, _summary) =
+            collect_crate_code_points(&root, config, project_context, Some(project_root.as_path()));
+        let entry_result = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points,
+        };
+        final_result.merge(entry_result);
     }
 
     let total_nodes = visited.len();
@@ -328,15 +315,11 @@ pub fn analyze_macho(
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
-    binary_path: &Path,
-    crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
+    project_context: &ProjectContext,
 ) -> Result<BinaryAnalysisResult, String> {
-    let project_root = find_project_root(binary_path)?;
-    let project_context = ProjectContext::from_project_root(&project_root)?;
-
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
@@ -369,12 +352,8 @@ pub fn analyze_archive(
         // Parse the object file as Mach-O and build its call graph
         match MachO::parse(member_data, 0) {
             Ok(obj_macho) => {
-                match LibraryCallGraph::build_from_object(
-                    &obj_macho,
-                    member_data,
-                    crate_src_path,
-                    &project_context,
-                ) {
+                match LibraryCallGraph::build_from_object(&obj_macho, member_data, project_context)
+                {
                     Ok(obj_graph) => merged_graph.merge(obj_graph),
                     Err(e) => {
                         if show_progress {

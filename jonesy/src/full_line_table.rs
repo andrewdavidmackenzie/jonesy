@@ -129,7 +129,6 @@ impl FullLineTable {
         func_start: u64,
         func_end: u64,
         func_start_line: Option<u32>,
-        crate_src_path: &str,
         project_context: &ProjectContext,
     ) -> (Option<u32>, Option<u32>) {
         // Find entries up to and including addr
@@ -197,7 +196,6 @@ impl FullLineTable {
     /// the line program once.
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
-        crate_src_path: &str,
         project_context: &ProjectContext,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
         let mut crate_entries = Vec::new();

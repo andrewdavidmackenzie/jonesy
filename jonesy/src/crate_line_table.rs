@@ -23,7 +23,6 @@ impl CrateLineTable {
     /// Build a line table with only entries from crate source files.
     pub fn build<R: Reader>(
         dwarf: &Dwarf<R>,
-        crate_src_path: &str,
         project_context: &ProjectContext,
     ) -> Result<Self, gimli::Error> {
         let mut entries = Vec::new();

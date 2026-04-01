@@ -109,6 +109,11 @@ impl ProjectContext {
         );
     }
 
+    /// Returns true if no source prefixes were found.
+    pub fn is_empty(&self) -> bool {
+        self.source_prefixes.is_empty()
+    }
+
     /// Check if a DWARF file path belongs to this project's source code.
     ///
     /// All DWARF paths are absolute (comp_dir prepended at creation time),

@@ -31,11 +31,10 @@ impl LibraryCallGraph {
     /// # Arguments
     /// * `macho` - Parsed MachO from the object file
     /// * `buffer` - Raw bytes of the object file
-    /// * `crate_src_path` - Optional crate source path pattern for precise line numbers
+    /// * `project_context` - Project context for source file ownership
     pub fn build_from_object(
         macho: &MachO,
         buffer: &[u8],
-        crate_src_path: Option<&str>,
         project_context: &ProjectContext,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
@@ -135,10 +134,9 @@ impl LibraryCallGraph {
 
                         // If call site points to non-crate code (stdlib/dependency), find
                         // the last crate source line between function start and call site
-                        let (file, line, column) = if let Some(crate_path) = crate_src_path
-                            && file
-                                .as_ref()
-                                .is_some_and(|f| !project_context.is_crate_source(f))
+                        let (file, line, column) = if file
+                            .as_ref()
+                            .is_some_and(|f| !project_context.is_crate_source(f))
                         {
                             // Try to find precise line in crate source
                             if let Some(lt) = line_lookup.as_ref()

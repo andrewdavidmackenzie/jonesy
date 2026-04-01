@@ -248,13 +248,11 @@ impl<'a> CallGraph<'a> {
     /// Build a call graph with debug info enrichment.
     /// Uses parallel disassembly and parallel processing for faster analysis.
     /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_with_debug_info(
         binary_macho: &MachO,
         binary_buffer: &[u8],
         debug_macho: &MachO,
         debug_buffer: &[u8],
-        crate_src_path: Option<&str>,
         show_timings: bool,
         symbol_index: Option<&'a SymbolIndex>,
         project_context: &ProjectContext,
@@ -315,9 +313,8 @@ impl<'a> CallGraph<'a> {
 
         // Build both line tables in a single pass (saves iterating DWARF twice)
         let step = Instant::now();
-        let (crate_line_table, full_line_table) = if let Some(path) = crate_src_path {
-            let (crate_table, full_table) =
-                FullLineTable::build_both(&dwarf, path, project_context)?;
+        let (crate_line_table, full_line_table) = if !project_context.is_empty() {
+            let (crate_table, full_table) = FullLineTable::build_both(&dwarf, project_context)?;
             (Some(crate_table), full_table)
         } else {
             (None, FullLineTable::build(&dwarf)?)
@@ -340,7 +337,6 @@ impl<'a> CallGraph<'a> {
                 && let Some((target, caller_info)) = process_instruction_data_with_crate_table(
                     data,
                     &function_index,
-                    crate_src_path,
                     &full_line_table,
                     crate_line_table.as_ref(),
                     symbol_index,
@@ -387,7 +383,6 @@ impl<'a> CallGraph<'a> {
 fn process_instruction_data_with_crate_table<'a>(
     data: &InsnData,
     function_index: &FunctionIndex,
-    crate_src_path: Option<&str>,
     full_line_table: &FullLineTable,
     crate_line_table: Option<&CrateLineTable>,
     symbol_index: Option<&'a SymbolIndex>,
@@ -422,9 +417,9 @@ fn process_instruction_data_with_crate_table<'a>(
         };
 
         // For functions in the crate source, find actual call line using pre-built table
-        let file_in_crate = file.as_ref().is_some_and(|f| {
-            crate_src_path.is_some_and(|_crate_path| project_context.is_crate_source(f))
-        });
+        let file_in_crate = file
+            .as_ref()
+            .is_some_and(|f| project_context.is_crate_source(f));
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
             if let Some(table) = crate_line_table {
@@ -437,22 +432,16 @@ fn process_instruction_data_with_crate_table<'a>(
                     // has the function definition entry. The full line table can
                     // find the nearest crate-source line by searching backward.
                     if crate_line == func_line {
-                        if let Some(crate_path) = crate_src_path {
-                            let (full_line, full_column) = full_line_table.get_nearest_crate_line(
-                                data.address,
-                                func.start_address,
-                                func.end_address,
-                                func_line,
-                                crate_path,
-                                project_context,
-                            );
-                            if full_line.is_some() && full_line != func_line {
-                                line = full_line;
-                                column = full_column;
-                            } else {
-                                line = crate_line;
-                                column = crate_column;
-                            }
+                        let (full_line, full_column) = full_line_table.get_nearest_crate_line(
+                            data.address,
+                            func.start_address,
+                            func.end_address,
+                            func_line,
+                            project_context,
+                        );
+                        if full_line.is_some() && full_line != func_line {
+                            line = full_line;
+                            column = full_column;
                         } else {
                             line = crate_line;
                             column = crate_column;
