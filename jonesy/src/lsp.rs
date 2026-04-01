@@ -475,6 +475,9 @@ impl JonesyLspServer {
                 self.client
                     .log_message(MessageType::ERROR, format!("ProjectContext error: {e}"))
                     .await;
+                if let Some(ref token) = progress_token {
+                    self.progress_end(token, "ProjectContext error").await;
+                }
                 return false;
             }
         };
@@ -1603,15 +1606,6 @@ async fn run_analysis_task(
         );
         client.log_message(MessageType::INFO, change_summary).await;
     }
-
-    // Discover workspace structure
-    let _workspace_info = {
-        let root = workspace_root.clone();
-        tokio::task::spawn_blocking(move || discover_workspace(&root))
-            .await
-            .ok()
-            .flatten()
-    };
 
     // Get targets
     let targets = {

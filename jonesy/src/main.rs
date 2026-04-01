@@ -90,6 +90,11 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|_| parsed_args.binaries[0].clone());
     let project_root = find_project_root(&first_binary)?;
     let project_context = ProjectContext::from_project_root(&project_root)?;
+    let config = Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(255);
+        });
 
     for binary_path in &parsed_args.binaries {
         let binary_path = binary_path
@@ -98,13 +103,6 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         if parsed_args.output.show_progress() {
             println!("Processing {}", binary_path.display());
         }
-
-        // Load configuration: prefer crate-specific config, fall back to workspace root
-        let config = Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
-            .unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(255);
-            });
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
