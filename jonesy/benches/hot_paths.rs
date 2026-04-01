@@ -27,9 +27,9 @@ use jonesy::call_tree::{
 #[cfg(target_os = "macos")]
 use jonesy::config::Config;
 #[cfg(target_os = "macos")]
-use jonesy::heuristics::PANIC_SYMBOL_PATTERNS;
-#[cfg(target_os = "macos")]
 use jonesy::heuristics::detect_panic_cause;
+#[cfg(target_os = "macos")]
+use jonesy::heuristics::find_entry_points;
 #[cfg(target_os = "macos")]
 use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
@@ -205,15 +205,8 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
     let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let mut panic_addr = 0u64;
-        for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
-                && let Some(addr) = symbols.find_symbol_address(&sym)
-            {
-                panic_addr = addr;
-                break;
-            }
-        }
+        let entry_points = find_entry_points(&symbols);
+        let panic_addr = entry_points.first().map(|(_, _, a)| *a).unwrap_or(0);
 
         if panic_addr == 0 {
             eprintln!("Skipping build_call_tree_sequential benchmark: no panic symbol found");
@@ -302,21 +295,10 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
     let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let mut panic_addr = 0u64;
-        let mut panic_name = "rust_panic".to_string();
-        for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
-                && let Some(addr) = symbols.find_symbol_address(&sym)
-            {
-                panic_addr = addr;
-                panic_name = sym;
-                break;
-            }
-        }
-
-        if panic_addr == 0 {
+        let entry_points = find_entry_points(&symbols);
+        let Some((panic_name, _, panic_addr)) = entry_points.into_iter().next() else {
             return;
-        }
+        };
 
         let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
             .expect("Failed to create project context");
@@ -519,15 +501,8 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
     let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let mut panic_addr = 0u64;
-        for pattern in PANIC_SYMBOL_PATTERNS {
-            if let Ok(Some((sym, _))) = symbols.find_symbol_containing(pattern)
-                && let Some(addr) = symbols.find_symbol_address(&sym)
-            {
-                panic_addr = addr;
-                break;
-            }
-        }
+        let entry_points = find_entry_points(&symbols);
+        let panic_addr = entry_points.first().map(|(_, _, a)| *a).unwrap_or(0);
 
         if panic_addr == 0 {
             return;

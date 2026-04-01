@@ -10,7 +10,7 @@ use crate::call_tree::{
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
-use crate::heuristics::{ABORT_SYMBOL_PATTERNS, PANIC_SYMBOL_PATTERNS, is_library_panic_symbol};
+use crate::heuristics::{find_entry_points, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, load_debug_info,
@@ -109,35 +109,6 @@ struct PanicCaller {
     column: Option<u32>,
     /// The panic symbol being called (e.g., "core::option::unwrap_failed")
     target: String,
-}
-
-/// Find panic and abort entry point addresses in the binary's symbol table.
-/// Returns (mangled_name, demangled_name, address) for each entry point.
-fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
-    let mut entry_points = Vec::new();
-
-    // Find panic entry point (first match from PANIC_SYMBOL_PATTERNS)
-    for pattern in PANIC_SYMBOL_PATTERNS {
-        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
-            && let Some(addr) = symbols.find_symbol_address(&sym)
-        {
-            entry_points.push((sym, dem, addr));
-            break; // Only need one panic entry point
-        }
-    }
-
-    // Find abort entry points
-    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(ABORT_SYMBOL_PATTERNS) {
-        for (sym, dem) in abort_symbols {
-            if let Some(addr) = symbols.find_symbol_address(&sym) {
-                if !entry_points.iter().any(|(_, _, a)| *a == addr) {
-                    entry_points.push((sym, dem, addr));
-                }
-            }
-        }
-    }
-
-    entry_points
 }
 
 /// Analyze a single MachO binary/object for panic points.

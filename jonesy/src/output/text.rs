@@ -794,7 +794,7 @@ mod tests {
             "overflow_func",
             "src/math.rs",
             5,
-            vec![PanicCause::ArithmeticOverflow("add".to_string())],
+            vec![PanicCause::ArithmeticOverflow("add")],
         )]);
         let mut output = Vec::new();
         write_text_output(&mut output, &result, false, false, true, false).unwrap();
