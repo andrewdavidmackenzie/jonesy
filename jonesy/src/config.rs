@@ -20,15 +20,15 @@ use std::path::Path;
 
 /// A scoped rule that applies to specific paths or functions.
 #[derive(Debug, Clone)]
-pub struct ScopedRule {
+struct ScopedRule {
     /// File path pattern (glob syntax, e.g., "**/tests/**")
-    pub path: Option<Pattern>,
+    path: Option<Pattern>,
     /// Function name pattern (glob syntax, e.g., "my_crate::*::new")
-    pub function: Option<Pattern>,
+    function: Option<Pattern>,
     /// Panic causes to allow (not report) when this rule matches
-    pub allowed: HashSet<String>,
+    allowed: HashSet<String>,
     /// Panic causes to deny (report) when this rule matches
-    pub denied: HashSet<String>,
+    denied: HashSet<String>,
 }
 
 impl ScopedRule {

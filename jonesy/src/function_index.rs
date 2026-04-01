@@ -208,7 +208,7 @@ impl FunctionIndex {
 }
 
 /// Intermediate struct for parsing - uses owned strings before interning
-pub(crate) struct ParsedFunctionInfo {
+struct ParsedFunctionInfo {
     name: String,
     start_address: u64,
     end_address: u64,

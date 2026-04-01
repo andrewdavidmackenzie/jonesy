@@ -4,7 +4,7 @@ use gimli::{ColumnType, Dwarf, Reader};
 
 /// Line entry for DWARF line table lookups
 #[derive(Debug, Clone)]
-pub(crate) struct ObjectLineEntry {
+struct ObjectLineEntry {
     address: u64,
     file: String,
     line: u32,
