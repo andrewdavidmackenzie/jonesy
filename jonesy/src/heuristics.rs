@@ -71,44 +71,44 @@ pub const PANIC_SYMBOL_PATTERNS: &[&str] = &[
 /// These are traced separately to catch panics that would otherwise be missed.
 pub const ABORT_SYMBOL_PATTERNS: &[&str] = &["std::process::abort"];
 
-/// Demangled symbol patterns for finding panic targets in **library** analysis.
+/// Module prefixes for panic-related symbols in **library** analysis.
 ///
-/// Library analysis (rlib/staticlib) works differently from binary analysis:
-/// object files contain relocations to external symbols but have no linked
-/// call graph. This list defines the demangled names that indicate a
-/// relocation target is panic-related.
+/// Any symbol whose demangled name contains one of these prefixes is considered
+/// a panic target. This catches `core::panicking::panic_fmt`,
+/// `core::panicking::panic_const::panic_const_add_overflow`, etc.
+const LIBRARY_PANIC_MODULE_PREFIXES: &[&str] = &["core::panicking::", "std::panicking::"];
+
+/// Exact method suffixes for panic-related symbols in **library** analysis.
 ///
-/// Checked with `contains()` matching, so `"core::panicking::"` matches all
-/// functions in that module. `std::panicking::` excludes `set_hook`/`take_hook`
-/// via [`is_library_panic_symbol`].
-const LIBRARY_PANIC_PATTERNS: &[&str] = &[
-    // All core panic functions (panic, panic_fmt, panic_const, assert_failed, etc.)
-    "core::panicking::",
-    // std panic entry points (begin_panic, begin_panic_fmt, etc.)
-    "std::panicking::",
-    // Option/Result unwrap/expect (appear as relocation targets in library analysis)
-    "Option<T>::unwrap",
-    "Option<T>::expect",
-    "Result<T,E>::unwrap",
-    "Result<T,E>::expect",
-    "Result<T,E>::unwrap_err",
-    "Result<T,E>::expect_err",
-    "core::option::unwrap_failed",
-    "core::option::expect_failed",
-    "core::result::unwrap_failed",
+/// Matched with `ends_with()` to avoid false positives from safe variants
+/// like `unwrap_or`, `unwrap_or_default`, `unwrap_or_else`.
+const LIBRARY_PANIC_METHOD_SUFFIXES: &[&str] = &[
+    ">::unwrap",
+    ">::expect",
+    ">::unwrap_err",
+    ">::expect_err",
+    "::unwrap_failed",
+    "::expect_failed",
 ];
 
 /// Check if a demangled symbol name is a panic-related function for library analysis.
 ///
-/// Uses [`LIBRARY_PANIC_PATTERNS`] with an exclusion for `set_hook`/`take_hook`
-/// which configure the panic handler but don't trigger panics.
+/// Uses module prefix matching for `core::panicking::`/`std::panicking::` (excluding
+/// `set_hook`/`take_hook`), and exact method suffix matching for `unwrap`/`expect`
+/// variants to avoid false positives from safe alternatives like `unwrap_or`.
 pub fn is_library_panic_symbol(name: &str) -> bool {
-    if LIBRARY_PANIC_PATTERNS.iter().any(|p| name.contains(p)) {
-        // Exclude panic handler configuration functions
-        !name.contains("set_hook") && !name.contains("take_hook")
-    } else {
-        false
+    // Check module prefixes (broad match for all core/std panic functions)
+    if LIBRARY_PANIC_MODULE_PREFIXES
+        .iter()
+        .any(|p| name.contains(p))
+    {
+        return !name.contains("set_hook") && !name.contains("take_hook");
     }
+
+    // Check exact method suffixes (avoids matching unwrap_or, unwrap_or_default, etc.)
+    LIBRARY_PANIC_METHOD_SUFFIXES
+        .iter()
+        .any(|s| name.ends_with(s))
 }
 
 // ---------------------------------------------------------------------------
@@ -419,30 +419,62 @@ mod tests {
 
     #[test]
     fn test_is_library_panic_symbol() {
+        // Module prefix matches
         assert!(is_library_panic_symbol("core::panicking::panic_fmt"));
         assert!(is_library_panic_symbol(
             "core::panicking::panic_const::panic_const_add_overflow"
         ));
         assert!(is_library_panic_symbol("std::panicking::begin_panic"));
-        assert!(is_library_panic_symbol("core::option::unwrap_failed"));
-        assert!(is_library_panic_symbol("core::result::unwrap_failed"));
         // set_hook/take_hook are NOT panic functions
         assert!(!is_library_panic_symbol("std::panicking::set_hook"));
         assert!(!is_library_panic_symbol("std::panicking::take_hook"));
         // User code is not a panic symbol
         assert!(!is_library_panic_symbol("my_crate::process_data"));
+
+        // Exact method suffix matches (with full demangled paths)
+        assert!(is_library_panic_symbol("core::option::Option<T>::unwrap"));
+        assert!(is_library_panic_symbol("core::option::Option<T>::expect"));
+        assert!(is_library_panic_symbol("core::result::Result<T,E>::unwrap"));
+        assert!(is_library_panic_symbol(
+            "core::result::Result<T,E>::unwrap_err"
+        ));
+        assert!(is_library_panic_symbol(
+            "core::result::Result<T,E>::expect_err"
+        ));
+        assert!(is_library_panic_symbol("core::option::unwrap_failed"));
+        assert!(is_library_panic_symbol("core::option::expect_failed"));
+        assert!(is_library_panic_symbol("core::result::unwrap_failed"));
+
+        // Safe variants must NOT match
+        assert!(!is_library_panic_symbol(
+            "core::option::Option<T>::unwrap_or"
+        ));
+        assert!(!is_library_panic_symbol(
+            "core::option::Option<T>::unwrap_or_default"
+        ));
+        assert!(!is_library_panic_symbol(
+            "core::option::Option<T>::unwrap_or_else"
+        ));
+        assert!(!is_library_panic_symbol(
+            "core::result::Result<T,E>::unwrap_or"
+        ));
+        assert!(!is_library_panic_symbol(
+            "core::result::Result<T,E>::unwrap_or_default"
+        ));
+        assert!(!is_library_panic_symbol(
+            "core::result::Result<T,E>::unwrap_or_else"
+        ));
     }
 
     #[test]
     fn test_is_library_panic_symbol_unwrap_err_expect_err() {
-        // Test unwrap_err and expect_err patterns
+        // Short names (as seen in some demangled output)
         assert!(is_library_panic_symbol("Result<T,E>::unwrap_err"));
         assert!(is_library_panic_symbol("Result<T,E>::expect_err"));
     }
 
     #[test]
     fn test_is_library_panic_symbol_expect_failed() {
-        // Test core::option::expect_failed is matched
         assert!(is_library_panic_symbol("core::option::expect_failed"));
     }
 
@@ -780,18 +812,5 @@ mod tests {
             detect_panic_cause("Result::expect"),
             Some(PanicCause::Expect)
         );
-    }
-
-    #[test]
-    fn test_is_library_panic_symbol_option_expect_failed() {
-        // Test core::option::expect_failed is matched
-        assert!(is_library_panic_symbol("core::option::expect_failed"));
-    }
-
-    #[test]
-    fn test_is_library_panic_symbol_result_unwrap_err() {
-        // Test Result unwrap_err and expect_err patterns
-        assert!(is_library_panic_symbol("Result<T,E>::unwrap_err"));
-        assert!(is_library_panic_symbol("Result<T,E>::expect_err"));
     }
 }
