@@ -9,7 +9,7 @@ fn main() {
         // How to index an array without a panic
         match CATCHPHRASES.get(index) {
             None => println!("Array index out of range of array"), // jonesy:allow(format)
-            Some(phrase) => println!("{phrase}"), // jonesy:allow(format)
+            Some(phrase) => println!("{phrase}"),                  // jonesy:allow(format)
         }
     }
 
