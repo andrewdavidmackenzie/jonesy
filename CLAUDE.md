@@ -36,7 +36,7 @@ since the Makefile builds nested workspaces (like `examples/workspace_test`) tha
 implement changes. Describe what files will be modified what functions added/deleted/modifes
 
 ## General rust best practices
-- keep visibility of structs and functions to the most privat epossible, pub -- pub(crate) -- private
+- keep visibility of structs and functions to the most private possible, pub -- pub(crate) -- private
 - before adding a new struct or function, scan the code base for similar functions and structs and attempt to 
 reuse them, if they can be with minimal changes
 
