@@ -247,7 +247,10 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
         return Some(PanicCause::DivisionByZero);
     }
     // unwrap/expect detection
-    if func_name.contains("unwrap_failed") {
+    if func_name.contains("unwrap_failed")
+        || func_name.ends_with(">::unwrap")
+        || func_name.ends_with(">::unwrap_err")
+    {
         return Some(PanicCause::Unwrap);
     }
     if func_name.contains("expect_failed")
@@ -547,6 +550,31 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_panic_cause_unwrap_method() {
+        assert_eq!(
+            detect_panic_cause("core::option::Option<T>::unwrap"),
+            Some(PanicCause::Unwrap)
+        );
+        assert_eq!(
+            detect_panic_cause("core::result::Result<T,E>::unwrap"),
+            Some(PanicCause::Unwrap)
+        );
+        assert_eq!(
+            detect_panic_cause("core::result::Result<T,E>::unwrap_err"),
+            Some(PanicCause::Unwrap)
+        );
+        // Safe variants must NOT return Unwrap
+        assert_ne!(
+            detect_panic_cause("core::option::Option<T>::unwrap_or"),
+            Some(PanicCause::Unwrap)
+        );
+        assert_ne!(
+            detect_panic_cause("core::option::Option<T>::unwrap_or_default"),
+            Some(PanicCause::Unwrap)
+        );
+    }
+
+    #[test]
     fn test_detect_panic_cause_expect_failed() {
         assert_eq!(
             detect_panic_cause("expect_failed"),
@@ -555,9 +583,17 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_panic_cause_result_expect() {
+    fn test_detect_panic_cause_expect_method() {
         assert_eq!(
             detect_panic_cause("core::result::Result<T,E>::expect"),
+            Some(PanicCause::Expect)
+        );
+        assert_eq!(
+            detect_panic_cause("core::result::Result<T,E>::expect_err"),
+            Some(PanicCause::Expect)
+        );
+        assert_eq!(
+            detect_panic_cause("core::option::Option<T>::expect"),
             Some(PanicCause::Expect)
         );
     }
