@@ -129,8 +129,8 @@ pub fn is_library_panic_symbol(name: &str) -> bool {
 ///
 /// **Unwrap/expect variants:**
 /// - `unwrap_failed`, `expect_failed` — internal panic functions
-/// - `unwrap` (excluding `unwrap_or*`) — `Option::unwrap()` / `Result::unwrap()`
-/// - `expect` with `Option` or `Result` — `.expect("msg")`
+/// - `>::unwrap`, `>::expect` — exact method suffix matching (avoids `unwrap_or*`)
+/// - `>::unwrap_err`, `>::expect_err` — panic on Ok values
 ///
 /// **Panic runtime functions:**
 /// - `panic_fmt`, `panic_display` — explicit `panic!()` macro
@@ -150,13 +150,14 @@ pub fn is_library_panic_symbol(name: &str) -> bool {
 /// - `slice_error_fail`, `str_index_overflow_fail`
 /// - `index<`, `::index<`, `Index::index` — Index trait implementations
 pub fn is_panic_triggering_function(func_name: &str) -> bool {
-    // Unwrap/expect variants
+    // Unwrap/expect variants — use ends_with to avoid matching safe _or variants
     func_name.contains("unwrap_failed")
         || func_name.contains("expect_failed")
         // Direct unwrap/expect calls (before they reach _failed)
-        || (func_name.contains("unwrap") && !func_name.contains("unwrap_or"))
-        || (func_name.contains("expect") && func_name.contains("Option"))
-        || (func_name.contains("expect") && func_name.contains("Result"))
+        || func_name.ends_with(">::unwrap")
+        || func_name.ends_with(">::expect")
+        || func_name.ends_with(">::unwrap_err")
+        || func_name.ends_with(">::expect_err")
         // Panic functions
         || func_name.contains("panic_fmt")
         || func_name.contains("panic_display")
@@ -250,7 +251,8 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
         return Some(PanicCause::Unwrap);
     }
     if func_name.contains("expect_failed")
-        || (func_name.contains("expect") && func_name.contains("Result"))
+        || func_name.ends_with(">::expect")
+        || func_name.ends_with(">::expect_err")
     {
         return Some(PanicCause::Expect);
     }
@@ -555,7 +557,7 @@ mod tests {
     #[test]
     fn test_detect_panic_cause_result_expect() {
         assert_eq!(
-            detect_panic_cause("Result::expect"),
+            detect_panic_cause("core::result::Result<T,E>::expect"),
             Some(PanicCause::Expect)
         );
     }
@@ -807,9 +809,9 @@ mod tests {
 
     #[test]
     fn test_detect_panic_cause_result_expect_method() {
-        // Test Result::expect (method form)
+        // Test Result::expect_err (method form)
         assert_eq!(
-            detect_panic_cause("Result::expect"),
+            detect_panic_cause("core::result::Result<T,E>::expect_err"),
             Some(PanicCause::Expect)
         );
     }
