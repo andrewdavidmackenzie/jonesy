@@ -69,3 +69,8 @@ with methods, use traits when multiple implementations may be needed, etc.
   in tests.
 - Integration tests use `// jonesy: expect panic` markers — the marker-based test
   system validates detection. New panic types need markers in the example source files.
+
+## Committing and Pushing
+
+- Never consider a task done, nor attempt to commit or push a change until make test passes.
+- 
