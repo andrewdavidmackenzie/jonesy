@@ -313,17 +313,13 @@ impl<'a> CallGraph<'a> {
 
         // Build both line tables in a single pass (saves iterating DWARF twice)
         let step = Instant::now();
-        let (crate_line_table, full_line_table) = if !project_context.is_empty() {
-            let (crate_table, full_table) = FullLineTable::build_both(&dwarf, project_context)?;
-            (Some(crate_table), full_table)
-        } else {
-            (None, FullLineTable::build(&dwarf)?)
-        };
+        let (crate_line_table, full_line_table) =
+            FullLineTable::build_both(&dwarf, project_context)?;
         if show_timings {
             eprintln!(
                 "    [cg timing] build line tables: {:?} (crate: {} entries, full: {} entries)",
                 step.elapsed(),
-                crate_line_table.as_ref().map(|t| t.len()).unwrap_or(0),
+                crate_line_table.len(),
                 full_line_table.len()
             );
         }
@@ -338,7 +334,7 @@ impl<'a> CallGraph<'a> {
                     data,
                     &function_index,
                     &full_line_table,
-                    crate_line_table.as_ref(),
+                    &crate_line_table,
                     symbol_index,
                     project_context,
                 )
@@ -384,7 +380,7 @@ fn process_instruction_data_with_crate_table<'a>(
     data: &InsnData,
     function_index: &FunctionIndex,
     full_line_table: &FullLineTable,
-    crate_line_table: Option<&CrateLineTable>,
+    crate_line_table: &CrateLineTable,
     symbol_index: Option<&'a SymbolIndex>,
     project_context: &ProjectContext,
 ) -> Option<(u64, CallerInfo<'a>)> {
@@ -422,8 +418,9 @@ fn process_instruction_data_with_crate_table<'a>(
             .is_some_and(|f| project_context.is_crate_source(f));
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
-            if let Some(table) = crate_line_table {
-                let (crate_line, crate_column) = table.get_line(func.start_address, data.address);
+            {
+                let (crate_line, crate_column) =
+                    crate_line_table.get_line(func.start_address, data.address);
                 if crate_line.is_some() {
                     // If the crate line table only found the function-start line,
                     // try the full line table as a fallback. When stdlib code is
