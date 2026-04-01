@@ -37,9 +37,9 @@ pub enum PanicCause {
     /// Array or slice index out of bounds
     BoundsCheck,
     /// Arithmetic overflow (add, sub, mul, div, rem, neg)
-    ArithmeticOverflow(String),
+    ArithmeticOverflow(&'static str),
     /// Shift overflow (shl, shr)
-    ShiftOverflow(String),
+    ShiftOverflow(&'static str),
     /// Division by zero
     DivisionByZero,
     /// Unwrap on None or Err
@@ -92,7 +92,7 @@ impl PanicCause {
             PanicCause::ExplicitPanic => "panic",
             PanicCause::BoundsCheck => "bounds",
             // Use specific IDs for division/remainder to allow targeted suppression
-            PanicCause::ArithmeticOverflow(op) => match op.as_str() {
+            PanicCause::ArithmeticOverflow(op) => match *op {
                 "division" => "div_overflow",
                 "remainder" => "rem_overflow",
                 _ => "overflow",
@@ -542,32 +542,26 @@ mod tests {
         assert_eq!(PanicCause::Unwrap.id(), "unwrap");
         assert_eq!(PanicCause::Expect.id(), "expect");
         assert_eq!(PanicCause::DivisionByZero.id(), "div_zero");
+        assert_eq!(PanicCause::ArithmeticOverflow("addition").id(), "overflow");
         assert_eq!(
-            PanicCause::ArithmeticOverflow("addition".to_string()).id(),
-            "overflow"
-        );
-        assert_eq!(
-            PanicCause::ArithmeticOverflow("division".to_string()).id(),
+            PanicCause::ArithmeticOverflow("division").id(),
             "div_overflow"
         );
         assert_eq!(
-            PanicCause::ArithmeticOverflow("remainder".to_string()).id(),
+            PanicCause::ArithmeticOverflow("remainder").id(),
             "rem_overflow"
         );
-        assert_eq!(
-            PanicCause::ShiftOverflow("left".to_string()).id(),
-            "shift_overflow"
-        );
+        assert_eq!(PanicCause::ShiftOverflow("left").id(), "shift_overflow");
     }
 
     #[test]
     fn test_panic_cause_parent_id() {
         assert_eq!(
-            PanicCause::ArithmeticOverflow("add".to_string()).parent_id(),
+            PanicCause::ArithmeticOverflow("add").parent_id(),
             Some("overflow")
         );
         assert_eq!(
-            PanicCause::ShiftOverflow("left".to_string()).parent_id(),
+            PanicCause::ShiftOverflow("left").parent_id(),
             Some("overflow")
         );
         assert_eq!(PanicCause::AssertFailed.parent_id(), None);
@@ -594,10 +588,7 @@ mod tests {
     fn test_panic_cause_error_code() {
         assert_eq!(PanicCause::ExplicitPanic.error_code(), "JP001");
         assert_eq!(PanicCause::BoundsCheck.error_code(), "JP002");
-        assert_eq!(
-            PanicCause::ArithmeticOverflow("add".to_string()).error_code(),
-            "JP003"
-        );
+        assert_eq!(PanicCause::ArithmeticOverflow("add").error_code(), "JP003");
         assert_eq!(PanicCause::Unwrap.error_code(), "JP006");
         assert_eq!(PanicCause::Expect.error_code(), "JP008");
         assert_eq!(PanicCause::Unknown.error_code(), "JP000");
@@ -640,8 +631,8 @@ mod tests {
 
     #[test]
     fn test_panic_cause_is_debug_only() {
-        assert!(PanicCause::ArithmeticOverflow("add".to_string()).is_debug_only());
-        assert!(PanicCause::ShiftOverflow("left".to_string()).is_debug_only());
+        assert!(PanicCause::ArithmeticOverflow("add").is_debug_only());
+        assert!(PanicCause::ShiftOverflow("left").is_debug_only());
         assert!(!PanicCause::AssertFailed.is_debug_only());
         assert!(!PanicCause::BoundsCheck.is_debug_only());
         assert!(!PanicCause::DivisionByZero.is_debug_only());
@@ -651,12 +642,12 @@ mod tests {
     #[test]
     fn test_panic_cause_release_warning() {
         assert!(
-            PanicCause::ArithmeticOverflow("add".to_string())
+            PanicCause::ArithmeticOverflow("add")
                 .release_warning()
                 .is_some()
         );
         assert!(
-            PanicCause::ShiftOverflow("left".to_string())
+            PanicCause::ShiftOverflow("left")
                 .release_warning()
                 .is_some()
         );
@@ -709,8 +700,8 @@ mod tests {
         let variants = vec![
             PanicCause::ExplicitPanic,
             PanicCause::BoundsCheck,
-            PanicCause::ArithmeticOverflow("add".to_string()),
-            PanicCause::ShiftOverflow("left".to_string()),
+            PanicCause::ArithmeticOverflow("add"),
+            PanicCause::ShiftOverflow("left"),
             PanicCause::DivisionByZero,
             PanicCause::Unwrap,
             PanicCause::Unwrap,
@@ -769,12 +760,12 @@ mod tests {
                 .contains(".get()")
         );
         assert!(
-            PanicCause::ArithmeticOverflow("add".to_string())
+            PanicCause::ArithmeticOverflow("add")
                 .direct_suggestion()
                 .contains("checked_")
         );
         assert!(
-            PanicCause::ShiftOverflow("left".to_string())
+            PanicCause::ShiftOverflow("left")
                 .direct_suggestion()
                 .contains("Validate")
         );
@@ -848,12 +839,12 @@ mod tests {
                 .contains("bounds check")
         );
         assert!(
-            PanicCause::ArithmeticOverflow("add".to_string())
+            PanicCause::ArithmeticOverflow("add")
                 .indirect_suggestion()
                 .contains("overflow")
         );
         assert!(
-            PanicCause::ShiftOverflow("left".to_string())
+            PanicCause::ShiftOverflow("left")
                 .indirect_suggestion()
                 .contains("shift")
         );
@@ -947,8 +938,8 @@ mod tests {
         let variants = vec![
             PanicCause::ExplicitPanic,
             PanicCause::BoundsCheck,
-            PanicCause::ArithmeticOverflow("add".to_string()),
-            PanicCause::ShiftOverflow("left".to_string()),
+            PanicCause::ArithmeticOverflow("add"),
+            PanicCause::ShiftOverflow("left"),
             PanicCause::DivisionByZero,
             PanicCause::Unwrap,
             PanicCause::Unwrap,
@@ -986,11 +977,11 @@ mod tests {
     fn test_all_docs_slugs() {
         assert_eq!(PanicCause::BoundsCheck.docs_slug(), "JP002-bounds-check");
         assert_eq!(
-            PanicCause::ArithmeticOverflow("add".to_string()).docs_slug(),
+            PanicCause::ArithmeticOverflow("add").docs_slug(),
             "JP003-arithmetic-overflow"
         );
         assert_eq!(
-            PanicCause::ShiftOverflow("left".to_string()).docs_slug(),
+            PanicCause::ShiftOverflow("left").docs_slug(),
             "JP004-shift-overflow"
         );
         assert_eq!(

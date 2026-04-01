@@ -830,13 +830,13 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // Division overflow should be allowed via parent "overflow"
-        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("division".to_string())));
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("division")));
         // Remainder overflow should be allowed via parent "overflow"
-        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("remainder".to_string())));
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("remainder")));
         // Shift overflow should be allowed via parent "overflow"
-        assert!(!config.is_denied(&PanicCause::ShiftOverflow("left".to_string())));
+        assert!(!config.is_denied(&PanicCause::ShiftOverflow("left")));
         // Generic overflow (add/sub/mul) should be allowed directly
-        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("addition".to_string())));
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("addition")));
     }
 
     #[test]
@@ -867,13 +867,13 @@ mod tests {
         config.apply_toml_config(&toml_config);
 
         // Division overflow should be allowed
-        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("division".to_string())));
+        assert!(!config.is_denied(&PanicCause::ArithmeticOverflow("division")));
         // Remainder overflow should NOT be allowed (different specific ID)
-        assert!(config.is_denied(&PanicCause::ArithmeticOverflow("remainder".to_string())));
+        assert!(config.is_denied(&PanicCause::ArithmeticOverflow("remainder")));
         // Shift overflow should NOT be allowed
-        assert!(config.is_denied(&PanicCause::ShiftOverflow("left".to_string())));
+        assert!(config.is_denied(&PanicCause::ShiftOverflow("left")));
         // Generic overflow should NOT be allowed
-        assert!(config.is_denied(&PanicCause::ArithmeticOverflow("addition".to_string())));
+        assert!(config.is_denied(&PanicCause::ArithmeticOverflow("addition")));
     }
 
     #[test]
@@ -909,19 +909,19 @@ mod tests {
 
         // In math module, all overflow types should be allowed
         assert!(!config.is_denied_at(
-            &PanicCause::ArithmeticOverflow("division".to_string()),
+            &PanicCause::ArithmeticOverflow("division"),
             Some("src/math/ops.rs"),
             None
         ));
         assert!(!config.is_denied_at(
-            &PanicCause::ShiftOverflow("right".to_string()),
+            &PanicCause::ShiftOverflow("right"),
             Some("src/math/bits.rs"),
             None
         ));
 
         // Outside math module, overflow should still be denied
         assert!(config.is_denied_at(
-            &PanicCause::ArithmeticOverflow("division".to_string()),
+            &PanicCause::ArithmeticOverflow("division"),
             Some("src/main.rs"),
             None
         ));

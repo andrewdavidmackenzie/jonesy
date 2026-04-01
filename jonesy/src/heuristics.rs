@@ -7,16 +7,12 @@
 //! Analysis begins by finding _entry points_ — the low-level functions that the
 //! Rust panic runtime calls:
 //!
-//! - **Binary analysis** uses [`PANIC_SYMBOL_PATTERNS`] to find symbols like
-//!   `rust_panic$` in the binary's symbol table, then traces backwards through
-//!   the call graph to find user code that reaches them.
+//! - **Binary analysis** uses [`find_entry_points`] to locate `rust_panic` and
+//!   `std::process::abort` in the binary's symbol table, then traces backwards
+//!   through the call graph to find user code that reaches them.
 //!
 //! - **Library analysis** (rlib/staticlib) uses [`is_library_panic_symbol`] to
 //!   match demangled relocation targets against known panic-related functions.
-//!
-//! - **Abort paths** — Some panics (like OOM via `alloc_error_handler`) go through
-//!   `std::process::abort()` instead of the normal panic runtime. These are
-//!   matched by [`ABORT_SYMBOL_PATTERNS`].
 //!
 //! # Panic Cause Classification
 //!
@@ -37,39 +33,47 @@
 //! `if let`"), while indirect panics note the intermediate function.
 
 // ---------------------------------------------------------------------------
-// Panic entry point patterns
+// Panic entry point discovery
 // ---------------------------------------------------------------------------
 
-/// Symbol patterns for finding panic entry points in **binaries**.
-///
-/// These are searched in the binary's symbol table (via `nm`-style lookup).
-/// The first match found becomes the root of the call-graph trace.
-///
-/// | Pattern              | Purpose                                     |
-/// |----------------------|---------------------------------------------|
-/// | `rust_panic$`        | Main Rust panic entry point                 |
-/// | `panic_fmt$`         | Core panic formatting (fallback entry)      |
-/// | `panic_display`      | Panic display helper                        |
-/// | `slice_index_fail`   | Vec/slice index-out-of-bounds panics        |
-/// | `str_index_overflow` | String slice boundary violation panics      |
-///
-/// The `$` suffix in some patterns is significant — it anchors the match to
-/// the end of the symbol name to avoid matching functions that merely contain
-/// the substring.
-pub const PANIC_SYMBOL_PATTERNS: &[&str] = &[
-    "rust_panic$",
-    "panic_fmt$",
-    "panic_display",
-    "slice_index_fail",
-    "str_index_overflow",
-];
+use crate::sym::SymbolTable;
 
-/// Symbol patterns for **abort-based** error paths.
-///
-/// Some error conditions (notably OOM via `alloc_error_handler`) go through
-/// `std::process::abort()` instead of the normal panic/unwind machinery.
-/// These are traced separately to catch panics that would otherwise be missed.
-pub const ABORT_SYMBOL_PATTERNS: &[&str] = &["std::process::abort"];
+/// Regex pattern for finding the main panic entry point in binaries.
+/// All other panic functions (`panic_fmt`, `panic_display`, `slice_index_fail`,
+/// `str_index_overflow`) call through to `rust_panic` and are already captured.
+/// The `$` anchors the match to the end of the symbol name.
+const PANIC_SYMBOL: &str = "rust_panic$";
+
+/// Demangled symbol name for the abort-based error path.
+/// OOM via `alloc_error_handler` goes through `std::process::abort()` instead
+/// of the normal panic/unwind machinery.
+const ABORT_SYMBOL: &str = "std::process::abort";
+
+/// Find panic and abort entry point addresses in the binary's symbol table.
+/// Returns `(mangled_name, demangled_name, address)` for each entry point.
+pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
+    let mut entry_points = Vec::new();
+
+    // Find the panic entry point
+    if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(PANIC_SYMBOL)
+        && let Some(addr) = symbols.find_symbol_address(&sym)
+    {
+        entry_points.push((sym, dem, addr));
+    }
+
+    // Find abort entry points
+    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(&[ABORT_SYMBOL]) {
+        for (sym, dem) in abort_symbols {
+            if let Some(addr) = symbols.find_symbol_address(&sym) {
+                if !entry_points.iter().any(|(_, _, a)| *a == addr) {
+                    entry_points.push((sym, dem, addr));
+                }
+            }
+        }
+    }
+
+    entry_points
+}
 
 /// Module prefixes for panic-related symbols in **library** analysis.
 ///
@@ -115,76 +119,11 @@ pub fn is_library_panic_symbol(name: &str) -> bool {
 // Direct vs. indirect panic classification
 // ---------------------------------------------------------------------------
 
-/// Check if a function name represents a **direct** panic-triggering function.
+/// Returns `true` if the function directly triggers a panic.
 ///
-/// Direct panic functions are those that _immediately_ cause a panic when called
-/// (e.g., `unwrap()`, `assert!()`, `panic!()`). Indirect functions are user code
-/// that calls something that eventually panics.
-///
-/// This distinction is used for help messages:
-/// - **Direct**: "Use `if let`, `match`, or `unwrap_or` instead"
-/// - **Indirect**: "This calls `foo()` which may panic internally"
-///
-/// # Patterns matched
-///
-/// **Unwrap/expect variants:**
-/// - `unwrap_failed`, `expect_failed` — internal panic functions
-/// - `>::unwrap`, `>::expect` — exact method suffix matching (avoids `unwrap_or*`)
-/// - `>::unwrap_err`, `>::expect_err` — panic on Ok values
-///
-/// **Panic runtime functions:**
-/// - `panic_fmt`, `panic_display` — explicit `panic!()` macro
-/// - `panic_bounds_check` — array/slice index out of bounds
-/// - `panic_const_*` — compile-time overflow/division checks
-/// - `panic_in_cleanup`, `panic_cannot_unwind`, `panic_nounwind`
-/// - `panic_misaligned_pointer`, `panic_invalid_enum`
-///
-/// **Assert macros:**
-/// - `assert_failed` — `assert!()`, `assert_eq!()`, `assert_ne!()`
-///
-/// **Capacity/allocation:**
-/// - `capacity_overflow` — `Vec::with_capacity(usize::MAX)`
-/// - `handle_alloc_error` — OOM handler
-///
-/// **String/slice errors:**
-/// - `slice_error_fail`, `str_index_overflow_fail`
-/// - `index<`, `::index<`, `Index::index` — Index trait implementations
+/// Equivalent to `detect_panic_cause(func_name).is_some()`.
 pub fn is_panic_triggering_function(func_name: &str) -> bool {
-    // Unwrap/expect variants — use ends_with to avoid matching safe _or variants
-    func_name.contains("unwrap_failed")
-        || func_name.contains("expect_failed")
-        // Direct unwrap/expect calls (before they reach _failed)
-        || func_name.ends_with(">::unwrap")
-        || func_name.ends_with(">::expect")
-        || func_name.ends_with(">::unwrap_err")
-        || func_name.ends_with(">::expect_err")
-        // Panic functions
-        || func_name.contains("panic_fmt")
-        || func_name.contains("panic_display")
-        || func_name.contains("panic_bounds_check")
-        || func_name.contains("panic_const_")
-        || func_name.contains("panic_in_cleanup")
-        || func_name.contains("panic_cannot_unwind")
-        || func_name.contains("panic_nounwind")
-        || func_name.contains("panic_misaligned_pointer")
-        || func_name.contains("panic_invalid_enum")
-        // Assert
-        || func_name.contains("assert_failed")
-        // Capacity/allocation
-        || func_name.contains("capacity_overflow")
-        || func_name.contains("handle_alloc_error")
-        // Async function resumed after completion
-        || func_name.contains("async_fn_resumed")
-        // String/slice errors
-        || func_name.contains("slice_error_fail")
-        || func_name.contains("str_index_overflow_fail")
-        // Index trait - direct bounds check
-        // Matches both simple names ("index<T>") and fully qualified demangled
-        // linkage names ("<impl Index<I> for str>::index")
-        || func_name.starts_with("index<")
-        || func_name.contains("::index<")
-        || func_name.contains("Index::index")
-        || func_name.contains(">::index")
+    detect_panic_cause(func_name).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -193,189 +132,249 @@ pub fn is_panic_triggering_function(func_name: &str) -> bool {
 
 use crate::panic_cause::PanicCause;
 
+/// How to match a pattern against a function name.
+#[derive(Clone, Copy)]
+enum Match {
+    /// `func_name.contains(pattern)`
+    Contains,
+    /// `func_name.ends_with(pattern)`
+    EndsWith,
+    /// `func_name.contains(pattern)` AND `func_name.contains(second)`
+    ContainsBoth(&'static str),
+}
+
+/// Rule table for panic cause classification.
+///
+/// Each entry is `(pattern, match_kind, cause)`. Rules are checked in order;
+/// the first match wins. Uses `ends_with` for method names (avoids `unwrap_or*`
+/// false positives) and `contains` for internal runtime function names.
+const PANIC_CAUSE_RULES: &[(&str, Match, PanicCause)] = &[
+    // Async
+    (
+        "async_fn_resumed",
+        Match::Contains,
+        PanicCause::AsyncFnResumed,
+    ),
+    // Cleanup/unwind
+    ("panic_in_cleanup", Match::Contains, PanicCause::PanicInDrop),
+    (
+        "panic_cannot_unwind",
+        Match::Contains,
+        PanicCause::CannotUnwind,
+    ),
+    ("panic_nounwind", Match::Contains, PanicCause::CannotUnwind),
+    // Bounds check
+    (
+        "panic_bounds_check",
+        Match::Contains,
+        PanicCause::BoundsCheck,
+    ),
+    ("slice_index_fail", Match::Contains, PanicCause::BoundsCheck),
+    // Arithmetic overflow (panic_const_* functions)
+    (
+        "panic_const_add_overflow",
+        Match::Contains,
+        PanicCause::ArithmeticOverflow("addition"),
+    ),
+    (
+        "panic_const_sub_overflow",
+        Match::Contains,
+        PanicCause::ArithmeticOverflow("subtraction"),
+    ),
+    (
+        "panic_const_mul_overflow",
+        Match::Contains,
+        PanicCause::ArithmeticOverflow("multiplication"),
+    ),
+    (
+        "panic_const_div_overflow",
+        Match::Contains,
+        PanicCause::ArithmeticOverflow("division"),
+    ),
+    (
+        "panic_const_rem_overflow",
+        Match::Contains,
+        PanicCause::ArithmeticOverflow("remainder"),
+    ),
+    (
+        "panic_const_neg_overflow",
+        Match::Contains,
+        PanicCause::ArithmeticOverflow("negation"),
+    ),
+    // Shift overflow
+    (
+        "panic_const_shl_overflow",
+        Match::Contains,
+        PanicCause::ShiftOverflow("left"),
+    ),
+    (
+        "panic_const_shr_overflow",
+        Match::Contains,
+        PanicCause::ShiftOverflow("right"),
+    ),
+    // Division by zero
+    (
+        "panic_const_div_by_zero",
+        Match::Contains,
+        PanicCause::DivisionByZero,
+    ),
+    (
+        "panic_const_rem_by_zero",
+        Match::Contains,
+        PanicCause::DivisionByZero,
+    ),
+    // Unwrap (ends_with to avoid matching unwrap_or*)
+    ("unwrap_failed", Match::Contains, PanicCause::Unwrap),
+    (">::unwrap", Match::EndsWith, PanicCause::Unwrap),
+    (">::unwrap_err", Match::EndsWith, PanicCause::Unwrap),
+    // Expect (ends_with to avoid matching safe variants)
+    ("expect_failed", Match::Contains, PanicCause::Expect),
+    (">::expect", Match::EndsWith, PanicCause::Expect),
+    (">::expect_err", Match::EndsWith, PanicCause::Expect),
+    // Assert
+    ("assert_failed", Match::Contains, PanicCause::AssertFailed),
+    // Explicit panic!()
+    ("panic_display", Match::Contains, PanicCause::ExplicitPanic),
+    // Unsafe pointer errors
+    (
+        "panic_misaligned_pointer_dereference",
+        Match::Contains,
+        PanicCause::MisalignedPointer,
+    ),
+    (
+        "panic_invalid_enum_construction",
+        Match::Contains,
+        PanicCause::InvalidEnum,
+    ),
+    // Formatting domain
+    ("core::fmt::", Match::Contains, PanicCause::FormattingError),
+    ("alloc::fmt::", Match::Contains, PanicCause::FormattingError),
+    ("format_inner", Match::Contains, PanicCause::FormattingError),
+    ("write_fmt", Match::Contains, PanicCause::FormattingError),
+    // Capacity/allocation
+    (
+        "capacity_overflow",
+        Match::Contains,
+        PanicCause::CapacityOverflow,
+    ),
+    (
+        "handle_alloc_error",
+        Match::Contains,
+        PanicCause::OutOfMemory,
+    ),
+    (
+        "alloc_error_handler",
+        Match::Contains,
+        PanicCause::OutOfMemory,
+    ),
+    ("alloc_error_hook", Match::Contains, PanicCause::OutOfMemory),
+    // String/slice errors
+    (
+        "slice_error_fail",
+        Match::Contains,
+        PanicCause::StringSliceError,
+    ),
+    (
+        "str_index_overflow_fail",
+        Match::Contains,
+        PanicCause::StringSliceError,
+    ),
+    (
+        "slice_start_index_overflow",
+        Match::Contains,
+        PanicCause::StringSliceError,
+    ),
+    (
+        "slice_end_index_overflow",
+        Match::Contains,
+        PanicCause::StringSliceError,
+    ),
+    // Compound rules (ContainsBoth — both patterns must match)
+    (
+        "unreachable",
+        Match::ContainsBoth("panic"),
+        PanicCause::Unreachable,
+    ),
+    (
+        "::fmt",
+        Match::ContainsBoth("Display"),
+        PanicCause::FormattingError,
+    ),
+    (
+        "::fmt",
+        Match::ContainsBoth("Debug"),
+        PanicCause::FormattingError,
+    ),
+    (
+        "raw_vec",
+        Match::ContainsBoth("grow"),
+        PanicCause::CapacityOverflow,
+    ),
+    // Index trait — subclassify by collection type (before generic Index entries)
+    (
+        ">::index",
+        Match::ContainsBoth("HashMap"),
+        PanicCause::KeyNotFound,
+    ),
+    (
+        ">::index",
+        Match::ContainsBoth("BTreeMap"),
+        PanicCause::KeyNotFound,
+    ),
+    (
+        ">::index",
+        Match::ContainsBoth("hash::map"),
+        PanicCause::KeyNotFound,
+    ),
+    (
+        ">::index",
+        Match::ContainsBoth("btree::map"),
+        PanicCause::KeyNotFound,
+    ),
+    (
+        ">::index",
+        Match::ContainsBoth("str::"),
+        PanicCause::StringSliceError,
+    ),
+    // Index trait — str subclassification for index< patterns
+    (
+        "index<",
+        Match::ContainsBoth("str::"),
+        PanicCause::StringSliceError,
+    ),
+    // Index trait — generic (after subclassifications)
+    (">::index", Match::Contains, PanicCause::BoundsCheck),
+    ("Index::index", Match::Contains, PanicCause::BoundsCheck),
+    ("index<", Match::Contains, PanicCause::BoundsCheck),
+    // Collection internals (after Index trait so HashMap gets KeyNotFound)
+    (
+        "hashbrown::raw::",
+        Match::Contains,
+        PanicCause::CapacityOverflow,
+    ),
+    (
+        "std::collections::hash::",
+        Match::Contains,
+        PanicCause::CapacityOverflow,
+    ),
+];
+
 /// Detect panic cause from a function name in the call chain.
 ///
-/// Uses fully qualified demangled function names (from DWARF linkage names)
-/// for disambiguation (e.g., `core::result::unwrap_failed` vs
-/// `core::option::unwrap_failed`).
+/// Iterates [`PANIC_CAUSE_RULES`] in order; first match wins.
 pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
-    // Check for async function resumed after completion
-    if func_name.contains("async_fn_resumed") {
-        return Some(PanicCause::AsyncFnResumed);
-    }
-
-    // Check for drop/cleanup panic paths first
-    if func_name.contains("panic_in_cleanup") {
-        return Some(PanicCause::PanicInDrop);
-    }
-    if func_name.contains("panic_cannot_unwind") || func_name.contains("panic_nounwind") {
-        return Some(PanicCause::CannotUnwind);
-    }
-
-    // Check for specific panic functions
-    if func_name.contains("panic_bounds_check") {
-        return Some(PanicCause::BoundsCheck);
-    }
-    if func_name.contains("panic_const_add_overflow") {
-        return Some(PanicCause::ArithmeticOverflow("addition".to_string()));
-    }
-    if func_name.contains("panic_const_sub_overflow") {
-        return Some(PanicCause::ArithmeticOverflow("subtraction".to_string()));
-    }
-    if func_name.contains("panic_const_mul_overflow") {
-        return Some(PanicCause::ArithmeticOverflow("multiplication".to_string()));
-    }
-    if func_name.contains("panic_const_div_overflow") {
-        return Some(PanicCause::ArithmeticOverflow("division".to_string()));
-    }
-    if func_name.contains("panic_const_rem_overflow") {
-        return Some(PanicCause::ArithmeticOverflow("remainder".to_string()));
-    }
-    if func_name.contains("panic_const_neg_overflow") {
-        return Some(PanicCause::ArithmeticOverflow("negation".to_string()));
-    }
-    if func_name.contains("panic_const_shl_overflow") {
-        return Some(PanicCause::ShiftOverflow("left".to_string()));
-    }
-    if func_name.contains("panic_const_shr_overflow") {
-        return Some(PanicCause::ShiftOverflow("right".to_string()));
-    }
-    if func_name.contains("panic_const_div_by_zero") {
-        return Some(PanicCause::DivisionByZero);
-    }
-    if func_name.contains("panic_const_rem_by_zero") {
-        return Some(PanicCause::DivisionByZero);
-    }
-    // unwrap/expect detection
-    if func_name.contains("unwrap_failed")
-        || func_name.ends_with(">::unwrap")
-        || func_name.ends_with(">::unwrap_err")
-    {
-        return Some(PanicCause::Unwrap);
-    }
-    if func_name.contains("expect_failed")
-        || func_name.ends_with(">::expect")
-        || func_name.ends_with(">::expect_err")
-    {
-        return Some(PanicCause::Expect);
-    }
-    // Assert macros - both assert!() and debug_assert!() compile to the same
-    // assert_failed function, so we cannot distinguish them at the binary level.
-    if func_name.contains("assert_failed") {
-        return Some(PanicCause::AssertFailed);
-    }
-    // panic_display is explicit panic! with a simple message
-    if func_name.contains("panic_display") {
-        return Some(PanicCause::ExplicitPanic);
-    }
-    // Check for unreachable/unimplemented/todo patterns
-    if func_name.contains("unreachable") && func_name.contains("panic") {
-        return Some(PanicCause::Unreachable);
-    }
-
-    // ============================================================
-    // Stdlib domain detection - detect panics from specific domains
-    // ============================================================
-
-    // Formatting domain (core::fmt::, alloc::fmt::)
-    // These functions are in the call chain when format!/write!/Display/Debug panic
-    if func_name.contains("core::fmt::") || func_name.contains("alloc::fmt::") {
-        return Some(PanicCause::FormattingError);
-    }
-    if func_name.contains("format_inner") || func_name.contains("write_fmt") {
-        return Some(PanicCause::FormattingError);
-    }
-    // Display/Debug trait formatting
-    if func_name.contains("::fmt") && (func_name.contains("Display") || func_name.contains("Debug"))
-    {
-        return Some(PanicCause::FormattingError);
-    }
-
-    // Capacity/allocation domain
-    if func_name.contains("capacity_overflow") {
-        return Some(PanicCause::CapacityOverflow);
-    }
-    if func_name.contains("handle_alloc_error")
-        || func_name.contains("alloc_error_handler")
-        || func_name.contains("alloc_error_hook")
-    {
-        return Some(PanicCause::OutOfMemory);
-    }
-    if func_name.contains("raw_vec") && func_name.contains("grow") {
-        return Some(PanicCause::CapacityOverflow);
-    }
-
-    // String/slice domain
-    if func_name.contains("slice_error_fail") {
-        return Some(PanicCause::StringSliceError);
-    }
-    if func_name.contains("str_index_overflow_fail") {
-        return Some(PanicCause::StringSliceError);
-    }
-    if func_name.contains("slice_start_index_overflow")
-        || func_name.contains("slice_end_index_overflow")
-    {
-        return Some(PanicCause::StringSliceError);
-    }
-
-    // Bounds checking domain - detect from Index trait implementations
-    // These are called from user code when indexing slices/vecs
-    // Matches both simple names ("index<T, usize>") and fully qualified demangled
-    // linkage names ("<impl Index<I> for str>::index")
-    if func_name.starts_with("index<")
-        || func_name.contains("::index<")
-        || func_name.contains("Index::index")
-        || func_name.contains(">::index")
-    {
-        // Check if it's HashMap/BTreeMap indexing (key not found panic)
-        let is_map_op = func_name.contains("HashMap")
-            || func_name.contains("BTreeMap")
-            || func_name.contains("hash::map")
-            || func_name.contains("btree::map");
-        if is_map_op {
-            return Some(PanicCause::KeyNotFound);
+    for (pattern, kind, cause) in PANIC_CAUSE_RULES {
+        let matched = match kind {
+            Match::Contains => func_name.contains(pattern),
+            Match::EndsWith => func_name.ends_with(pattern),
+            Match::ContainsBoth(second) => {
+                func_name.contains(pattern) && func_name.contains(second)
+            }
+        };
+        if matched {
+            return Some(cause.clone());
         }
-
-        // Check if it's for str (string slice) vs array/vec (bounds check)
-        // Fully qualified names like "core::str::traits::...::index" contain "str::"
-        if func_name.contains("str::") {
-            return Some(PanicCause::StringSliceError);
-        }
-        return Some(PanicCause::BoundsCheck);
     }
-
-    // Invalid enum discriminant - happens with unsafe enum transmutes or memory corruption
-    if func_name.contains("panic_invalid_enum_construction") {
-        return Some(PanicCause::InvalidEnum);
-    }
-
-    // Misaligned pointer dereference - unsafe code dereferencing misaligned pointers
-    if func_name.contains("panic_misaligned_pointer_dereference") {
-        return Some(PanicCause::MisalignedPointer);
-    }
-
-    // ============================================================
-    // Collection internals - hashbrown raw table operations
-    // ============================================================
-    // hashbrown::raw:: contains the low-level hash table allocation/layout/capacity
-    // functions. When these appear on a panic path, it indicates a capacity overflow
-    // or allocation failure during HashMap/HashSet operations.
-    // This is more specific than the CannotUnwind cause that gets detected earlier
-    // from panic_nounwind_fmt on the allocator error path.
-    if func_name.contains("hashbrown::raw::") {
-        return Some(PanicCause::CapacityOverflow);
-    }
-
-    // std::collections::hash HashMap/HashSet creation and allocation functions
-    // may panic through hasher initialization (thread-local storage) or internal
-    // allocation. When no more specific cause is detected from the panic path,
-    // classify as capacity overflow since that's the most actionable cause.
-    if func_name.contains("std::collections::hash::") {
-        return Some(PanicCause::CapacityOverflow);
-    }
-
-    // panic_fmt is the core panic function - if we reach here without a more
-    // specific match, leave cause as None (unknown) to avoid incorrect labeling.
     None
 }
 
@@ -388,38 +387,12 @@ mod tests {
     use super::*;
     use crate::panic_cause::PanicCause;
 
-    // -- is_panic_triggering_function tests --
-
-    #[test]
-    fn test_unwrap_variants() {
-        assert!(is_panic_triggering_function("unwrap_failed"));
-        assert!(is_panic_triggering_function("expect_failed"));
-        assert!(is_panic_triggering_function(
-            "core::option::Option<i32>::unwrap"
-        ));
-        assert!(!is_panic_triggering_function("unwrap_or_default"));
-    }
-
-    #[test]
-    fn test_panic_functions() {
-        assert!(is_panic_triggering_function("panic_fmt"));
-        assert!(is_panic_triggering_function("panic_bounds_check"));
-        assert!(is_panic_triggering_function("panic_const_add_overflow"));
-        assert!(is_panic_triggering_function("panic_misaligned_pointer"));
-    }
-
-    #[test]
-    fn test_user_function_not_triggering() {
-        assert!(!is_panic_triggering_function("my_function"));
-        assert!(!is_panic_triggering_function("process_data"));
-    }
-
     // -- pattern constant tests --
 
     #[test]
     fn test_panic_symbol_patterns_cover_key_entry_points() {
-        assert!(PANIC_SYMBOL_PATTERNS.iter().any(|p| p.contains("panic")));
-        assert!(PANIC_SYMBOL_PATTERNS.iter().any(|p| p.contains("slice")));
+        assert!(PANIC_SYMBOL.contains("panic"));
+        assert!(ABORT_SYMBOL.contains("abort"));
     }
 
     #[test]
@@ -497,15 +470,15 @@ mod tests {
     fn test_detect_panic_cause_arithmetic_overflow() {
         assert_eq!(
             detect_panic_cause("panic_const_add_overflow"),
-            Some(PanicCause::ArithmeticOverflow("addition".to_string()))
+            Some(PanicCause::ArithmeticOverflow("addition"))
         );
         assert_eq!(
             detect_panic_cause("panic_const_sub_overflow"),
-            Some(PanicCause::ArithmeticOverflow("subtraction".to_string()))
+            Some(PanicCause::ArithmeticOverflow("subtraction"))
         );
         assert_eq!(
             detect_panic_cause("panic_const_mul_overflow"),
-            Some(PanicCause::ArithmeticOverflow("multiplication".to_string()))
+            Some(PanicCause::ArithmeticOverflow("multiplication"))
         );
     }
 
@@ -513,11 +486,11 @@ mod tests {
     fn test_detect_panic_cause_shift_overflow() {
         assert_eq!(
             detect_panic_cause("panic_const_shl_overflow"),
-            Some(PanicCause::ShiftOverflow("left".to_string()))
+            Some(PanicCause::ShiftOverflow("left"))
         );
         assert_eq!(
             detect_panic_cause("panic_const_shr_overflow"),
-            Some(PanicCause::ShiftOverflow("right".to_string()))
+            Some(PanicCause::ShiftOverflow("right"))
         );
     }
 
@@ -607,11 +580,29 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_panic_cause_panic_display() {
+    fn test_detect_panic_cause_explicit_panic() {
         assert_eq!(
             detect_panic_cause("panic_display"),
             Some(PanicCause::ExplicitPanic)
         );
+        // panic_fmt is the generic runtime entry — not classified
+        // (it calls rust_panic, so paths through it are already traced)
+        assert_eq!(detect_panic_cause("panic_fmt"), None);
+    }
+
+    #[test]
+    fn test_detect_panic_cause_safe_variants_return_none() {
+        assert_eq!(detect_panic_cause("unwrap_or_default"), None);
+        assert_eq!(
+            detect_panic_cause("core::option::Option<T>::unwrap_or"),
+            None
+        );
+        assert_eq!(
+            detect_panic_cause("core::option::Option<T>::unwrap_or_else"),
+            None
+        );
+        assert_eq!(detect_panic_cause("my_function"), None);
+        assert_eq!(detect_panic_cause("process_data"), None);
     }
 
     #[test]
@@ -688,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_detect_panic_cause_index_string() {
-        // Fully qualified demangled names contain both Index trait pattern and "str::"
+        // Fully qualified demangled names contain both the Index trait pattern and "str::"
         assert_eq!(
             detect_panic_cause("core::str::traits::<impl Index<I> for str>::index"),
             Some(PanicCause::StringSliceError)
@@ -812,43 +803,5 @@ mod tests {
         assert!(is_panic_triggering_function(
             "core::panicking::panic_const::panic_const_async_fn_resumed"
         ));
-    }
-
-    // Additional tests for NEW logic in simplify_heuristics branch
-
-    #[test]
-    fn test_detect_panic_cause_unwrap_failed_simple() {
-        // Test simple unwrap_failed (no namespace prefix)
-        assert_eq!(
-            detect_panic_cause("unwrap_failed"),
-            Some(PanicCause::Unwrap)
-        );
-    }
-
-    #[test]
-    fn test_detect_panic_cause_result_unwrap_failed() {
-        // Test fully qualified Result unwrap_failed
-        assert_eq!(
-            detect_panic_cause("core::result::unwrap_failed"),
-            Some(PanicCause::Unwrap)
-        );
-    }
-
-    #[test]
-    fn test_detect_panic_cause_expect_failed_simple() {
-        // Test simple expect_failed
-        assert_eq!(
-            detect_panic_cause("expect_failed"),
-            Some(PanicCause::Expect)
-        );
-    }
-
-    #[test]
-    fn test_detect_panic_cause_result_expect_method() {
-        // Test Result::expect_err (method form)
-        assert_eq!(
-            detect_panic_cause("core::result::Result<T,E>::expect_err"),
-            Some(PanicCause::Expect)
-        );
     }
 }
