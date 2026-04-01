@@ -366,7 +366,7 @@ impl JonesyLspServer {
 
             while debounced.recv().await.is_some() {
                 client
-                    .log_message(MessageType::INFO, "Binary change detected, re-analyzing...")
+                    .log_message(MessageType::INFO, "File change detected, re-analyzing...")
                     .await;
 
                 // Run analysis (using the same logic as analyze_and_publish)
@@ -803,7 +803,7 @@ impl JonesyLspServer {
         // Use full function path for precise matching
         let title = format!("Allow '{}' in this function", cause);
         let rule_text = format!(
-            "\n[[rules]]\nfunction = \"*::{}\"\nallow = [\"{}\"]\n",
+            "\n[[rules]]\nfunction = \"{}\"\nallow = [\"{}\"]\n",
             function, cause
         );
 
@@ -1592,8 +1592,6 @@ async fn run_analysis_task(
             force_full_analysis = true;
             if config_deleted {
                 cache.remove_config(config_path);
-            } else {
-                cache.update_config(config_path);
             }
         }
     }
@@ -1707,6 +1705,15 @@ async fn run_analysis_task(
         }
     }
 
+    // Update config hashes now that analysis is complete.
+    // This is done AFTER the analysis loop so that duplicate watcher events
+    // still detect the config change and re-analyze correctly.
+    for config_path in &config_files {
+        if config_path.exists() {
+            cache.update_config(config_path);
+        }
+    }
+
     // Update workspace state in cache and save
     cache.update_workspace(current_workspace_state);
     cache.prune_stale_targets();
@@ -1772,13 +1779,18 @@ async fn run_analysis_task(
         }
     }
 
+    // Report total files from state (includes merged results from skipped targets)
+    let total_files = {
+        let state = state.read().await;
+        state.panic_points.len()
+    };
+
     client
         .log_message(
             MessageType::INFO,
             format!(
                 "Analysis complete: {} panic points in {} files",
-                total_points,
-                new_files.len()
+                total_points, total_files
             ),
         )
         .await;
