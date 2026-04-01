@@ -32,60 +32,6 @@ pub struct FullLineTable {
 }
 
 impl FullLineTable {
-    /// Build a complete line table from DWARF debug info.
-    /// Uses string interning to deduplicate file paths and reduce memory usage.
-    pub fn build<R: Reader>(dwarf: &Dwarf<R>) -> Result<Self, gimli::Error> {
-        let mut entries = Vec::new();
-        let mut file_pool = Vec::new();
-        let mut file_to_id: ahash::AHashMap<String, u32> = ahash::AHashMap::new();
-
-        let mut units = dwarf.units();
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
-
-            if let Some(program) = &unit.line_program {
-                let mut rows = program.clone().rows();
-
-                while let Some((header, row)) = rows.next_row()? {
-                    if let Some(file_entry) = row.file(header) {
-                        let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
-
-                        // Intern the file path to reduce memory usage
-                        // Use two-step get/insert to avoid cloning on cache hits
-                        let file_id = if let Some(&id) = file_to_id.get(&full_path) {
-                            id
-                        } else {
-                            let id = file_pool.len() as u32;
-                            file_pool.push(full_path.clone());
-                            file_to_id.insert(full_path, id);
-                            id
-                        };
-
-                        // Include all entries, even without line numbers (use 0 like original)
-                        // to match the original get_source_location behavior
-                        let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
-                        let column = match row.column() {
-                            ColumnType::LeftEdge => None,
-                            ColumnType::Column(c) => Some(c.get() as u32),
-                        };
-                        entries.push(FullLineEntry {
-                            address: row.address(),
-                            file_id,
-                            line,
-                            column,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Sort by address for binary search (stable sort preserves unit order for
-        // entries with same address, which get_source_location relies on)
-        entries.sort_by_key(|e| e.address);
-
-        Ok(Self { entries, file_pool })
-    }
-
     /// Get source location for an address using binary search.
     /// Returns the entry whose address is <= the query address.
     /// For entries with the same address, returns the first one (from earliest unit,
@@ -129,7 +75,6 @@ impl FullLineTable {
         func_start: u64,
         func_end: u64,
         func_start_line: Option<u32>,
-        crate_src_path: &str,
         project_context: &ProjectContext,
     ) -> (Option<u32>, Option<u32>) {
         // Find entries up to and including addr
@@ -197,7 +142,6 @@ impl FullLineTable {
     /// the line program once.
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
-        crate_src_path: &str,
         project_context: &ProjectContext,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
         let mut crate_entries = Vec::new();

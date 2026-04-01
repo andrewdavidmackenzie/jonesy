@@ -9,10 +9,9 @@ use jonesy::sym::SymbolTable;
 // Cross-platform imports
 use jonesy::args::{Args, VERSION, WorkspaceMember, parse_args};
 use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
-use jonesy::cargo::{
-    derive_crate_src_path, detect_library_type, find_project_root, get_project_name,
-};
+use jonesy::cargo::{detect_library_type, find_project_root, get_project_name};
 use jonesy::output::OutputFormat;
+use jonesy::project_context::ProjectContext;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -85,6 +84,18 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
 
+    // Build ProjectContext once from the first binary's project root
+    let first_binary = parsed_args.binaries[0]
+        .canonicalize()
+        .unwrap_or_else(|_| parsed_args.binaries[0].clone());
+    let project_root = find_project_root(&first_binary)?;
+    let project_context = ProjectContext::from_project_root(&project_root)?;
+    let config = Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(255);
+        });
+
     for binary_path in &parsed_args.binaries {
         let binary_path = binary_path
             .canonicalize()
@@ -92,28 +103,6 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         if parsed_args.output.show_progress() {
             println!("Processing {}", binary_path.display());
         }
-
-        // Find the project/workspace root from the binary path
-        let project_root = find_project_root(&binary_path)?;
-
-        // Find the member crate directory for config loading
-        let crate_dir = derive_crate_src_path(&binary_path).map(|src_path| {
-            let crate_rel = src_path.strip_suffix("src/").unwrap_or(&src_path);
-            project_root.join(crate_rel.trim_end_matches('/'))
-        });
-
-        // Load configuration: prefer crate-specific config, fall back to workspace root
-        let config = if let Some(ref crate_path) = crate_dir
-            && crate_path.join("Cargo.toml").exists()
-        {
-            Config::load_for_project(crate_path, parsed_args.config_path.as_deref())
-        } else {
-            Config::load_for_project(&project_root, parsed_args.config_path.as_deref())
-        }
-        .unwrap_or_else(|e| {
-            eprintln!("Error: {e}");
-            std::process::exit(255);
-        });
 
         // Check if this is a library and detect its type
         let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
@@ -144,15 +133,14 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             project_root_path = Some(project_root.to_string_lossy().to_string());
         }
 
-        let crate_src_path = derive_crate_src_path(&binary_path);
         if let Some(mut result) = analyze_binary(
             &symbols,
             &binary_buffer,
             &binary_path,
-            crate_src_path.as_deref(),
             parsed_args.show_timings,
             &config,
             &parsed_args.output,
+            &project_context,
         )? {
             total_summary.add(&result.summary);
             merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
@@ -201,31 +189,30 @@ fn analyze_binary(
     symbols: &SymbolTable,
     buffer: &[u8],
     binary_path: &Path,
-    crate_src_path: Option<&str>,
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
+    project_context: &ProjectContext,
 ) -> Result<Option<BinaryAnalysisResult>, String> {
     match symbols {
         SymbolTable::MachO(Binary(_)) => analyze_macho(
             symbols,
             buffer,
             binary_path,
-            crate_src_path,
             show_timings,
             config,
             output,
+            project_context,
         )
         .map(Some),
         SymbolTable::MachO(Fat(_)) => Ok(None),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
             buffer,
-            binary_path,
-            crate_src_path,
             show_timings,
             config,
             output,
+            project_context,
         )
         .map(Some),
     }
@@ -246,20 +233,8 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
     let mut workspace_summary = AnalysisSummary::default();
     let mut member_results: Vec<WorkspaceMemberResult> = Vec::new();
 
-    // Collect all source paths from actual binary [[bin]] paths
-    // This handles non-standard layouts like [[bin]] path = "crates/core/main.rs"
-    // Join patterns with "|" separator for is_in_crate to check
-    let workspace_src_path = members
-        .iter()
-        .flat_map(|m| {
-            m.binaries
-                .iter()
-                .filter_map(|binary_path| derive_crate_src_path(binary_path))
-        })
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join("|");
+    // Build ProjectContext once for the workspace root
+    let project_context = ProjectContext::from_project_root(&workspace_root)?;
 
     for member in members {
         if args.output.show_progress() {
@@ -305,10 +280,10 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     &symbols,
                     &binary_buffer,
                     &binary_path,
-                    Some(&workspace_src_path),
                     args.show_timings,
                     &config,
                     &args.output,
+                    &project_context,
                 )
                 .ok()??;
                 Some((binary_path, result))

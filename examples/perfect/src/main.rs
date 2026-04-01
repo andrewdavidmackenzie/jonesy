@@ -8,8 +8,8 @@ fn main() {
     for index in 0..5 {
         // How to index an array without a panic
         match CATCHPHRASES.get(index) {
-            None => println!("Array index out of range of array"),
-            Some(phrase) => println!("{phrase}"),
+            None => println!("Array index out of range of array"), // jonesy:allow(format)
+            Some(phrase) => println!("{phrase}"),                  // jonesy:allow(format)
         }
     }
 
@@ -25,16 +25,16 @@ fn demonstrate_inline_allows() {
     // Example 1: Allow unwrap on a known-safe value
     let always_some: Option<i32> = Some(42);
     let value = always_some.unwrap(); // jonesy:allow(unwrap)
-    println!("Got value: {value}");
+    println!("Got value: {value}"); // jonesy:allow(format)
 
     // Example 2: Allow expect with a descriptive message
     let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect)
-    println!("PATH length: {}", config.len());
+    println!("PATH length: {}", config.len()); // jonesy:allow(format)
 
     // Example 3: Allow unwrap and bounds check
     let data: Result<Vec<u8>, &str> = Ok(vec![1, 2, 3]);
-    let bytes = data.unwrap(); // jonesy:allow(unwrap)
-    println!("First byte: {}", bytes[0]); // jonesy:allow(bounds)
+    let bytes = data.unwrap(); // jonesy:allow(unwrap,oom)
+    println!("First byte: {}", bytes[0]); // jonesy:allow(bounds,format)
 
     // Example 4: Allow panic in a known code path
     // jonesy:allow(capacity)

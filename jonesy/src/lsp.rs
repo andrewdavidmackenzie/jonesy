@@ -22,6 +22,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use crate::call_tree::CrateCodePoint;
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
+use crate::project_context::ProjectContext;
 use notify::RecommendedWatcher;
 
 /// Counter for generating unique progress tokens
@@ -461,22 +462,25 @@ impl JonesyLspServer {
                 .await;
         }
 
-        // Get src_filter for filtering to workspace source files
-        let src_filter = workspace_info
-            .as_ref()
-            .map(|info| info.src_filter.clone())
-            .unwrap_or_else(|| {
-                // Fallback: use workspace root name + /src/
-                workspace_root
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|name| format!("{}/src/", name))
-                    .unwrap_or_else(|| "src/".to_string())
-            });
-
-        self.client
-            .log_message(MessageType::LOG, format!("Source filter: {}", src_filter))
-            .await;
+        // Build ProjectContext once for the workspace
+        let project_context = {
+            let root = workspace_root.clone();
+            tokio::task::spawn_blocking(move || ProjectContext::from_project_root(&root))
+                .await
+                .unwrap_or_else(|e| Err(format!("Failed to build project context: {e}")))
+        };
+        let project_context = match project_context {
+            Ok(ctx) => Arc::new(ctx),
+            Err(e) => {
+                self.client
+                    .log_message(MessageType::ERROR, format!("ProjectContext error: {e}"))
+                    .await;
+                if let Some(ref token) = progress_token {
+                    self.progress_end(token, "ProjectContext error").await;
+                }
+                return false;
+            }
+        };
 
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
@@ -511,9 +515,9 @@ impl JonesyLspServer {
             let analysis_result = {
                 let target = target.clone();
                 let workspace_root = workspace_root.clone();
-                let src_filter = src_filter.clone();
+                let project_context = Arc::clone(&project_context);
                 tokio::task::spawn_blocking(move || {
-                    analyze_single_target(&target, &workspace_root, &src_filter)
+                    analyze_single_target(&target, &workspace_root, &project_context)
                 })
                 .await
             };
@@ -1603,15 +1607,6 @@ async fn run_analysis_task(
         client.log_message(MessageType::INFO, change_summary).await;
     }
 
-    // Discover workspace structure
-    let workspace_info = {
-        let root = workspace_root.clone();
-        tokio::task::spawn_blocking(move || discover_workspace(&root))
-            .await
-            .ok()
-            .flatten()
-    };
-
     // Get targets
     let targets = {
         let root = workspace_root.clone();
@@ -1626,11 +1621,22 @@ async fn run_analysis_task(
         return;
     }
 
-    // Get src_filter
-    let src_filter = workspace_info
-        .as_ref()
-        .map(|info| info.src_filter.clone())
-        .unwrap_or_else(|| "src/".to_string());
+    // Build ProjectContext once for the workspace
+    let project_context = {
+        let root = workspace_root.clone();
+        tokio::task::spawn_blocking(move || ProjectContext::from_project_root(&root))
+            .await
+            .unwrap_or_else(|e| Err(format!("Failed to build project context: {e}")))
+    };
+    let project_context = match project_context {
+        Ok(ctx) => Arc::new(ctx),
+        Err(e) => {
+            client
+                .log_message(MessageType::ERROR, format!("ProjectContext error: {e}"))
+                .await;
+            return;
+        }
+    };
 
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
@@ -1659,9 +1665,9 @@ async fn run_analysis_task(
         let analysis_result = {
             let target = target.clone();
             let workspace_root = workspace_root.clone();
-            let src_filter = src_filter.clone();
+            let project_context = Arc::clone(&project_context);
             tokio::task::spawn_blocking(move || {
-                analyze_single_target(&target, &workspace_root, &src_filter)
+                analyze_single_target(&target, &workspace_root, &project_context)
             })
             .await
         };
@@ -1782,8 +1788,6 @@ async fn run_analysis_task(
 struct WorkspaceInfo {
     members: Vec<String>,
     targets: Vec<String>,
-    /// Filter path for source files like "flowc/src/|flowr/src/|..."
-    src_filter: String,
 }
 
 // ============================================================================
@@ -1842,25 +1846,6 @@ fn group_points_by_uri(
     points_by_file
 }
 
-/// Build the source filter string from workspace info.
-///
-/// The src_filter is used to filter DWARF debug info to only include
-/// paths matching the workspace's source directories. Format is like
-/// "crate_a/src/|crate_b/src/|..." for workspaces.
-#[cfg(test)]
-fn build_src_filter(workspace_info: Option<&WorkspaceInfo>, workspace_root: &Path) -> String {
-    workspace_info
-        .map(|info| info.src_filter.clone())
-        .unwrap_or_else(|| {
-            // Fallback: use workspace root name + /src/
-            workspace_root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|name| format!("{}/src/", name))
-                .unwrap_or_else(|| "src/".to_string())
-        })
-}
-
 /// Result of analyzing workspace targets.
 #[cfg(test)]
 #[derive(Debug, Default)]
@@ -1884,13 +1869,13 @@ struct AnalysisResult {
 fn analyze_workspace_targets(
     targets: &[PathBuf],
     workspace_root: &Path,
-    src_filter: &str,
+    project_context: &ProjectContext,
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
     let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
 
     for target in targets {
-        match analyze_single_target(target, workspace_root, src_filter) {
+        match analyze_single_target(target, workspace_root, project_context) {
             Ok(points) => {
                 result.analyzed_count += 1;
                 let point_count = points.len();
@@ -1923,7 +1908,6 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     let manifest = cargo_toml::Manifest::from_slice(content.as_bytes()).ok()?;
 
     let mut members = Vec::new();
-    let mut member_src_paths = Vec::new();
     let mut targets = Vec::new();
 
     // Get workspace members
@@ -1933,25 +1917,14 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
                 // Expand glob
                 for path in expand_workspace_glob(workspace_root, member) {
                     if let Some(name) = path.file_name() {
-                        let name_str = name.to_string_lossy().to_string();
-                        member_src_paths.push(format!("{}/src/", name_str));
-                        members.push(name_str);
+                        members.push(name.to_string_lossy().to_string());
                     }
                 }
             } else {
-                // Use directory basename for src path
-                let path = std::path::Path::new(member);
-                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-                    member_src_paths.push(format!("{}/src/", dir_name));
-                }
                 members.push(member.clone());
             }
         }
     } else if let Some(pkg) = &manifest.package {
-        // Single crate, not a workspace
-        // Use "src/" without crate name prefix - DWARF debug info contains relative
-        // paths like "src/main.rs", not "crate_name/src/main.rs"
-        member_src_paths.push("src/".to_string());
         members.push(pkg.name.clone());
     }
 
@@ -1964,14 +1937,7 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
         }
     }
 
-    // Build filter path like "flowc/src/|flowr/src/|..."
-    let src_filter = member_src_paths.join("|");
-
-    Some(WorkspaceInfo {
-        members,
-        targets,
-        src_filter,
-    })
+    Some(WorkspaceInfo { members, targets })
 }
 
 /// Analyze a single target (binary or library) and return panic points.
@@ -1979,7 +1945,7 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
 fn analyze_single_target(
     target_path: &Path,
     workspace_root: &Path,
-    src_filter: &str,
+    project_context: &ProjectContext,
 ) -> std::result::Result<Vec<CrateCodePoint>, String> {
     use crate::analysis::{analyze_archive, analyze_macho};
     use crate::args::OutputFormat;
@@ -2007,10 +1973,10 @@ fn analyze_single_target(
                 &symbols,
                 &binary_buffer,
                 target_path,
-                Some(src_filter),
                 false, // show_timings
                 &config,
                 &output,
+                project_context,
             )?;
             Ok(result.code_points)
         }
@@ -2054,10 +2020,10 @@ fn analyze_single_target(
                         &fat_symbols,
                         &binary_buffer,
                         target_path,
-                        Some(src_filter),
                         false, // show_timings
                         &config,
                         &output,
+                        project_context,
                     )?;
                     Ok(result.code_points)
                 }
@@ -2068,11 +2034,10 @@ fn analyze_single_target(
             let result = analyze_archive(
                 archive,
                 &binary_buffer,
-                target_path,
-                Some(src_filter),
                 false, // show_timings
                 &config,
                 &output,
+                project_context,
             )?;
             Ok(result.code_points)
         }
@@ -2450,14 +2415,13 @@ mod tests {
         let targets =
             find_workspace_binaries(&workspace_test_dir).expect("Should find workspace binaries");
 
-        let workspace_info =
-            discover_workspace(&workspace_test_dir).expect("Should discover workspace");
+        let project_context = ProjectContext::from_project_root(&workspace_test_dir)
+            .expect("Should build project context");
 
         let mut lsp_points: HashSet<(String, u32)> = HashSet::new();
 
         for target in &targets {
-            let result =
-                analyze_single_target(target, &workspace_test_dir, &workspace_info.src_filter);
+            let result = analyze_single_target(target, &workspace_test_dir, &project_context);
             if let Ok(points) = result {
                 for point in points {
                     // Normalize path
@@ -2948,38 +2912,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_src_filter_with_workspace_info() {
-        let info = WorkspaceInfo {
-            members: vec!["crate_a".to_string(), "crate_b".to_string()],
-            targets: vec![],
-            src_filter: "crate_a/src/|crate_b/src/".to_string(),
-        };
-        let workspace_root = PathBuf::from("/workspace");
-        let result = build_src_filter(Some(&info), &workspace_root);
-        assert_eq!(result, "crate_a/src/|crate_b/src/");
-    }
-
-    #[test]
-    fn test_build_src_filter_without_workspace_info() {
-        let workspace_root = PathBuf::from("/home/user/my_project");
-        let result = build_src_filter(None, &workspace_root);
-        assert_eq!(result, "my_project/src/");
-    }
-
-    #[test]
-    fn test_build_src_filter_root_path_fallback() {
-        // Edge case: workspace root is "/" - should fallback to "src/"
-        let workspace_root = PathBuf::from("/");
-        let result = build_src_filter(None, &workspace_root);
-        // Root has no file_name, so falls back to "src/"
-        assert_eq!(result, "src/");
-    }
-
-    #[test]
     fn test_analyze_workspace_targets_empty() {
         let targets: Vec<PathBuf> = vec![];
         let workspace_root = PathBuf::from("/workspace");
-        let result = analyze_workspace_targets(&targets, &workspace_root, "src/");
+        let project_context = ProjectContext::default();
+        let result = analyze_workspace_targets(&targets, &workspace_root, &project_context);
 
         assert!(result.points.is_empty());
         assert_eq!(result.total_count, 0);
@@ -2992,7 +2929,8 @@ mod tests {
         // Non-existent targets should be skipped
         let targets = vec![PathBuf::from("/nonexistent/binary")];
         let workspace_root = PathBuf::from("/workspace");
-        let result = analyze_workspace_targets(&targets, &workspace_root, "src/");
+        let project_context = ProjectContext::default();
+        let result = analyze_workspace_targets(&targets, &workspace_root, &project_context);
 
         assert!(result.points.is_empty());
         assert_eq!(result.analyzed_count, 0);
@@ -3022,7 +2960,9 @@ mod tests {
         }
 
         let targets = vec![binary];
-        let result = analyze_workspace_targets(&targets, &panic_example, "panic/src/");
+        let project_context = ProjectContext::from_project_root(&panic_example)
+            .expect("Should build project context for panic example");
+        let result = analyze_workspace_targets(&targets, &panic_example, &project_context);
 
         assert_eq!(result.analyzed_count, 1);
         assert_eq!(result.skipped_count, 0);
@@ -3233,9 +3173,6 @@ mod tests {
 
         // Should have workspace members
         assert!(!info.members.is_empty());
-
-        // Should have src_filter
-        assert!(!info.src_filter.is_empty());
     }
 
     #[test]
@@ -3247,12 +3184,8 @@ mod tests {
         assert!(info.is_some());
         let info = info.unwrap();
 
-        // Single crate should have "src/" in filter
-        assert!(
-            info.src_filter.contains("src/"),
-            "Single crate filter should contain 'src/', got: {}",
-            info.src_filter
-        );
+        // Single crate should have the package name as a member
+        assert!(!info.members.is_empty());
     }
 
     #[test]

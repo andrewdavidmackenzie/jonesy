@@ -228,7 +228,6 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
             &buffer,
             macho,
             &buffer,
-            Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
             &project_context,
@@ -327,7 +326,6 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
             &buffer,
             macho,
             &buffer,
-            Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
             &project_context,
@@ -451,7 +449,6 @@ fn bench_call_graph_build(c: &mut Criterion) {
                     &buffer,
                     macho,
                     &buffer,
-                    Some("jonesy/src/"),
                     false,
                     symbol_index.as_ref(),
                     &project_context,
@@ -544,7 +541,6 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
             &buffer,
             macho,
             &buffer,
-            Some("jonesy/src/"),
             false,
             symbol_index.as_ref(),
             &project_context,
@@ -663,6 +659,8 @@ fn bench_analyze_macho(c: &mut Criterion) {
     let buffer = fs::read(&binary_path).expect("Failed to read binary");
     let config = Config::with_defaults();
     let output = OutputFormat::quiet();
+    let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
+        .expect("Should build project context");
 
     c.bench_function("analyze_macho_jonesy", |b| {
         b.iter(|| {
@@ -672,10 +670,10 @@ fn bench_analyze_macho(c: &mut Criterion) {
                     &symbols,
                     &buffer,
                     &binary_path,
-                    Some("jonesy/src/"),
                     false,
                     &config,
                     &output,
+                    &project_context,
                 );
                 black_box(result.ok());
             }
