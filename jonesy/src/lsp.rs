@@ -48,7 +48,7 @@ impl ServerState {
 }
 
 /// The jonesy LSP server backend
-pub struct JonesyLspServer {
+struct JonesyLspServer {
     client: Client,
     state: Arc<RwLock<ServerState>>,
     /// Lock to serialize analysis runs and prevent out-of-order diagnostics
@@ -1595,15 +1595,10 @@ async fn run_analysis_task(
     }
 
     if workspace_changes.has_changes() {
+        let (members, binaries, libraries) = workspace_changes.change_counts();
         let change_summary = format!(
             "Workspace changes: {} members, {} binaries, {} libraries affected",
-            workspace_changes.added_members.len() + workspace_changes.removed_members.len(),
-            workspace_changes.added_binaries.len()
-                + workspace_changes.removed_binaries.len()
-                + workspace_changes.changed_binaries.len(),
-            workspace_changes.added_libraries.len()
-                + workspace_changes.removed_libraries.len()
-                + workspace_changes.changed_libraries.len(),
+            members, binaries, libraries,
         );
         client.log_message(MessageType::INFO, change_summary).await;
     }

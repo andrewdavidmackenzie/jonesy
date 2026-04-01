@@ -19,46 +19,46 @@ const CACHE_FILE: &str = "jonesy/cache.json";
 
 /// Cached state for a single target (binary or library).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TargetState {
+pub(crate) struct TargetState {
     /// Path to the target file.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Last modification time (as milliseconds since epoch for subsecond precision).
-    pub mtime: u128,
+    mtime: u128,
     /// Number of panic points found in the last analysis.
-    pub panic_count: usize,
+    pub(crate) panic_count: usize,
 }
 
 /// Cached state for a config file (Cargo.toml or jonesy.toml).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigState {
+struct ConfigState {
     /// Path to the config file.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Hash of relevant content (for change detection).
-    pub content_hash: u64,
+    content_hash: u64,
 }
 
 /// Workspace structure snapshot for detecting membership changes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkspaceState {
+pub(crate) struct WorkspaceState {
     /// Workspace members (crate names).
-    pub members: Vec<String>,
+    members: Vec<String>,
     /// Binary targets (name -> path).
-    pub binaries: HashMap<String, PathBuf>,
+    binaries: HashMap<String, PathBuf>,
     /// Library targets (name -> path).
-    pub libraries: HashMap<String, PathBuf>,
+    libraries: HashMap<String, PathBuf>,
 }
 
 /// The full analysis cache.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AnalysisCache {
+pub(crate) struct AnalysisCache {
     /// Cache format version (for migration).
-    pub version: u32,
+    version: u32,
     /// Cached target states.
-    pub targets: HashMap<PathBuf, TargetState>,
+    pub(crate) targets: HashMap<PathBuf, TargetState>,
     /// Cached config file states.
-    pub configs: HashMap<PathBuf, ConfigState>,
+    configs: HashMap<PathBuf, ConfigState>,
     /// Last known workspace structure.
-    pub workspace: WorkspaceState,
+    workspace: WorkspaceState,
 }
 
 impl AnalysisCache {
@@ -213,15 +213,15 @@ impl AnalysisCache {
 
 /// Detected changes in workspace structure.
 #[derive(Debug, Default)]
-pub struct WorkspaceChanges {
-    pub added_members: Vec<String>,
-    pub removed_members: Vec<String>,
-    pub added_binaries: Vec<String>,
-    pub removed_binaries: Vec<String>,
-    pub changed_binaries: Vec<String>,
-    pub added_libraries: Vec<String>,
-    pub removed_libraries: Vec<String>,
-    pub changed_libraries: Vec<String>,
+pub(crate) struct WorkspaceChanges {
+    added_members: Vec<String>,
+    removed_members: Vec<String>,
+    added_binaries: Vec<String>,
+    removed_binaries: Vec<String>,
+    changed_binaries: Vec<String>,
+    added_libraries: Vec<String>,
+    removed_libraries: Vec<String>,
+    changed_libraries: Vec<String>,
 }
 
 impl WorkspaceChanges {
@@ -242,14 +242,15 @@ impl WorkspaceChanges {
         !self.added_members.is_empty() || !self.removed_members.is_empty()
     }
 
-    /// Get targets that need re-analysis.
-    pub fn affected_targets(&self) -> Vec<String> {
-        let mut targets = Vec::new();
-        targets.extend(self.added_binaries.iter().cloned());
-        targets.extend(self.changed_binaries.iter().cloned());
-        targets.extend(self.added_libraries.iter().cloned());
-        targets.extend(self.changed_libraries.iter().cloned());
-        targets
+    /// Returns (members_affected, binaries_affected, libraries_affected) counts.
+    pub fn change_counts(&self) -> (usize, usize, usize) {
+        (
+            self.added_members.len() + self.removed_members.len(),
+            self.added_binaries.len() + self.removed_binaries.len() + self.changed_binaries.len(),
+            self.added_libraries.len()
+                + self.removed_libraries.len()
+                + self.changed_libraries.len(),
+        )
     }
 
     /// Check if a specific target path is affected by workspace changes.
@@ -307,7 +308,7 @@ fn hash_file_content(path: &Path) -> Option<u64> {
 }
 
 /// Build current workspace state from Cargo.toml files.
-pub fn build_workspace_state(workspace_root: &Path) -> WorkspaceState {
+pub(crate) fn build_workspace_state(workspace_root: &Path) -> WorkspaceState {
     let mut state = WorkspaceState::default();
 
     let cargo_toml = workspace_root.join("Cargo.toml");
@@ -604,24 +605,6 @@ mod tests {
 
         cache.prune_stale_targets();
         assert!(cache.targets.is_empty());
-    }
-
-    #[test]
-    fn test_workspace_changes_affected_targets() {
-        let changes = WorkspaceChanges {
-            added_binaries: vec!["bin1".to_string()],
-            changed_binaries: vec!["bin2".to_string()],
-            added_libraries: vec!["lib1".to_string()],
-            changed_libraries: vec!["lib2".to_string()],
-            ..Default::default()
-        };
-
-        let targets = changes.affected_targets();
-        assert!(targets.contains(&"bin1".to_string()));
-        assert!(targets.contains(&"bin2".to_string()));
-        assert!(targets.contains(&"lib1".to_string()));
-        assert!(targets.contains(&"lib2".to_string()));
-        assert_eq!(targets.len(), 4);
     }
 
     #[test]

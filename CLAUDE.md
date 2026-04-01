@@ -35,6 +35,11 @@ since the Makefile builds nested workspaces (like `examples/workspace_test`) tha
 - Explain your analysis of the problem, and proposed implementation plan before starting to 
 implement changes. Describe what files will be modified what functions added/deleted/modifes
 
+## General rust best practices
+- keep visibility of structs and functions to the most private possible, pub -- pub(crate) -- private
+- before adding a new struct or function, scan the code base for similar functions and structs and attempt to 
+reuse them, if they can be with minimal changes
+
 ## Coding Rules
 
 - **macOS aarch64 only** — jonesy only supports macOS aarch64. Don't add cross-platform
