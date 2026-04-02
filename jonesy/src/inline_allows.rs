@@ -74,6 +74,10 @@ pub fn check_inline_allow(
     cause_id: &str,
     workspace_root: Option<&Path>,
 ) -> bool {
+    if line == 0 {
+        return false;
+    }
+
     let content = read_source_file_with_root(file_path, workspace_root);
 
     let content = match content {

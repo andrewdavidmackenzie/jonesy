@@ -61,10 +61,9 @@ with methods, use traits when multiple implementations may be needed, etc.
 
 ## Code Invariants for jonesy
 
-- It is allowed for analyzed code to have a special comment to allow a panic on a specific line of
+- It is allowed for analysed code to have a special comment to allow a panic on a specific line of
 code. This comment must be on the same line (at the end) or the line above the panic point. No other
 positions are valid to allow a panic on said line.
-- 
 ## Testing Rules
 
 - Don't assume that any test failure is independent of your change. We usually start
