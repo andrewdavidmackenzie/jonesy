@@ -115,6 +115,13 @@ pub fn cause_shift_overflow() {
     let _ = 1u32 << 33;
 }
 
+/// This function has an inline allow comment and should NOT be reported.
+#[allow(arithmetic_overflow)]
+pub fn cause_allowed_overflow() {
+    let x: i32 = i32::MAX;
+    let _ = x + 1; // jonesy:allow(overflow)
+}
+
 #[allow(clippy::useless_vec)]
 // Known limitation: slice index detection is platform-specific (see issue #59)
 pub fn cause_slice_index_oob() {

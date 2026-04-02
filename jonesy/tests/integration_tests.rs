@@ -1689,3 +1689,36 @@ fn test_async_fn_resumed_detection() {
         stdout
     );
 }
+
+/// Test that inline allow comments are respected in library (rlib/archive) analysis.
+/// The archive analysis path has its own filtering that must check inline allows.
+#[test]
+fn test_rlib_inline_allow() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
+
+    // cause_allowed_overflow (line 122) has `// jonesy:allow(overflow)` — should NOT appear
+    let has_allowed_detection = stdout
+        .lines()
+        .any(|line| line.contains("mod.rs:122") && line.contains("overflow"));
+
+    assert!(
+        !has_allowed_detection,
+        "Inline jonesy:allow(overflow) should suppress overflow detection in library analysis.\nOutput:\n{}",
+        stdout
+    );
+
+    // cause_arithmetic_overflow (line 109) does NOT have an inline allow — should still appear
+    let has_denied_detection = stdout
+        .lines()
+        .any(|line| line.contains("mod.rs:109") && line.contains("overflow"));
+
+    assert!(
+        has_denied_detection,
+        "cause_arithmetic_overflow (without inline allow) should still be detected.\nOutput:\n{}",
+        stdout
+    );
+}

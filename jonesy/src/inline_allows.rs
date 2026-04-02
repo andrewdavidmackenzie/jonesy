@@ -8,8 +8,9 @@
 //! - `// jonesy:allow(unwrap, expect)` - allow multiple causes
 //! - `// jonesy:allow(*)` - allow all causes
 //!
-//! The comment applies to the line it's on, making it easy to place at the
-//! end of lines with potential panics.
+//! **Invariant**: An inline allow comment must be on the same line as the
+//! reported panic point, or on the line immediately above it. No wider
+//! range is checked.
 
 use std::collections::HashSet;
 use std::fs;
@@ -61,8 +62,8 @@ fn parse_file_allows(content: &str) -> std::collections::HashMap<u32, HashSet<St
 /// Lazily scan and check inline allows for a specific file and line.
 /// This reads the file on demand, suitable for checking individual code points.
 ///
-/// Due to DWARF debug info sometimes being off by a line or two, we check
-/// a symmetric range around the reported line number (±2 lines).
+/// An inline allow comment must be on the same line as the reported panic point,
+/// or on the line immediately above it. No wider range is checked.
 ///
 /// The `workspace_root` parameter is optional - if provided, it's used to resolve
 /// relative paths. If not provided, falls back to current directory.
@@ -72,22 +73,17 @@ pub fn check_inline_allow(
     cause_id: &str,
     workspace_root: Option<&Path>,
 ) -> bool {
-    // Try to read the file - handle both absolute and relative paths
     let content = read_source_file_with_root(file_path, workspace_root);
 
     let content = match content {
         Some(c) => c,
-        None => return false, // Can't read the file
+        None => return false,
     };
 
     let lines: Vec<&str> = content.lines().collect();
 
-    // Check a symmetric range around the reported location (line-2 to line+2)
-    // This handles cases where DWARF debug info is slightly off
-    let start_line = line.saturating_sub(2);
-    let end_line = line.saturating_add(2);
-
-    for check_line in start_line..=end_line {
+    // Check the reported line and the line above it only
+    for check_line in [line.saturating_sub(1), line] {
         if let Some(line_content) = lines.get((check_line as usize).saturating_sub(1)) {
             if let Some(causes) = parse_line_allows(line_content) {
                 if causes.contains("*") || causes.contains(cause_id) {

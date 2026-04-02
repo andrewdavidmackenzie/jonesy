@@ -2056,6 +2056,7 @@ fn analyze_single_target(
                 &config,
                 &output,
                 project_context,
+                workspace_root,
             )?;
             Ok(result.code_points)
         }

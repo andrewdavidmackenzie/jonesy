@@ -32,6 +32,7 @@ pub fn library_function() {
     module::cause_divide_by_zero();
     module::cause_arithmetic_overflow();
     module::cause_shift_overflow();
+    module::cause_allowed_overflow();
     module::cause_slice_index_oob();
     module::cause_string_index_panic();
 }
