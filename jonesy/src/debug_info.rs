@@ -429,4 +429,96 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    // ========================================================================
+    // Tests using real binaries from the workspace
+    // ========================================================================
+
+    /// Helper: find workspace root and return path to the `panic` example binary
+    fn panic_binary_path() -> PathBuf {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.parent().unwrap();
+        workspace_root.join("target/debug/panic")
+    }
+
+    /// Helper: parse a Mach-O binary from a path
+    fn parse_macho(path: &Path) -> (Vec<u8>, goblin::mach::MachO<'static>) {
+        let buffer = fs::read(path).expect("binary should exist — run `cargo build` first");
+        // SAFETY: we leak the buffer so the MachO can borrow from it for 'static
+        let buf: &'static [u8] = Vec::leak(buffer.clone());
+        match Object::parse(buf).expect("should parse as Mach-O") {
+            Object::Mach(Mach::Binary(macho)) => (buffer, macho),
+            _ => panic!("expected a single Mach-O binary"),
+        }
+    }
+
+    #[test]
+    fn test_has_dwarf_sections_on_real_binary() {
+        let path = panic_binary_path();
+        if !path.exists() {
+            return; // Skip if not built
+        }
+        let (_buf, macho) = parse_macho(&path);
+        // Exercise the function — result depends on whether dsymutil has stripped
+        // DWARF from the binary (macOS debug builds often use dSYM bundles instead)
+        let _has_dwarf = has_dwarf_sections(&macho);
+    }
+
+    #[test]
+    fn test_get_oso_paths_on_real_binary() {
+        let path = panic_binary_path();
+        if !path.exists() {
+            return;
+        }
+        let (_buf, macho) = parse_macho(&path);
+        // get_oso_paths should return a list (may be empty if dSYM was generated)
+        let paths = get_oso_paths(&macho);
+        // Just verify it doesn't panic and returns a Vec
+        let _ = paths; // exercises the function
+    }
+
+    #[test]
+    fn test_build_addr_translation_map_on_real_binary() {
+        let path = panic_binary_path();
+        if !path.exists() {
+            return;
+        }
+        let (_buf, macho) = parse_macho(&path);
+        // Build a self-translation map (binary against itself)
+        // This exercises the function even though the map won't be useful
+        let addr_map = build_addr_translation_map(&macho, &macho);
+        // Should produce some entries (symbols present in both)
+        assert!(
+            !addr_map.is_empty(),
+            "Self-translation map should have entries for matching symbols"
+        );
+    }
+
+    #[test]
+    fn test_load_debug_info_on_real_binary() {
+        let path = panic_binary_path();
+        if !path.exists() {
+            return;
+        }
+        let (_buf, macho) = parse_macho(&path);
+        let info = load_debug_info(&macho, &path, true);
+        // Should find some form of debug info (Embedded or DSym)
+        assert!(
+            !matches!(info, DebugInfo::None),
+            "Debug build should have debug info"
+        );
+    }
+
+    #[test]
+    fn test_load_debug_info_nonexistent_binary() {
+        let path = panic_binary_path();
+        if !path.exists() {
+            return;
+        }
+        let (_buf, macho) = parse_macho(&path);
+        // Pass a fake path — dSYM lookup will fail, exercises fallback paths
+        let fake_path = Path::new("/nonexistent/binary");
+        let _info = load_debug_info(&macho, fake_path, true);
+        // Result depends on whether the binary has embedded DWARF, debug map, etc.
+    }
 }

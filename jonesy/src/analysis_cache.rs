@@ -48,6 +48,13 @@ pub(crate) struct WorkspaceState {
     libraries: HashMap<String, PathBuf>,
 }
 
+impl WorkspaceState {
+    /// Whether this is a single-package crate (no workspace members).
+    pub fn is_single_package(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
 /// The full analysis cache.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct AnalysisCache {
@@ -485,6 +492,20 @@ mod tests {
         assert_eq!(changes.removed_libraries, vec!["mylib"]);
         assert!(changes.has_changes());
         assert!(changes.needs_full_reanalysis()); // Member change
+    }
+
+    #[test]
+    fn test_is_single_package() {
+        // No members = single package
+        let state = WorkspaceState::default();
+        assert!(state.is_single_package());
+
+        // With members = workspace
+        let state = WorkspaceState {
+            members: vec!["crate_a".to_string()],
+            ..Default::default()
+        };
+        assert!(!state.is_single_package());
     }
 
     #[test]

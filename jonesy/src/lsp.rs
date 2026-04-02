@@ -1648,11 +1648,7 @@ async fn run_analysis_task(
     }
 
     if workspace_changes.has_changes() {
-        let (members, binaries, libraries) = workspace_changes.change_counts();
-        let change_summary = format!(
-            "Workspace changes: {} members, {} binaries, {} libraries affected",
-            members, binaries, libraries,
-        );
+        let change_summary = format_change_summary(&workspace_changes, &current_workspace_state);
         client.log_message(MessageType::INFO, change_summary).await;
     }
 
@@ -1857,6 +1853,27 @@ struct WorkspaceInfo {
 // These can be used in analyze_and_publish/run_analysis_task in the future
 // to reduce code duplication. For now they're tested independently.
 // ============================================================================
+
+/// Format a workspace/package change summary for logging.
+/// Single-package crates get "Package changes: ..." (no members count),
+/// workspaces get "Workspace changes: ... members, ...".
+fn format_change_summary(
+    changes: &crate::analysis_cache::WorkspaceChanges,
+    workspace_state: &crate::analysis_cache::WorkspaceState,
+) -> String {
+    let (members, binaries, libraries) = changes.change_counts();
+    if workspace_state.is_single_package() {
+        format!(
+            "Package changes: {} binaries, {} library affected",
+            binaries, libraries,
+        )
+    } else {
+        format!(
+            "Workspace changes: {} members, {} binaries, {} libraries affected",
+            members, binaries, libraries,
+        )
+    }
+}
 
 /// Deduplicate code points by (file, line, column).
 ///
@@ -3389,5 +3406,58 @@ version = "0.1.0"
         assert_eq!(files.len(), 2);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_format_change_summary_single_package() {
+        use crate::analysis_cache::{AnalysisCache, WorkspaceState, build_workspace_state};
+
+        // Single package: use a simple crate (e.g., one of our examples)
+        let workspace_root = find_workspace_root();
+        let example_dir = workspace_root.join("examples").join("rlib");
+        let state = build_workspace_state(&example_dir);
+        assert!(state.is_single_package());
+
+        // Simulate a library change by detecting changes vs an empty cache
+        let cache = AnalysisCache::default();
+        let changes = cache.detect_workspace_changes(&state);
+
+        let summary = format_change_summary(&changes, &state);
+        assert!(
+            summary.starts_with("Package changes:"),
+            "Single package should use 'Package changes' format. Got: {}",
+            summary
+        );
+        assert!(
+            summary.contains("library"),
+            "Should mention library. Got: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn test_format_change_summary_workspace() {
+        use crate::analysis_cache::{AnalysisCache, build_workspace_state};
+
+        // Workspace: use the jonesy project root (which has workspace members)
+        let workspace_root = find_workspace_root();
+        let state = build_workspace_state(&workspace_root);
+        assert!(!state.is_single_package());
+
+        // Simulate changes by detecting vs an empty cache
+        let cache = AnalysisCache::default();
+        let changes = cache.detect_workspace_changes(&state);
+
+        let summary = format_change_summary(&changes, &state);
+        assert!(
+            summary.starts_with("Workspace changes:"),
+            "Workspace should use 'Workspace changes' format. Got: {}",
+            summary
+        );
+        assert!(
+            summary.contains("members"),
+            "Should mention members. Got: {}",
+            summary
+        );
     }
 }

@@ -30,7 +30,10 @@ via the GH user interface or some similar method.
 If the user has already merged it, report that, but not as an error and consider the PR 
 correctly merged and move on.
 
+Ensure that the remote branch is also deleted along with the local branch.
+
 ## Cleaning up
 
-If everything is OK, then check out the master/main branch and git pull. Check that the commits
-in the PR are present and everything is OK.
+If everything is OK, then wait 5 seconds and then check out the master/main branch and git pull. 
+Check that the commits in the PR are present and everything is OK.
+Check that all checks pass by running "make test".
