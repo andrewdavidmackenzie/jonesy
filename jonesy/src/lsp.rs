@@ -82,19 +82,7 @@ impl JonesyLspServer {
         // Build message showing all causes
         let (message, suggestion, error_code, docs_url) = if sorted_causes.is_empty() {
             ("potential panic point".to_string(), None, None, None)
-        } else if sorted_causes.len() == 1 {
-            let cause = sorted_causes[0];
-            (
-                format!("panic point: {}", cause.description()),
-                Some(
-                    cause
-                        .format_suggestion(point.is_direct_panic, point.called_function.as_deref()),
-                ),
-                Some(cause.error_code().to_string()),
-                Url::parse(&cause.docs_url()).ok(),
-            )
         } else {
-            // Multiple causes - show all in message
             let descriptions: Vec<_> = sorted_causes
                 .iter()
                 .map(|c| format!("{}: {}", c.error_code(), c.description()))
@@ -106,7 +94,6 @@ impl JonesyLspServer {
                     primary
                         .format_suggestion(point.is_direct_panic, point.called_function.as_deref()),
                 ),
-                // Show first error code (most specific/important)
                 Some(primary.error_code().to_string()),
                 Url::parse(&primary.docs_url()).ok(),
             )
@@ -3153,6 +3140,12 @@ mod tests {
         let diag = JonesyLspServer::code_point_to_diagnostic(&point);
 
         assert!(diag.message.contains("unwrap"));
+        // Single cause should also show JP code in message (consistent with multi-cause)
+        assert!(
+            diag.message.contains("JP006"),
+            "Single-cause message should include error code. Got: {}",
+            diag.message
+        );
         assert!(diag.code.is_some());
         assert!(diag.code_description.is_some());
         // Should have help message for direct panic
