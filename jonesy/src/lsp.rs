@@ -679,11 +679,15 @@ impl JonesyLspServer {
         };
 
         // Try to read the line to check for an existing jonesy:allow comment
+        // Accept both "// jonesy:allow(" and "// jonesy: allow("
         let existing_allow = uri.to_file_path().ok().and_then(|path| {
             let content = std::fs::read_to_string(&path).ok()?;
             let line = content.lines().nth(range.start.line as usize)?;
-            let allow_start = line.find("// jonesy:allow(")?;
-            let rest = &line[allow_start + 16..];
+            let allow_start = line
+                .find("// jonesy:allow(")
+                .or_else(|| line.find("// jonesy: allow("))?;
+            let paren_start = line[allow_start..].find('(')? + allow_start + 1;
+            let rest = &line[paren_start..];
             let paren_end = rest.find(')')?;
             let existing_causes = &rest[..paren_end];
             Some((

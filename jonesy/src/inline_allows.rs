@@ -7,6 +7,7 @@
 //! - `// jonesy:allow(unwrap)` - allow single cause
 //! - `// jonesy:allow(unwrap, expect)` - allow multiple causes
 //! - `// jonesy:allow(*)` - allow all causes
+//! - `// jonesy: allow(unwrap)` - space after colon is also accepted
 //!
 //! **Invariant**: An inline allow comment must be on the same line as the
 //! reported panic point, or on the line immediately above it. No wider
@@ -155,23 +156,27 @@ fn read_source_file_with_root(file_path: &str, workspace_root: Option<&Path>) ->
 }
 
 /// Parse inline allow causes from a single line.
+/// Accepts both `// jonesy:allow(...)` and `// jonesy: allow(...)` (space after colon).
 fn parse_line_allows(line: &str) -> Option<HashSet<String>> {
-    if let Some(start) = line.find("// jonesy:allow(") {
-        let rest = &line[start + 16..];
-        if let Some(end) = rest.find(')') {
-            let causes_str = &rest[..end];
-            let causes: HashSet<String> = causes_str
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+    // Find the allow marker, tolerating an optional space after the colon
+    let prefix_start = line
+        .find("// jonesy:allow(")
+        .or_else(|| line.find("// jonesy: allow("))?;
+    let paren_start = line[prefix_start..].find('(')? + prefix_start + 1;
+    let rest = &line[paren_start..];
+    let end = rest.find(')')?;
+    let causes_str = &rest[..end];
+    let causes: HashSet<String> = causes_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
-            if !causes.is_empty() {
-                return Some(causes);
-            }
-        }
+    if causes.is_empty() {
+        None
+    } else {
+        Some(causes)
     }
-    None
 }
 
 #[cfg(test)]
@@ -220,6 +225,13 @@ fn foo() {
         let causes = parse_line_allows(line).unwrap();
         assert!(causes.contains("unwrap"));
         assert!(causes.contains("bounds"));
+    }
+
+    #[test]
+    fn test_parse_line_allows_space_after_colon() {
+        let line = "    let x = foo(); // jonesy: allow(overflow)";
+        let causes = parse_line_allows(line).unwrap();
+        assert!(causes.contains("overflow"));
     }
 
     #[test]
