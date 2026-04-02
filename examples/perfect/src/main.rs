@@ -23,17 +23,20 @@ fn main() {
 #[allow(clippy::unnecessary_literal_unwrap)]
 fn demonstrate_inline_allows() {
     // Example 1: Allow unwrap on a known-safe value
+    // jonesy:allow(unwrap)
     let always_some: Option<i32> = Some(42);
-    let value = always_some.unwrap(); // jonesy:allow(unwrap)
+    let value = always_some.unwrap();
     println!("Got value: {value}"); // jonesy:allow(format)
 
     // Example 2: Allow expect with a descriptive message
-    let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect)
+    let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect,format)
     println!("PATH length: {}", config.len()); // jonesy:allow(format)
 
     // Example 3: Allow unwrap and bounds check
+    // jonesy:allow(oom)
     let data: Result<Vec<u8>, &str> = Ok(vec![1, 2, 3]);
-    let bytes = data.unwrap(); // jonesy:allow(unwrap,oom)
+    // jonesy:allow(unwrap)
+    let bytes = data.unwrap();
     println!("First byte: {}", bytes[0]); // jonesy:allow(bounds,format)
 
     // Example 4: Allow panic in a known code path

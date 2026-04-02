@@ -6,7 +6,7 @@
 use crate::args::OutputFormat;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
-    collect_crate_code_points,
+    collect_crate_code_points, filter_allowed_causes,
 };
 use crate::cargo::find_project_root;
 use crate::config::Config;
@@ -290,6 +290,7 @@ pub fn analyze_archive(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
+    workspace_root: &Path,
 ) -> Result<BinaryAnalysisResult, String> {
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
@@ -447,36 +448,9 @@ pub fn analyze_archive(
         }
     }
 
-    // Filter out code points whose causes are ALL allowed (not denied) by config
-    // Use is_denied_at to support scoped rules based on file/function patterns
-    code_points.retain(|point| {
-        // Keep points with any denied cause
-        // Check both the containing function and the called function (for indirect panics)
-        point.causes.iter().any(|c| {
-            let denied_in_func = config.is_denied_at(c, Some(&point.file), Some(&point.name));
-            let denied_in_called = point
-                .called_function
-                .as_ref()
-                .map(|cf| config.is_denied_at(c, Some(&point.file), Some(cf)))
-                .unwrap_or(true);
-            denied_in_func && denied_in_called
-        })
-    });
-
-    // Remove allowed causes, keeping only denied ones
-    for point in &mut code_points {
-        let file = point.file.clone();
-        let name = point.name.clone();
-        let called = point.called_function.clone();
-        point.causes.retain(|c| {
-            let denied_in_func = config.is_denied_at(c, Some(&file), Some(&name));
-            let denied_in_called = called
-                .as_ref()
-                .map(|cf| config.is_denied_at(c, Some(&file), Some(cf)))
-                .unwrap_or(true);
-            denied_in_func && denied_in_called
-        });
-    }
+    // Filter out allowed causes using the same logic as binary analysis,
+    // including inline allow comments (e.g., `// jonesy:allow(overflow)`)
+    filter_allowed_causes(&mut code_points, config, Some(workspace_root));
 
     // Deduplicate by (file, line)
     let mut seen: std::collections::HashMap<(String, u32), usize> =

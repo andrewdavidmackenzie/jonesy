@@ -662,7 +662,10 @@ impl JonesyLspServer {
         true
     }
 
-    /// Create a code action that inserts an inline allow comment at end of line.
+    /// Create a code action that inserts or extends an inline allow comment.
+    /// If the line already has a `// jonesy:allow(...)` comment, the new cause
+    /// is merged into the existing parenthesised list instead of appending a
+    /// second comment.
     fn create_inline_allow_action(
         uri: &Url,
         range: Range,
@@ -675,20 +678,61 @@ impl JonesyLspServer {
             format!("Allow '{}' on this line", cause)
         };
 
-        // Insert comment at end of the line (using a large character value)
-        // LSP clients will clamp this to the actual line length
-        let edit = TextEdit {
-            range: Range {
-                start: Position {
-                    line: range.start.line,
-                    character: 10000, // Will be clamped to line end
+        // Try to read the line to check for an existing jonesy:allow comment
+        // Accept both "// jonesy:allow(" and "// jonesy: allow("
+        let existing_allow = uri.to_file_path().ok().and_then(|path| {
+            let content = std::fs::read_to_string(&path).ok()?;
+            let line = content.lines().nth(range.start.line as usize)?;
+            let allow_start = line
+                .find("// jonesy:allow(")
+                .or_else(|| line.find("// jonesy: allow("))?;
+            let paren_start = line[allow_start..].find('(')? + allow_start + 1;
+            let rest = &line[paren_start..];
+            let paren_end = rest.find(')')?;
+            let existing_causes = &rest[..paren_end];
+            Some((
+                allow_start as u32,
+                existing_causes.to_string(),
+                line.len() as u32,
+            ))
+        });
+
+        let edit = if let Some((col_start, existing_causes, _line_len)) = existing_allow {
+            // Merge: replace the existing comment with combined causes
+            let mut causes: Vec<&str> = existing_causes.split(',').map(|s| s.trim()).collect();
+            if !causes.contains(&cause) {
+                causes.push(cause);
+            }
+            let merged = causes.join(", ");
+            let comment = format!("// jonesy:allow({})", merged);
+            TextEdit {
+                range: Range {
+                    start: Position {
+                        line: range.start.line,
+                        character: col_start,
+                    },
+                    end: Position {
+                        line: range.start.line,
+                        character: 10000, // Replace to end of line
+                    },
                 },
-                end: Position {
-                    line: range.start.line,
-                    character: 10000,
+                new_text: comment,
+            }
+        } else {
+            // No existing comment — append new one at end of line
+            TextEdit {
+                range: Range {
+                    start: Position {
+                        line: range.start.line,
+                        character: 10000,
+                    },
+                    end: Position {
+                        line: range.start.line,
+                        character: 10000,
+                    },
                 },
-            },
-            new_text: format!(" // jonesy:allow({})", cause),
+                new_text: format!(" // jonesy:allow({})", cause),
+            }
         };
 
         let mut changes = HashMap::new();
@@ -2056,6 +2100,7 @@ fn analyze_single_target(
                 &config,
                 &output,
                 project_context,
+                workspace_root,
             )?;
             Ok(result.code_points)
         }
@@ -2525,6 +2570,57 @@ mod tests {
             JonesyLspServer::create_inline_allow_action(&uri, range, "*", &diagnostic).unwrap();
         assert_eq!(action.title, "Allow all panics on this line");
         assert!(!action.is_preferred.unwrap_or(true)); // Wildcard is not preferred
+    }
+
+    #[test]
+    fn test_create_inline_allow_action_merges_causes() {
+        use std::io::Write;
+
+        // Create a temp file with an existing inline allow
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        let mut f = std::fs::File::create(&file_path).unwrap();
+        writeln!(f, "fn main() {{").unwrap();
+        writeln!(f, "    let x = foo(); // jonesy:allow(bounds)").unwrap();
+        writeln!(f, "}}").unwrap();
+
+        let uri = Url::from_file_path(&file_path).unwrap();
+        let range = Range {
+            start: Position {
+                line: 1, // the line with the existing allow
+                character: 4,
+            },
+            end: Position {
+                line: 1,
+                character: 10,
+            },
+        };
+        let diagnostic = Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("jonesy".to_string()),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+
+        // Adding "overflow" should merge with existing "bounds"
+        let action =
+            JonesyLspServer::create_inline_allow_action(&uri, range, "overflow", &diagnostic)
+                .unwrap();
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "// jonesy:allow(bounds, overflow)");
+
+        // Adding "bounds" again should not duplicate
+        let action =
+            JonesyLspServer::create_inline_allow_action(&uri, range, "bounds", &diagnostic)
+                .unwrap();
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits[0].new_text, "// jonesy:allow(bounds)");
     }
 
     #[test]

@@ -141,6 +141,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             &config,
             &parsed_args.output,
             &project_context,
+            &project_root,
         )? {
             total_summary.add(&result.summary);
             merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
@@ -185,6 +186,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
 
 /// Analyze a binary or archive based on its SymbolTable type.
 /// Returns the analysis result, or None for unsupported formats (fat binaries).
+#[allow(clippy::too_many_arguments)]
 fn analyze_binary(
     symbols: &SymbolTable,
     buffer: &[u8],
@@ -193,6 +195,7 @@ fn analyze_binary(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
+    workspace_root: &Path,
 ) -> Result<Option<BinaryAnalysisResult>, String> {
     match symbols {
         SymbolTable::MachO(Binary(_)) => analyze_macho(
@@ -213,6 +216,7 @@ fn analyze_binary(
             config,
             output,
             project_context,
+            workspace_root,
         )
         .map(Some),
     }
@@ -284,6 +288,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     &config,
                     &args.output,
                     &project_context,
+                    &workspace_root,
                 )
                 .ok()??;
                 Some((binary_path, result))

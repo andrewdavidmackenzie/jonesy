@@ -7,9 +7,11 @@
 //! - `// jonesy:allow(unwrap)` - allow single cause
 //! - `// jonesy:allow(unwrap, expect)` - allow multiple causes
 //! - `// jonesy:allow(*)` - allow all causes
+//! - `// jonesy: allow(unwrap)` - space after colon is also accepted
 //!
-//! The comment applies to the line it's on, making it easy to place at the
-//! end of lines with potential panics.
+//! **Invariant**: An inline allow comment must be on the same line as the
+//! reported panic point, or on the line immediately above it. No wider
+//! range is checked.
 
 use std::collections::HashSet;
 use std::fs;
@@ -61,8 +63,8 @@ fn parse_file_allows(content: &str) -> std::collections::HashMap<u32, HashSet<St
 /// Lazily scan and check inline allows for a specific file and line.
 /// This reads the file on demand, suitable for checking individual code points.
 ///
-/// Due to DWARF debug info sometimes being off by a line or two, we check
-/// a symmetric range around the reported line number (±2 lines).
+/// An inline allow comment must be on the same line as the reported panic point,
+/// or on the line immediately above it. No wider range is checked.
 ///
 /// The `workspace_root` parameter is optional - if provided, it's used to resolve
 /// relative paths. If not provided, falls back to current directory.
@@ -72,22 +74,21 @@ pub fn check_inline_allow(
     cause_id: &str,
     workspace_root: Option<&Path>,
 ) -> bool {
-    // Try to read the file - handle both absolute and relative paths
+    if line == 0 {
+        return false;
+    }
+
     let content = read_source_file_with_root(file_path, workspace_root);
 
     let content = match content {
         Some(c) => c,
-        None => return false, // Can't read the file
+        None => return false,
     };
 
     let lines: Vec<&str> = content.lines().collect();
 
-    // Check a symmetric range around the reported location (line-2 to line+2)
-    // This handles cases where DWARF debug info is slightly off
-    let start_line = line.saturating_sub(2);
-    let end_line = line.saturating_add(2);
-
-    for check_line in start_line..=end_line {
+    // Check the reported line and the line above it only
+    for check_line in [line.saturating_sub(1), line] {
         if let Some(line_content) = lines.get((check_line as usize).saturating_sub(1)) {
             if let Some(causes) = parse_line_allows(line_content) {
                 if causes.contains("*") || causes.contains(cause_id) {
@@ -159,23 +160,27 @@ fn read_source_file_with_root(file_path: &str, workspace_root: Option<&Path>) ->
 }
 
 /// Parse inline allow causes from a single line.
+/// Accepts both `// jonesy:allow(...)` and `// jonesy: allow(...)` (space after colon).
 fn parse_line_allows(line: &str) -> Option<HashSet<String>> {
-    if let Some(start) = line.find("// jonesy:allow(") {
-        let rest = &line[start + 16..];
-        if let Some(end) = rest.find(')') {
-            let causes_str = &rest[..end];
-            let causes: HashSet<String> = causes_str
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+    // Find the allow marker, tolerating an optional space after the colon
+    let prefix_start = line
+        .find("// jonesy:allow(")
+        .or_else(|| line.find("// jonesy: allow("))?;
+    let paren_start = line[prefix_start..].find('(')? + prefix_start + 1;
+    let rest = &line[paren_start..];
+    let end = rest.find(')')?;
+    let causes_str = &rest[..end];
+    let causes: HashSet<String> = causes_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
-            if !causes.is_empty() {
-                return Some(causes);
-            }
-        }
+    if causes.is_empty() {
+        None
+    } else {
+        Some(causes)
     }
-    None
 }
 
 #[cfg(test)]
@@ -224,6 +229,13 @@ fn foo() {
         let causes = parse_line_allows(line).unwrap();
         assert!(causes.contains("unwrap"));
         assert!(causes.contains("bounds"));
+    }
+
+    #[test]
+    fn test_parse_line_allows_space_after_colon() {
+        let line = "    let x = foo(); // jonesy: allow(overflow)";
+        let causes = parse_line_allows(line).unwrap();
+        assert!(causes.contains("overflow"));
     }
 
     #[test]
