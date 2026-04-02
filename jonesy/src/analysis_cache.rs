@@ -131,9 +131,8 @@ impl AnalysisCache {
         current_hash != cached.content_hash
     }
 
-    /// Update cache for a config file.
-    pub fn update_config(&mut self, config_path: &Path) {
-        let content_hash = hash_file_content(config_path).unwrap_or(0);
+    /// Update cache for a config file using a pre-computed hash.
+    pub fn update_config_with_hash(&mut self, config_path: &Path, content_hash: u64) {
         self.configs.insert(
             config_path.to_path_buf(),
             ConfigState {
@@ -300,7 +299,7 @@ fn get_mtime(path: &Path) -> Option<u128> {
 }
 
 /// Simple hash of file content for change detection.
-fn hash_file_content(path: &Path) -> Option<u64> {
+pub(crate) fn hash_file_content(path: &Path) -> Option<u64> {
     let content = fs::read(path).ok()?;
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
@@ -568,10 +567,10 @@ mod tests {
     }
 
     #[test]
-    fn test_update_config() {
+    fn test_update_config_with_hash() {
         let mut cache = AnalysisCache::default();
         let path = PathBuf::from("/test/config.toml");
-        cache.update_config(&path);
+        cache.update_config_with_hash(&path, 12345);
 
         assert!(cache.configs.contains_key(&path));
     }
@@ -669,7 +668,7 @@ mod tests {
         assert!(cache.config_changed(&config_path));
 
         // Cache the config
-        cache.update_config(&config_path);
+        cache.update_config_with_hash(&config_path, hash_file_content(&config_path).unwrap_or(0));
 
         // Same content: no change detected
         assert!(!cache.config_changed(&config_path));
@@ -684,7 +683,7 @@ mod tests {
         );
 
         // Update cache, then verify no further change
-        cache.update_config(&config_path);
+        cache.update_config_with_hash(&config_path, hash_file_content(&config_path).unwrap_or(0));
         assert!(!cache.config_changed(&config_path));
     }
 
@@ -843,7 +842,7 @@ mod tests {
         assert!(cache.config_changed(&config_file));
 
         // Update cache
-        cache.update_config(&config_file);
+        cache.update_config_with_hash(&config_file, hash_file_content(&config_file).unwrap_or(0));
 
         // Should not be changed now
         assert!(!cache.config_changed(&config_file));

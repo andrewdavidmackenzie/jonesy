@@ -366,7 +366,7 @@ impl JonesyLspServer {
 
             while debounced.recv().await.is_some() {
                 client
-                    .log_message(MessageType::INFO, "Binary change detected, re-analyzing...")
+                    .log_message(MessageType::INFO, "File change detected, re-analyzing...")
                     .await;
 
                 // Run analysis (using the same logic as analyze_and_publish)
@@ -803,7 +803,7 @@ impl JonesyLspServer {
         // Use full function path for precise matching
         let title = format!("Allow '{}' in this function", cause);
         let rule_text = format!(
-            "\n[[rules]]\nfunction = \"*::{}\"\nallow = [\"{}\"]\n",
+            "\n[[rules]]\nfunction = \"{}\"\nallow = [\"{}\"]\n",
             function, cause
         );
 
@@ -1573,7 +1573,10 @@ async fn run_analysis_task(
 
     // Check if config files (jonesy.toml, Cargo.toml) have changed.
     // Config changes affect all targets, so force a full re-analysis.
+    // Snapshot current hashes NOW so we persist exactly what we analyzed against,
+    // even if the file changes again during the analysis run.
     let config_files = find_config_files(&workspace_root);
+    let mut config_snapshots: Vec<(PathBuf, u64)> = Vec::new();
     for config_path in &config_files {
         let config_deleted = !config_path.exists() && cache.has_config(config_path);
         if config_deleted || (config_path.exists() && cache.config_changed(config_path)) {
@@ -1593,7 +1596,9 @@ async fn run_analysis_task(
             if config_deleted {
                 cache.remove_config(config_path);
             } else {
-                cache.update_config(config_path);
+                // Snapshot the hash now, before analysis starts
+                let hash = crate::analysis_cache::hash_file_content(config_path).unwrap_or(0);
+                config_snapshots.push((config_path.clone(), hash));
             }
         }
     }
@@ -1641,7 +1646,6 @@ async fn run_analysis_task(
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
     let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
-    let mut total_points = 0usize;
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1654,10 +1658,6 @@ async fn run_analysis_task(
 
         if !needs_analysis {
             skipped_count += 1;
-            // Use cached panic count for logging
-            if let Some(cached) = cache.targets.get(target) {
-                total_points += cached.panic_count;
-            }
             continue;
         }
 
@@ -1682,8 +1682,6 @@ async fn run_analysis_task(
                 })
                 .collect();
 
-            total_points += new_points.len();
-
             // Update cache for this target
             cache.update_target(target, point_count);
 
@@ -1705,6 +1703,14 @@ async fn run_analysis_task(
                 }
             }
         }
+    }
+
+    // Persist the config hashes snapshotted BEFORE analysis started.
+    // Using the pre-analysis snapshot (not current on-disk content) ensures that
+    // if the config changed again during the run, the next watcher event will
+    // still detect that change and re-analyze.
+    for (config_path, hash) in &config_snapshots {
+        cache.update_config_with_hash(config_path, *hash);
     }
 
     // Update workspace state in cache and save
@@ -1772,13 +1778,25 @@ async fn run_analysis_task(
         }
     }
 
+    // Report deduplicated totals from state (includes merged results from skipped targets)
+    let (total_files, published_points) = {
+        let state = state.read().await;
+        (
+            state.panic_points.len(),
+            state
+                .panic_points
+                .values()
+                .map(|points| points.len())
+                .sum::<usize>(),
+        )
+    };
+
     client
         .log_message(
             MessageType::INFO,
             format!(
                 "Analysis complete: {} panic points in {} files",
-                total_points,
-                new_files.len()
+                published_points, total_files
             ),
         )
         .await;
