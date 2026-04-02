@@ -9,6 +9,10 @@ When starting work on a new issue from GitHub for a project:
 
 Make sure that the local master or main branch is up to date with origin by doing a git pull.
 
+If the local code is not currently on master then ask the user if they would like to continue the 
+work on the current branch, or leave that branch for later and start a new one or how to proceed.
+Never autonomously decide a path that will result in modified file changes being lost.
+
 Then create a new local branch to start work on. The branch name should be a short two or three-word
 summary of the issue title, plus the issue number.
 
