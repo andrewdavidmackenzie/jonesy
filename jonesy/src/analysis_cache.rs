@@ -48,6 +48,13 @@ pub(crate) struct WorkspaceState {
     libraries: HashMap<String, PathBuf>,
 }
 
+impl WorkspaceState {
+    /// Whether this is a single-package crate (no workspace members).
+    pub fn is_single_package(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
 /// The full analysis cache.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct AnalysisCache {

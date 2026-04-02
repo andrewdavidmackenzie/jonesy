@@ -1649,10 +1649,18 @@ async fn run_analysis_task(
 
     if workspace_changes.has_changes() {
         let (members, binaries, libraries) = workspace_changes.change_counts();
-        let change_summary = format!(
-            "Workspace changes: {} members, {} binaries, {} libraries affected",
-            members, binaries, libraries,
-        );
+        let change_summary = if current_workspace_state.is_single_package() {
+            format!(
+                "Package changes: {} binaries, {} library affected",
+                binaries,
+                libraries.min(1),
+            )
+        } else {
+            format!(
+                "Workspace changes: {} members, {} binaries, {} libraries affected",
+                members, binaries, libraries,
+            )
+        };
         client.log_message(MessageType::INFO, change_summary).await;
     }
 
