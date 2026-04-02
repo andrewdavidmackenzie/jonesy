@@ -495,6 +495,20 @@ mod tests {
     }
 
     #[test]
+    fn test_is_single_package() {
+        // No members = single package
+        let state = WorkspaceState::default();
+        assert!(state.is_single_package());
+
+        // With members = workspace
+        let state = WorkspaceState {
+            members: vec!["crate_a".to_string()],
+            ..Default::default()
+        };
+        assert!(!state.is_single_package());
+    }
+
+    #[test]
     fn test_no_changes() {
         let state = WorkspaceState {
             members: vec!["crate_a".to_string()],
