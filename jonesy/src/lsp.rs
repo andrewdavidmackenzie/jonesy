@@ -1865,8 +1865,7 @@ fn format_change_summary(
     if workspace_state.is_single_package() {
         format!(
             "Package changes: {} binaries, {} library affected",
-            binaries,
-            libraries.min(1),
+            binaries, libraries,
         )
     } else {
         format!(
