@@ -283,6 +283,17 @@ impl LibraryCallGraph {
             let text_section = &elf.section_headers[target_section_idx];
             let text_addr = text_section.sh_addr;
 
+            // For per-function sections (.text.func_name), extract the caller
+            // function name from the section name. This avoids relying on
+            // SymbolIndex::find_containing which doesn't work well with
+            // per-function sections where each function starts at offset 0.
+            let section_func_name = if target_name.starts_with(".text.") {
+                let mangled = &target_name[6..]; // strip ".text."
+                Some(format!("{:#}", demangle(mangled)))
+            } else {
+                None
+            };
+
             // Parse relocations
             let rela_offset = sh.sh_offset as usize;
             let rela_size = sh.sh_size as usize;
@@ -327,13 +338,17 @@ impl LibraryCallGraph {
                 let call_site_addr = text_addr + r_offset;
 
                 // Find what function contains this call site
-                let Some((func_addr, func_name)) = symbol_index
+                // For per-function sections, use the section name directly
+                let (func_addr, func_name) = if let Some(ref name) = section_func_name {
+                    (text_addr, name.clone())
+                } else if let Some((addr, name)) = symbol_index
                     .as_ref()
                     .and_then(|idx| idx.find_containing(call_site_addr))
-                else {
+                {
+                    (addr, name.to_string())
+                } else {
                     continue;
                 };
-                let func_name = func_name.to_string();
 
                 // Demangle the target symbol name (ELF doesn't use leading underscore)
                 let target_demangled = format!("{:#}", demangle(target_sym_name));
