@@ -18,6 +18,7 @@ use dashmap::DashSet;
 use goblin::mach::Mach::Binary;
 #[cfg(target_os = "macos")]
 use jonesy::analysis::analyze_binary_target;
+#[cfg(target_os = "macos")]
 use jonesy::binary_format::BinaryRef;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{

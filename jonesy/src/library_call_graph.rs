@@ -262,8 +262,7 @@ impl LibraryCallGraph {
             // function name from the section name. This avoids relying on
             // SymbolIndex::find_containing which doesn't work well with
             // per-function sections where each function starts at offset 0.
-            let section_func_name = if target_name.starts_with(".text.") {
-                let mangled = &target_name[6..]; // strip ".text."
+            let section_func_name = if let Some(mangled) = target_name.strip_prefix(".text.") {
                 Some(format!("{:#}", demangle(mangled)))
             } else {
                 None
