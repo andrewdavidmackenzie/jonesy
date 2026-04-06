@@ -707,9 +707,9 @@ pub(crate) fn find_crate_binaries() -> Result<Vec<PathBuf>, String> {
         }
     }
 
-    // Check for library target
-    if manifest.lib.is_some() {
-        // Library name defaults to the package name with hyphens replaced by underscores
+    // Check for library target (explicit [lib] section or default src/lib.rs)
+    let has_library = manifest.lib.is_some() || PathBuf::from("src/lib.rs").exists();
+    if has_library {
         let lib_name = manifest
             .lib
             .as_ref()
