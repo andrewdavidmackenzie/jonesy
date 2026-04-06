@@ -1,9 +1,9 @@
+use crate::binary_format::BinaryRef;
 use crate::string_tables::StringTables;
 use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian,
     SectionId, Unit,
 };
-use goblin::mach::MachO;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
 use std::collections::HashMap;
@@ -216,37 +216,34 @@ struct ParsedFunctionInfo {
     line: Option<u32>,
 }
 
-/// Load DWARF sections from MachO binary
+/// Load DWARF sections from binary
 pub(crate) fn load_dwarf_sections<'a>(
-    macho: &'a MachO,
+    binary: &BinaryRef<'a>,
     buffer: &'a [u8],
 ) -> Result<Dwarf<DwarfReader<'a>>, gimli::Error> {
-    let endian = if macho.little_endian {
-        RunTimeEndian::Little
-    } else {
-        RunTimeEndian::Big
-    };
-
-    // Helper to find a DWARF section in the MachO
-    let find_section = |name: &str| -> Option<&'a [u8]> {
-        for segment in macho.segments.iter() {
-            if let Ok(sections) = segment.sections() {
-                for (section, _) in sections {
-                    // MachO DWARF sections are like "__debug_info" in the "__DWARF" segment
-                    if let Ok(sect_name) = section.name() {
-                        // Convert gimli section name to MachO format
-                        // e.g., ".debug_info" -> "__debug_info"
-                        let macho_name = format!("__{}", &name[1..]);
-                        if sect_name == macho_name {
-                            let start = section.offset as usize;
-                            let end = start + section.size as usize;
-                            return Some(&buffer[start..end]);
-                        }
-                    }
-                }
+    let endian = match binary {
+        BinaryRef::MachO(macho) => {
+            if macho.little_endian {
+                RunTimeEndian::Little
+            } else {
+                RunTimeEndian::Big
             }
         }
-        None
+        BinaryRef::Elf(elf) => {
+            if elf.little_endian {
+                RunTimeEndian::Little
+            } else {
+                RunTimeEndian::Big
+            }
+        }
+    };
+
+    // Helper to find a DWARF section in the binary
+    let find_section = |name: &str| -> Option<&'a [u8]> {
+        let section_name = binary.dwarf_section_name(name);
+        binary
+            .find_section(buffer, &section_name)
+            .map(|(_, data)| data)
     };
 
     // Load each DWARF section
@@ -261,10 +258,10 @@ pub(crate) fn load_dwarf_sections<'a>(
 /// Extract all functions from DWARF debug info.
 /// Returns functions, inlined functions, and the shared string tables.
 pub fn get_functions_from_dwarf<'a>(
-    macho: &'a MachO,
+    binary: &BinaryRef<'a>,
     buffer: &'a [u8],
 ) -> Result<DwarfFunctionResult, Box<dyn std::error::Error>> {
-    let dwarf = load_dwarf_sections(macho, buffer)?;
+    let dwarf = load_dwarf_sections(binary, buffer)?;
 
     // Collect all unit headers first (fast)
     let mut headers = Vec::new();

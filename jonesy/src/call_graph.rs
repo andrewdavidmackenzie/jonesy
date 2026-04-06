@@ -258,17 +258,9 @@ impl<'a> CallGraph<'a> {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
-        // Extract MachO for DWARF loading (these functions still need MachO)
-        let debug_macho = match debug_binary {
-            BinaryRef::MachO(m) => m,
-            BinaryRef::Elf(_) => {
-                return Err("ELF debug info not yet supported in call_graph".into());
-            }
-        };
-
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
-        let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        let (functions, inlined, strings) = get_functions_from_dwarf(debug_binary, debug_buffer)?;
         let num_functions = functions.len();
         let num_inlined = inlined.len();
         // Build function index for O(log n) lookups instead of O(n) linear search
@@ -283,7 +275,7 @@ impl<'a> CallGraph<'a> {
         }
 
         let step = Instant::now();
-        let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+        let dwarf = load_dwarf_sections(debug_binary, debug_buffer)?;
         if show_timings {
             eprintln!("    [cg timing] load_dwarf_sections: {:?}", step.elapsed());
         }
