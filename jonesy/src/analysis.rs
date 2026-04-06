@@ -18,7 +18,6 @@ use crate::sym::{
 };
 use dashmap::DashSet;
 use goblin::mach::Mach::Binary;
-use goblin::mach::MachO;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
 use std::io::{self, IsTerminal};
@@ -327,10 +326,11 @@ pub fn analyze_archive(
             }
         };
 
-        // Parse the object file as Mach-O and build its call graph
-        match MachO::parse(member_data, 0) {
-            Ok(obj_macho) => {
-                match LibraryCallGraph::build_from_object(&obj_macho, member_data, project_context)
+        // Parse the object file and build its call graph
+        match goblin::Object::parse(member_data) {
+            Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(obj_macho))) => {
+                let binary_ref = BinaryRef::MachO(&obj_macho);
+                match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
                 {
                     Ok(obj_graph) => merged_graph.merge(obj_graph),
                     Err(e) => {
@@ -343,12 +343,24 @@ pub fn analyze_archive(
                     }
                 }
             }
-            Err(e) => {
+            Ok(goblin::Object::Elf(obj_elf)) => {
+                let binary_ref = BinaryRef::Elf(&obj_elf);
+                match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
+                {
+                    Ok(obj_graph) => merged_graph.merge(obj_graph),
+                    Err(e) => {
+                        if show_progress {
+                            eprintln!(
+                                "  Warning: Failed to build call graph for {}: {}",
+                                member_name, e
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {
                 if show_progress {
-                    eprintln!(
-                        "  Warning: Failed to parse {} as Mach-O: {}",
-                        member_name, e
-                    );
+                    eprintln!("  Warning: Failed to parse {} as MachO or ELF", member_name);
                 }
             }
         }

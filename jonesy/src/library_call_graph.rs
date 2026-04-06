@@ -7,6 +7,7 @@ use crate::object_line_table::ObjectLineTable;
 use crate::project_context::ProjectContext;
 use crate::sym::SymbolIndex;
 use goblin::container::{Container, Ctx, Endian};
+use goblin::elf::Elf;
 use goblin::mach::MachO;
 use regex::Regex;
 use rustc_demangle::demangle;
@@ -15,6 +16,9 @@ use std::collections::HashMap;
 
 /// ARM64 relocation type for BL/B instructions (branch with 26-bit offset)
 const ARM64_RELOC_BRANCH26: u8 = 2;
+
+/// ELF ARM64 relocation type for BL/B instructions (call with 26-bit offset)
+const R_AARCH64_CALL26: u32 = 283;
 
 /// Call graph for library analysis - uses symbol names instead of addresses.
 /// This allows cross-object-file resolution in archives (rlib/staticlib).
@@ -30,10 +34,24 @@ impl LibraryCallGraph {
     /// Also enriches caller info with file/line from DWARF debug info.
     ///
     /// # Arguments
-    /// * `macho` - Parsed MachO from the object file
+    /// * `binary` - Parsed binary (MachO or ELF) from the object file
     /// * `buffer` - Raw bytes of the object file
     /// * `project_context` - Project context for source file ownership
     pub fn build_from_object(
+        binary: &BinaryRef,
+        buffer: &[u8],
+        project_context: &ProjectContext,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        match binary {
+            BinaryRef::MachO(macho) => {
+                Self::build_from_macho_object(macho, buffer, project_context)
+            }
+            BinaryRef::Elf(elf) => Self::build_from_elf_object(elf, buffer, project_context),
+        }
+    }
+
+    /// Build a library call graph from a MachO object file.
+    fn build_from_macho_object(
         macho: &MachO,
         buffer: &[u8],
         project_context: &ProjectContext,
@@ -55,10 +73,10 @@ impl LibraryCallGraph {
             .unwrap_or_default();
 
         // Build symbol index for finding containing functions
-        let symbol_index = SymbolIndex::new(macho);
+        let binary_ref = BinaryRef::MachO(macho);
+        let symbol_index = SymbolIndex::from_binary(&binary_ref);
 
         // Load DWARF for file/line lookups
-        let binary_ref = BinaryRef::MachO(macho);
         let dwarf = load_dwarf_sections(&binary_ref, buffer).ok();
         let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
 
@@ -173,6 +191,157 @@ impl LibraryCallGraph {
                         });
                     }
                 }
+            }
+        }
+
+        Ok(Self { edges })
+    }
+
+    /// Build a library call graph from an ELF object file.
+    fn build_from_elf_object(
+        elf: &Elf,
+        buffer: &[u8],
+        project_context: &ProjectContext,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
+
+        // Get symbols for lookup
+        let symbols: Vec<(String, u64)> = elf
+            .syms
+            .iter()
+            .filter_map(|sym| {
+                let name = elf.strtab.get_at(sym.st_name)?;
+                Some((name.to_string(), sym.st_value))
+            })
+            .collect();
+
+        // Build symbol index for finding containing functions
+        let binary_ref = BinaryRef::Elf(elf);
+        let symbol_index = SymbolIndex::from_binary(&binary_ref);
+
+        // Load DWARF for file/line lookups
+        let dwarf = load_dwarf_sections(&binary_ref, buffer).ok();
+        let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
+
+        // Find .text section index
+        let text_section_idx = elf
+            .section_headers
+            .iter()
+            .position(|sh| elf.shdr_strtab.get_at(sh.sh_name) == Some(".text"));
+
+        let Some(text_idx) = text_section_idx else {
+            // No .text section, return empty graph
+            return Ok(Self { edges });
+        };
+
+        // Find .rela.text section (relocations for .text)
+        for sh in &elf.section_headers {
+            let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
+            if name != ".rela.text" {
+                continue;
+            }
+
+            // Verify this relocation section applies to .text
+            if sh.sh_info as usize != text_idx {
+                continue;
+            }
+
+            // Get .text section base address
+            let text_section = &elf.section_headers[text_idx];
+            let text_addr = text_section.sh_addr;
+
+            // Parse relocations
+            let rela_offset = sh.sh_offset as usize;
+            let rela_size = sh.sh_size as usize;
+            let rela_entsize = sh.sh_entsize as usize;
+
+            if rela_entsize == 0 || rela_size % rela_entsize != 0 {
+                continue;
+            }
+
+            let num_relocs = rela_size / rela_entsize;
+
+            for i in 0..num_relocs {
+                let offset = rela_offset + i * rela_entsize;
+                if offset + rela_entsize > buffer.len() {
+                    break;
+                }
+
+                // Parse Rela entry (64-bit: r_offset, r_info, r_addend - each 8 bytes)
+                let r_offset =
+                    u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap_or([0; 8]));
+                let r_info = u64::from_le_bytes(
+                    buffer[offset + 8..offset + 16].try_into().unwrap_or([0; 8]),
+                );
+
+                // Extract relocation type and symbol index from r_info
+                let r_type = (r_info & 0xffffffff) as u32;
+                let r_sym = (r_info >> 32) as usize;
+
+                // Only process R_AARCH64_CALL26 relocations
+                if r_type != R_AARCH64_CALL26 {
+                    continue;
+                }
+
+                // Get the target symbol name
+                let Some((target_sym_name, _)) = symbols.get(r_sym) else {
+                    continue;
+                };
+
+                // Calculate the call site address
+                let call_site_addr = text_addr + r_offset;
+
+                // Find what function contains this call site
+                let Some((func_addr, func_name)) = symbol_index
+                    .as_ref()
+                    .and_then(|idx| idx.find_containing(call_site_addr))
+                else {
+                    continue;
+                };
+                let func_name = func_name.to_string();
+
+                // Demangle the target symbol name (ELF doesn't use leading underscore)
+                let target_demangled = format!("{:#}", demangle(target_sym_name));
+
+                // Look up file/line/column from DWARF at call site
+                let (file, line, column) = line_lookup
+                    .as_ref()
+                    .and_then(|lt| lt.lookup(call_site_addr))
+                    .unwrap_or((None, None, None));
+
+                // If call site points to non-crate code (stdlib/dependency), find
+                // the last crate source line between function start and call site
+                let (file, line, column) = if file
+                    .as_ref()
+                    .is_some_and(|f| !project_context.is_crate_source(f))
+                {
+                    // Try to find precise line in crate source
+                    if let Some(lt) = line_lookup.as_ref()
+                        && let Some((crate_file, crate_line, crate_col)) =
+                            lt.get_crate_line_in_range(func_addr, call_site_addr, project_context)
+                    {
+                        (Some(crate_file), Some(crate_line), crate_col)
+                    } else {
+                        // Fall back to function start address
+                        line_lookup
+                            .as_ref()
+                            .and_then(|lt| lt.lookup(func_addr))
+                            .unwrap_or((None, None, None))
+                    }
+                } else {
+                    (file, line, column)
+                };
+
+                // Record the call: target_symbol -> caller
+                edges.entry(target_demangled).or_default().push(CallerInfo {
+                    caller_name: Cow::Owned(func_name),
+                    caller_start_address: func_addr,
+                    caller_file: file.clone(),
+                    call_site_addr,
+                    file,
+                    line,
+                    column,
+                });
             }
         }
 
