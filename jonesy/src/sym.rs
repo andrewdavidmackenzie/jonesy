@@ -61,22 +61,41 @@ impl<'a> SymbolTable<'a> {
         &self,
         pattern: &str,
     ) -> Result<Option<(String, String)>, regex::Error> {
-        let Some(macho) = self.macho() else {
-            return Ok(None);
-        };
         let regex = Regex::new(pattern)?;
-        let symbols = match macho.symbols.as_ref() {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-        for (sym_name, _) in symbols.iter().flatten() {
-            let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-            let demangled = format!("{:#}", demangle(stripped));
-            if regex.is_match(&demangled) {
-                return Ok(Some((sym_name.to_string(), demangled)));
+        match self {
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
+                let symbols = match macho.symbols.as_ref() {
+                    Some(s) => s,
+                    None => return Ok(None),
+                };
+                for (sym_name, _) in symbols.iter().flatten() {
+                    let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+                    let demangled = format!("{:#}", demangle(stripped));
+                    if regex.is_match(&demangled) {
+                        return Ok(Some((sym_name.to_string(), demangled)));
+                    }
+                }
+                Ok(None)
             }
+            SymbolTable::Elf(elf) => {
+                for sym in elf.syms.iter() {
+                    if sym.st_value == 0 || sym.st_shndx == 0 {
+                        continue;
+                    }
+                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let demangled = format!("{:#}", demangle(name));
+                        if regex.is_match(&demangled) {
+                            return Ok(Some((name.to_string(), demangled)));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     /// Returns all symbols whose demangled names match any of the given patterns.
@@ -84,47 +103,85 @@ impl<'a> SymbolTable<'a> {
         &self,
         patterns: &[&str],
     ) -> Result<Vec<(String, String)>, regex::Error> {
-        let Some(macho) = self.macho() else {
-            return Ok(Vec::new());
-        };
         let regexes: Vec<Regex> = patterns
             .iter()
             .map(|p| Regex::new(p))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut results = Vec::new();
-        let symbols = match macho.symbols.as_ref() {
-            Some(s) => s,
-            None => return Ok(results),
-        };
+        match self {
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
+                let symbols = match macho.symbols.as_ref() {
+                    Some(s) => s,
+                    None => return Ok(results),
+                };
 
-        for (sym_name, _) in symbols.iter().flatten() {
-            let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-            let demangled = format!("{:#}", demangle(stripped));
-            for regex in &regexes {
-                if regex.is_match(&demangled) {
-                    results.push((sym_name.to_string(), demangled.clone()));
-                    break;
+                for (sym_name, _) in symbols.iter().flatten() {
+                    let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+                    let demangled = format!("{:#}", demangle(stripped));
+                    for regex in &regexes {
+                        if regex.is_match(&demangled) {
+                            results.push((sym_name.to_string(), demangled.clone()));
+                            break;
+                        }
+                    }
                 }
             }
+            SymbolTable::Elf(elf) => {
+                for sym in elf.syms.iter() {
+                    if sym.st_value == 0 || sym.st_shndx == 0 {
+                        continue;
+                    }
+                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let demangled = format!("{:#}", demangle(name));
+                        for regex in &regexes {
+                            if regex.is_match(&demangled) {
+                                results.push((name.to_string(), demangled.clone()));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(results)
     }
 
     /// Returns the address of the first defined symbol found whose name matches `name` exactly.
     pub fn find_symbol_address(&self, name: &str) -> Option<u64> {
-        let macho = self.macho()?;
-        let symbols = macho.symbols.as_ref()?;
-        for symbol in symbols.iter() {
-            if let Ok((sym_name, nlist)) = symbol
-                && sym_name == name
-                && !nlist.is_undefined()
-                && nlist.n_value != 0
-            {
-                return Some(nlist.n_value);
+        match self {
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
+                let symbols = macho.symbols.as_ref()?;
+                for symbol in symbols.iter() {
+                    if let Ok((sym_name, nlist)) = symbol
+                        && sym_name == name
+                        && !nlist.is_undefined()
+                        && nlist.n_value != 0
+                    {
+                        return Some(nlist.n_value);
+                    }
+                }
+                None
             }
+            SymbolTable::Elf(elf) => {
+                for sym in elf.syms.iter() {
+                    if sym.st_value == 0 || sym.st_shndx == 0 {
+                        continue;
+                    }
+                    if let Some(sym_name) = elf.strtab.get_at(sym.st_name) {
+                        if sym_name == name {
+                            return Some(sym.st_value);
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
         }
-        None
     }
 }
 
