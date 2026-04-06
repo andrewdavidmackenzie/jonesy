@@ -9,7 +9,9 @@ pub use crate::library_call_graph::LibraryCallGraph;
 pub use crate::project_context::ProjectContext;
 pub use crate::string_tables::StringTables;
 
+use crate::binary_format::BinaryRef;
 use goblin::Object;
+use goblin::elf::Elf;
 use goblin::mach::MachO;
 use regex::Regex;
 use rustc_demangle::demangle;
@@ -192,6 +194,53 @@ impl SymbolIndex {
         // Parallel sort by address
         entries.par_sort_by_key(|e| e.address);
         Some(Self { entries })
+    }
+
+    /// Build a symbol index from an ELF binary. Call once, reuse for many lookups.
+    /// Symbol names are demangled lazily on first access for better performance.
+    /// Uses parallel sorting for large symbol tables.
+    pub fn from_elf(elf: &Elf) -> Option<Self> {
+        use rayon::prelude::*;
+
+        // First pass: collect raw symbol data from ELF symbol table
+        let raw_symbols: Vec<(u64, String)> = elf
+            .syms
+            .iter()
+            .filter_map(|sym| {
+                // Only include symbols with valid addresses
+                if sym.st_value == 0 {
+                    return None;
+                }
+                // Get symbol name from string table
+                elf.strtab.get_at(sym.st_name).map(|name| {
+                    // ELF symbols don't have leading underscore (unlike MachO)
+                    (sym.st_value, name.to_string())
+                })
+            })
+            .filter(|(_, name)| !name.is_empty())
+            .collect();
+
+        if raw_symbols.is_empty() {
+            return None;
+        }
+
+        // Second pass: create entries in parallel
+        let mut entries: Vec<SymbolEntry> = raw_symbols
+            .par_iter()
+            .map(|(addr, name)| SymbolEntry::new(*addr, name.clone()))
+            .collect();
+
+        // Parallel sort by address
+        entries.par_sort_by_key(|e| e.address);
+        Some(Self { entries })
+    }
+
+    /// Build a symbol index from any binary format. Convenience wrapper around new/from_elf.
+    pub fn from_binary(binary: &BinaryRef) -> Option<Self> {
+        match binary {
+            BinaryRef::MachO(macho) => Self::new(macho),
+            BinaryRef::Elf(elf) => Self::from_elf(elf),
+        }
     }
 
     /// Find the function containing `addr` using binary search.

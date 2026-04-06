@@ -174,11 +174,7 @@ pub fn analyze_binary_target(
     let step_start = show_timings.then(Instant::now);
 
     // Create SymbolIndex once - CallGraph borrows from it to avoid allocations in hot path
-    // Only available for MachO currently
-    let symbol_index = match &binary_ref {
-        BinaryRef::MachO(macho) => SymbolIndex::new(macho),
-        BinaryRef::Elf(_) => None, // ELF symbol index not yet implemented
-    };
+    let symbol_index = SymbolIndex::from_binary(&binary_ref);
 
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
