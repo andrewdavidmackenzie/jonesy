@@ -262,11 +262,9 @@ impl LibraryCallGraph {
             // function name from the section name. This avoids relying on
             // SymbolIndex::find_containing which doesn't work well with
             // per-function sections where each function starts at offset 0.
-            let section_func_name = if let Some(mangled) = target_name.strip_prefix(".text.") {
-                Some(format!("{:#}", demangle(mangled)))
-            } else {
-                None
-            };
+            let section_func_name = target_name
+                .strip_prefix(".text.")
+                .map(|mangled| format!("{:#}", demangle(mangled)));
 
             // Parse relocations
             let rela_offset = sh.sh_offset as usize;
