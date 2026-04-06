@@ -101,7 +101,9 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         }
 
         // Check if this is a library and detect its type
-        let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
+        let is_dylib = binary_path
+            .extension()
+            .is_some_and(|ext| ext == "dylib" || ext == "so");
         if parsed_args.output.show_progress()
             && is_dylib
             && let Some(lib_type) = detect_library_type(&binary_path)
