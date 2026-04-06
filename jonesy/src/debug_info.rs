@@ -451,9 +451,11 @@ mod tests {
     }
 
     // ========================================================================
-    // Tests using real binaries from the workspace
+    // Tests using real MachO binaries (macOS only)
+    // These test MachO-specific functionality: dSYM, debug map, N_OSO paths
     // ========================================================================
 
+    #[cfg(target_os = "macos")]
     /// Helper: find workspace root and return path to the `panic` example binary
     fn panic_binary_path() -> PathBuf {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -461,6 +463,7 @@ mod tests {
         workspace_root.join("target/debug/panic")
     }
 
+    #[cfg(target_os = "macos")]
     /// Helper: parse a Mach-O binary from a path
     fn parse_macho(path: &Path) -> (Vec<u8>, goblin::mach::MachO<'static>) {
         let buffer = fs::read(path).expect("binary should exist — run `cargo build` first");
@@ -472,6 +475,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_has_dwarf_sections_on_real_binary() {
         let path = panic_binary_path();
@@ -484,6 +488,7 @@ mod tests {
         let _has_dwarf = has_dwarf_sections(&macho);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_get_oso_paths_on_real_binary() {
         let path = panic_binary_path();
@@ -497,6 +502,7 @@ mod tests {
         let _ = paths; // exercises the function
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_build_addr_translation_map_on_real_binary() {
         let path = panic_binary_path();
@@ -514,6 +520,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_load_debug_info_on_real_binary() {
         let path = panic_binary_path();
@@ -530,6 +537,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_load_debug_info_nonexistent_binary() {
         let path = panic_binary_path();

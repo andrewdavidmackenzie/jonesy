@@ -8,7 +8,11 @@ on:
 
 jobs:
   coverage:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,14 +25,14 @@ jobs:
         run: cargo install grcov
 
       - name: Build example binaries without coverage
-        run: cargo build --workspace --exclude jonesy
+        run: make build-examples
 
       - name: Run tests with coverage
         env:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: '-Cinstrument-coverage'
           LLVM_PROFILE_FILE: 'cargo-test-%p-%m.profraw'
-        run: cargo test -p jonesy -- --skip test_rlib
+        run: cargo test -p jonesy --lib
 
       - name: Generate coverage report
         run: |

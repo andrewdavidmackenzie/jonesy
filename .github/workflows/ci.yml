@@ -9,6 +9,7 @@ on:
 jobs:
   lint:
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-14, ubuntu-latest]
     runs-on: ${{ matrix.os }}
@@ -23,8 +24,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Build
-        run: cargo build --workspace
-
       - name: Run clippy
         run: make clippy
+
+      - name: Run tests (includes build)
+        run: make test
