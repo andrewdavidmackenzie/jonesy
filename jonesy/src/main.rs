@@ -1,9 +1,5 @@
-// macOS-only imports for Mach-O binary analysis
-#[cfg(target_os = "macos")]
 use goblin::mach::Mach::{Binary, Fat};
-#[cfg(target_os = "macos")]
 use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_macho};
-#[cfg(target_os = "macos")]
 use jonesy::sym::SymbolTable;
 
 // Cross-platform imports
