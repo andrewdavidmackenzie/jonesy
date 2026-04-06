@@ -18,6 +18,7 @@ use std::io;
 #[allow(clippy::large_enum_variant)]
 pub enum SymbolTable<'a> {
     MachO(goblin::mach::Mach<'a>),
+    Elf(goblin::elf::Elf<'a>),
     Archive(goblin::archive::Archive<'a>),
 }
 
@@ -26,18 +27,15 @@ impl<'a> SymbolTable<'a> {
     pub fn from(buffer: &'a [u8]) -> io::Result<Self> {
         match Object::parse(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
             Object::Mach(mach) => Ok(SymbolTable::MachO(mach)),
+            Object::Elf(elf) => Ok(SymbolTable::Elf(elf)),
             Object::Archive(archive) => Ok(SymbolTable::Archive(archive)),
-            Object::Elf(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "ELF format not supported (macOS only)",
-            )),
             Object::PE(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "PE format not supported (macOS only)",
+                "PE format not supported",
             )),
             Object::COFF(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "COFF format not supported (macOS only)",
+                "COFF format not supported",
             )),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,

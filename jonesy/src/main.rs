@@ -205,6 +205,7 @@ fn analyze_binary(
         )
         .map(Some),
         SymbolTable::MachO(Fat(_)) => Ok(None),
+        SymbolTable::Elf(_) => Err("ELF binary analysis not yet implemented".to_string()),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
             buffer,

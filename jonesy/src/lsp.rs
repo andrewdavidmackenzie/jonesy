@@ -2096,6 +2096,7 @@ fn analyze_single_target(
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
             }
         }
+        SymbolTable::Elf(_) => Err("ELF binary analysis not yet implemented".to_string()),
         SymbolTable::Archive(archive) => {
             let result = analyze_archive(
                 archive,
@@ -3403,7 +3404,7 @@ version = "0.1.0"
 
     #[test]
     fn test_format_change_summary_single_package() {
-        use crate::analysis_cache::{AnalysisCache, WorkspaceState, build_workspace_state};
+        use crate::analysis_cache::{AnalysisCache, build_workspace_state};
 
         // Single package: use a simple crate (e.g., one of our examples)
         let workspace_root = find_workspace_root();
