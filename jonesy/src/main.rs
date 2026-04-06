@@ -1,5 +1,5 @@
 use goblin::mach::Mach::{Binary, Fat};
-use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_macho};
+use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_binary_target};
 use jonesy::sym::SymbolTable;
 
 // Cross-platform imports
@@ -196,7 +196,7 @@ fn analyze_binary(
     workspace_root: &Path,
 ) -> Result<Option<BinaryAnalysisResult>, String> {
     match symbols {
-        SymbolTable::MachO(Binary(_)) => analyze_macho(
+        SymbolTable::MachO(Binary(_)) => analyze_binary_target(
             symbols,
             buffer,
             binary_path,
@@ -207,7 +207,16 @@ fn analyze_binary(
         )
         .map(Some),
         SymbolTable::MachO(Fat(_)) => Ok(None),
-        SymbolTable::Elf(_) => Err("ELF binary analysis not yet implemented".to_string()),
+        SymbolTable::Elf(_) => analyze_binary_target(
+            symbols,
+            buffer,
+            binary_path,
+            show_timings,
+            config,
+            output,
+            project_context,
+        )
+        .map(Some),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
             buffer,

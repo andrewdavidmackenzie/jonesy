@@ -112,9 +112,9 @@ struct PanicCaller {
     target: String,
 }
 
-/// Analyze a single MachO binary/object for panic points.
+/// Analyze a single MachO or ELF binary for panic points.
 /// Returns a summary of panic code points found, plus code points.
-pub fn analyze_macho(
+pub fn analyze_binary_target(
     symbols: &SymbolTable,
     buffer: &[u8],
     binary_path: &Path,
@@ -123,9 +123,13 @@ pub fn analyze_macho(
     output: &OutputFormat,
     project_context: &ProjectContext,
 ) -> Result<BinaryAnalysisResult, String> {
-    let macho = symbols
-        .macho()
-        .ok_or_else(|| "Expected MachO binary, got archive or fat binary".to_string())?;
+    // Construct BinaryRef from the SymbolTable
+    let binary_ref = match symbols {
+        SymbolTable::MachO(Binary(macho)) => BinaryRef::MachO(macho),
+        SymbolTable::Elf(elf) => BinaryRef::Elf(elf),
+        _ => return Err("Expected MachO or ELF binary".to_string()),
+    };
+
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
 
@@ -159,7 +163,6 @@ pub fn analyze_macho(
         eprintln!("  Loading debug information...");
     }
     let step_start = show_timings.then(Instant::now);
-    let binary_ref = BinaryRef::MachO(macho);
     let debug_info = load_debug_info(&binary_ref, binary_path, !show_progress);
     if let Some(step_start) = step_start {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
@@ -171,7 +174,11 @@ pub fn analyze_macho(
     let step_start = show_timings.then(Instant::now);
 
     // Create SymbolIndex once - CallGraph borrows from it to avoid allocations in hot path
-    let symbol_index = SymbolIndex::new(macho);
+    // Only available for MachO currently
+    let symbol_index = match &binary_ref {
+        BinaryRef::MachO(macho) => SymbolIndex::new(macho),
+        BinaryRef::Elf(_) => None, // ELF symbol index not yet implemented
+    };
 
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
