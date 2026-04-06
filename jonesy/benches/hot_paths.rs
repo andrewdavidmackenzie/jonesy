@@ -428,9 +428,9 @@ fn bench_call_graph_build(c: &mut Criterion) {
             .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
 
+        let binary_ref = BinaryRef::MachO(macho);
         c.bench_function("call_graph_build_jonesy", |b| {
             b.iter(|| {
-                let binary_ref = BinaryRef::MachO(macho);
                 let graph = CallGraph::build_with_debug_info(
                     &binary_ref,
                     &buffer,
@@ -628,7 +628,7 @@ fn bench_load_debug_info(c: &mut Criterion) {
 // Hot Function #12: analyze_binary_target (9 samples) - full pipeline
 // ============================================================================
 #[cfg(target_os = "macos")]
-fn bench_analyze_macho(c: &mut Criterion) {
+fn bench_analyze_binary_target(c: &mut Criterion) {
     ensure_jonesy_debug_built();
 
     let root = workspace_root();
@@ -692,7 +692,7 @@ fn bench_get_functions_from_dwarf(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
 fn bench_load_debug_info(_c: &mut Criterion) {}
 #[cfg(not(target_os = "macos"))]
-fn bench_analyze_macho(_c: &mut Criterion) {}
+fn bench_analyze_binary_target(_c: &mut Criterion) {}
 
 criterion_group!(
     benches,
@@ -712,6 +712,6 @@ criterion_group!(
     bench_symbol_index_new,                    // #13: 6 samples
     bench_get_functions_from_dwarf,            // #14: 4 samples
     bench_load_debug_info,                     // #19: 2 samples
-    bench_analyze_macho,                       // #12: 9 samples (full pipeline)
+    bench_analyze_binary_target,               // #12: 9 samples (full pipeline)
 );
 criterion_main!(benches);
