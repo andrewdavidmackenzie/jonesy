@@ -365,6 +365,11 @@ pub fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
     if dylib.exists() {
         return Some(dylib);
     }
+    // Try Linux-specific extensions
+    let so = dir.join(format!("lib{}.so", lib_name));
+    if so.exists() {
+        return Some(so);
+    }
     // Also try .rlib (Rust static library)
     let rlib = dir.join(format!("lib{}.rlib", lib_name));
     if rlib.exists() {

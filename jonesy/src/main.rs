@@ -1,9 +1,5 @@
-// macOS-only imports for Mach-O binary analysis
-#[cfg(target_os = "macos")]
 use goblin::mach::Mach::{Binary, Fat};
-#[cfg(target_os = "macos")]
 use jonesy::analysis::{BinaryAnalysisResult, analyze_archive, analyze_macho};
-#[cfg(target_os = "macos")]
 use jonesy::sym::SymbolTable;
 
 // Cross-platform imports
@@ -105,7 +101,9 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         }
 
         // Check if this is a library and detect its type
-        let is_dylib = binary_path.extension().is_some_and(|ext| ext == "dylib");
+        let is_dylib = binary_path
+            .extension()
+            .is_some_and(|ext| ext == "dylib" || ext == "so");
         if parsed_args.output.show_progress()
             && is_dylib
             && let Some(lib_type) = detect_library_type(&binary_path)
@@ -209,6 +207,7 @@ fn analyze_binary(
         )
         .map(Some),
         SymbolTable::MachO(Fat(_)) => Ok(None),
+        SymbolTable::Elf(_) => Err("ELF binary analysis not yet implemented".to_string()),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
             buffer,
