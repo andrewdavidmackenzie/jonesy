@@ -17,7 +17,8 @@ use dashmap::DashSet;
 #[cfg(target_os = "macos")]
 use goblin::mach::Mach::Binary;
 #[cfg(target_os = "macos")]
-use jonesy::analysis::analyze_macho;
+use jonesy::analysis::analyze_binary_target;
+use jonesy::binary_format::BinaryRef;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{
     CallTreeNode, CodePointMap, build_call_tree_parallel_filtered,
@@ -139,7 +140,6 @@ fn bench_find_function_name(c: &mut Criterion) {
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         // Build function index from DWARF
-        use jonesy::binary_format::BinaryRef;
         let binary_ref = BinaryRef::MachO(macho);
         let (functions, inlined, strings) = match get_functions_from_dwarf(&binary_ref, &buffer) {
             Ok(result) => result,
@@ -218,10 +218,11 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
         let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
             .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
+        let binary_ref = BinaryRef::MachO(macho);
         let call_graph = CallGraph::build_with_debug_info(
-            macho,
+            &binary_ref,
             &buffer,
-            macho,
+            &binary_ref,
             &buffer,
             false,
             symbol_index.as_ref(),
@@ -305,10 +306,11 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
         let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
             .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
+        let binary_ref = BinaryRef::MachO(macho);
         let call_graph = CallGraph::build_with_debug_info(
-            macho,
+            &binary_ref,
             &buffer,
-            macho,
+            &binary_ref,
             &buffer,
             false,
             symbol_index.as_ref(),
@@ -428,10 +430,11 @@ fn bench_call_graph_build(c: &mut Criterion) {
 
         c.bench_function("call_graph_build_jonesy", |b| {
             b.iter(|| {
+                let binary_ref = BinaryRef::MachO(macho);
                 let graph = CallGraph::build_with_debug_info(
-                    macho,
+                    &binary_ref,
                     &buffer,
-                    macho,
+                    &binary_ref,
                     &buffer,
                     false,
                     symbol_index.as_ref(),
@@ -513,10 +516,11 @@ fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
         let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
             .expect("Failed to create project context");
         let symbol_index = SymbolIndex::new(macho);
+        let binary_ref = BinaryRef::MachO(macho);
         let call_graph = CallGraph::build_with_debug_info(
-            macho,
+            &binary_ref,
             &buffer,
-            macho,
+            &binary_ref,
             &buffer,
             false,
             symbol_index.as_ref(),
@@ -581,7 +585,6 @@ fn bench_get_functions_from_dwarf(c: &mut Criterion) {
     let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        use jonesy::binary_format::BinaryRef;
         let binary_ref = BinaryRef::MachO(macho);
         c.bench_function("get_functions_from_dwarf_jonesy", |b| {
             b.iter(|| {
@@ -611,9 +614,10 @@ fn bench_load_debug_info(c: &mut Criterion) {
     let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
+        let binary_ref = BinaryRef::MachO(macho);
         c.bench_function("load_debug_info_jonesy", |b| {
             b.iter(|| {
-                let info = load_debug_info(macho, &binary_path, true);
+                let info = load_debug_info(&binary_ref, &binary_path, true);
                 black_box(info)
             })
         });
@@ -621,7 +625,7 @@ fn bench_load_debug_info(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Hot Function #12: analyze_macho (9 samples) - full pipeline
+// Hot Function #12: analyze_binary_target (9 samples) - full pipeline
 // ============================================================================
 #[cfg(target_os = "macos")]
 fn bench_analyze_macho(c: &mut Criterion) {
@@ -631,7 +635,7 @@ fn bench_analyze_macho(c: &mut Criterion) {
     let binary_path = root.join("target/debug/jonesy");
 
     if !binary_path.exists() {
-        eprintln!("Skipping analyze_macho benchmark: jonesy binary not found");
+        eprintln!("Skipping analyze_binary_target benchmark: jonesy binary not found");
         return;
     }
 
@@ -641,11 +645,11 @@ fn bench_analyze_macho(c: &mut Criterion) {
     let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
         .expect("Should build project context");
 
-    c.bench_function("analyze_macho_jonesy", |b| {
+    c.bench_function("analyze_binary_target_jonesy", |b| {
         b.iter(|| {
             let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
             if let SymbolTable::MachO(Binary(_)) = &symbols {
-                let result = analyze_macho(
+                let result = analyze_binary_target(
                     &symbols,
                     &buffer,
                     &binary_path,
