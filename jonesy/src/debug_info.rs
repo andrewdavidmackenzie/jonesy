@@ -1,3 +1,4 @@
+use crate::binary_format::BinaryRef;
 use goblin::Object;
 use goblin::mach::symbols::N_OSO;
 use goblin::mach::{Mach, MachO};
@@ -139,7 +140,26 @@ fn is_dsym_stale(binary_path: &Path, dsym_path: &Path) -> bool {
 // 2) No embedded debug info, dSYM
 // 3) Embedded debug info, no dSYM
 // 4) Embedded debug info, dSYM
-pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugInfo {
+pub fn load_debug_info(binary: &BinaryRef, binary_path: &Path, quiet: bool) -> DebugInfo {
+    // ELF binaries: check for embedded DWARF only (no dSYM/dsymutil/debug-map)
+    if binary.is_elf() {
+        if binary.has_dwarf() {
+            if !quiet {
+                println!("  Using embedded DWARF debugging info");
+            }
+            return DebugInfo::Embedded;
+        }
+        if !quiet {
+            println!("  No debug info found in ELF binary");
+        }
+        return DebugInfo::None;
+    }
+
+    // MachO binaries: full dSYM/dsymutil/debug-map support
+    let BinaryRef::MachO(macho) = binary else {
+        unreachable!("ELF handled above");
+    };
+
     // Look for dSYM symbol directory
     // Try both with and without extension since dsymutil behavior varies
     let file_name = binary_path.file_name().unwrap().to_str().unwrap();
@@ -188,7 +208,7 @@ pub fn load_debug_info(macho: &MachO, binary_path: &Path, quiet: bool) -> DebugI
         }
     }
 
-    if has_dwarf_sections(macho) {
+    if binary.has_dwarf() {
         if !quiet {
             println!("  Using embedded DWARF debugging info");
         }
@@ -501,7 +521,8 @@ mod tests {
             return;
         }
         let (_buf, macho) = parse_macho(&path);
-        let info = load_debug_info(&macho, &path, true);
+        let binary_ref = BinaryRef::MachO(&macho);
+        let info = load_debug_info(&binary_ref, &path, true);
         // Should find some form of debug info (Embedded or DSym)
         assert!(
             !matches!(info, DebugInfo::None),
@@ -516,9 +537,10 @@ mod tests {
             return;
         }
         let (_buf, macho) = parse_macho(&path);
+        let binary_ref = BinaryRef::MachO(&macho);
         // Pass a fake path — dSYM lookup will fail, exercises fallback paths
         let fake_path = Path::new("/nonexistent/binary");
-        let _info = load_debug_info(&macho, fake_path, true);
+        let _info = load_debug_info(&binary_ref, fake_path, true);
         // Result depends on whether the binary has embedded DWARF, debug map, etc.
     }
 }

@@ -4,6 +4,7 @@
 //! in Mach-O binaries and library archives.
 
 use crate::args::OutputFormat;
+use crate::binary_format::BinaryRef;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
     collect_crate_code_points, filter_allowed_causes,
@@ -158,7 +159,8 @@ pub fn analyze_macho(
         eprintln!("  Loading debug information...");
     }
     let step_start = show_timings.then(Instant::now);
-    let debug_info = load_debug_info(macho, binary_path, !show_progress);
+    let binary_ref = BinaryRef::MachO(macho);
+    let debug_info = load_debug_info(&binary_ref, binary_path, !show_progress);
     if let Some(step_start) = step_start {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
