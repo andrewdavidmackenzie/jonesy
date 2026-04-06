@@ -203,12 +203,13 @@ impl SymbolIndex {
         use rayon::prelude::*;
 
         // First pass: collect raw symbol data from ELF symbol table
+        // Filter for defined, non-empty, function-like symbols (matching MachO behavior)
         let raw_symbols: Vec<(u64, String)> = elf
             .syms
             .iter()
             .filter_map(|sym| {
-                // Only include symbols with valid addresses
-                if sym.st_value == 0 {
+                // Only include defined symbols with valid addresses
+                if sym.st_value == 0 || sym.st_shndx == 0 {
                     return None;
                 }
                 // Get symbol name from string table

@@ -71,8 +71,9 @@ fn find_macho_section<'a>(
                     if section_name == name {
                         let offset = section.offset as usize;
                         let size = section.size as usize;
-                        if offset + size <= buffer.len() {
-                            return Some((section.addr, &buffer[offset..offset + size]));
+                        let end = offset.checked_add(size)?;
+                        if end <= buffer.len() {
+                            return Some((section.addr, &buffer[offset..end]));
                         }
                     }
                 }
@@ -88,8 +89,9 @@ fn find_elf_section<'a>(elf: &Elf<'a>, buffer: &'a [u8], name: &str) -> Option<(
             if section_name == name {
                 let offset = section_header.sh_offset as usize;
                 let size = section_header.sh_size as usize;
-                if offset + size <= buffer.len() {
-                    return Some((section_header.sh_addr, &buffer[offset..offset + size]));
+                let end = offset.checked_add(size)?;
+                if end <= buffer.len() {
+                    return Some((section_header.sh_addr, &buffer[offset..end]));
                 }
             }
         }
