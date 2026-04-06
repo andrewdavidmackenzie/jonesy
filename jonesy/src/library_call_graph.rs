@@ -1,5 +1,6 @@
 #![allow(unused_variables)] // TODO Just for now
 
+use crate::binary_format::BinaryRef;
 use crate::call_graph::CallerInfo;
 use crate::function_index::load_dwarf_sections;
 use crate::object_line_table::ObjectLineTable;
@@ -57,7 +58,8 @@ impl LibraryCallGraph {
         let symbol_index = SymbolIndex::new(macho);
 
         // Load DWARF for file/line lookups
-        let dwarf = load_dwarf_sections(macho, buffer).ok();
+        let binary_ref = BinaryRef::MachO(macho);
+        let dwarf = load_dwarf_sections(&binary_ref, buffer).ok();
         let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
 
         // Create a context for parsing relocations

@@ -2013,7 +2013,7 @@ fn analyze_single_target(
     workspace_root: &Path,
     project_context: &ProjectContext,
 ) -> std::result::Result<Vec<CrateCodePoint>, String> {
-    use crate::analysis::{analyze_archive, analyze_macho};
+    use crate::analysis::{analyze_archive, analyze_binary_target};
     use crate::args::OutputFormat;
     use crate::config::Config;
     use crate::sym::SymbolTable;
@@ -2035,7 +2035,7 @@ fn analyze_single_target(
 
     match &symbols {
         SymbolTable::MachO(Binary(_)) => {
-            let result = analyze_macho(
+            let result = analyze_binary_target(
                 &symbols,
                 &binary_buffer,
                 target_path,
@@ -2082,7 +2082,7 @@ fn analyze_single_target(
                     // Fat binary: re-parse buffer to get SymbolTable for selected arch
                     let fat_symbols = SymbolTable::from(&binary_buffer)
                         .map_err(|e| format!("Failed to parse fat binary: {e}"))?;
-                    let result = analyze_macho(
+                    let result = analyze_binary_target(
                         &fat_symbols,
                         &binary_buffer,
                         target_path,
@@ -2096,7 +2096,18 @@ fn analyze_single_target(
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
             }
         }
-        SymbolTable::Elf(_) => Err("ELF binary analysis not yet implemented".to_string()),
+        SymbolTable::Elf(_) => {
+            let result = analyze_binary_target(
+                &symbols,
+                &binary_buffer,
+                target_path,
+                false, // show_timings
+                &config,
+                &output,
+                project_context,
+            )?;
+            Ok(result.code_points)
+        }
         SymbolTable::Archive(archive) => {
             let result = analyze_archive(
                 archive,

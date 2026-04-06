@@ -6,6 +6,7 @@
 pub mod analysis;
 pub mod analysis_cache;
 pub mod args;
+pub mod binary_format;
 pub mod call_graph;
 pub mod call_tree;
 pub mod cargo;

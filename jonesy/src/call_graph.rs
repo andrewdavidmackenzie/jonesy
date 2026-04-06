@@ -1,3 +1,4 @@
+use crate::binary_format::BinaryRef;
 use crate::crate_line_table::CrateLineTable;
 use crate::full_line_table::FullLineTable;
 use crate::function_index::{FunctionIndex, get_functions_from_dwarf, load_dwarf_sections};
@@ -171,20 +172,17 @@ fn sequential_disassemble_arm64(text_data: &[u8], text_addr: u64) -> Vec<InsnDat
         .collect()
 }
 
-/// Get the __text section's address and data from a MachO binary.
-/// This is a standalone helper for callers that only have a raw MachO reference.
-/// Get a named section's address and data from a MachO binary.
-fn get_section_by_name<'a>(macho: &MachO, buffer: &'a [u8], name: &str) -> Option<(u64, &'a [u8])> {
-    for segment in &macho.segments {
-        for (section, _section_data) in segment.sections().unwrap() {
-            if section.name().unwrap() == name {
-                let offset = section.offset as usize;
-                let size = section.size as usize;
-                return Some((section.addr, &buffer[offset..offset + size]));
-            }
-        }
-    }
-    None
+/// Get a named section's address and data from a binary.
+/// This is a standalone helper that wraps BinaryRef::find_section for callers
+/// that only have a raw MachO reference. For new code, use BinaryRef::find_section directly.
+#[allow(dead_code)]
+fn get_section_by_name<'a>(
+    macho: &'a MachO<'a>,
+    buffer: &'a [u8],
+    name: &str,
+) -> Option<(u64, &'a [u8])> {
+    let binary_ref = BinaryRef::MachO(macho);
+    binary_ref.find_section(buffer, name)
 }
 
 /// Pre-computed call graph mapping target addresses to their callers.
@@ -200,11 +198,12 @@ impl<'a> CallGraph<'a> {
     /// Uses parallel disassembly and parallel processing for faster analysis.
     /// Symbol names are borrowed from the provided SymbolIndex.
     pub fn build(
-        macho: &MachO,
+        binary: &BinaryRef,
         buffer: &[u8],
         symbol_index: Option<&'a SymbolIndex>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let Some((text_addr, text_data)) = get_section_by_name(macho, buffer, "__text") else {
+        let text_section_name = binary.text_section_name();
+        let Some((text_addr, text_data)) = binary.find_section(buffer, text_section_name) else {
             return Ok(Self {
                 edges: HashMap::new(),
             });
@@ -249,9 +248,9 @@ impl<'a> CallGraph<'a> {
     /// Uses parallel disassembly and parallel processing for faster analysis.
     /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
     pub fn build_with_debug_info(
-        binary_macho: &MachO,
+        binary: &BinaryRef,
         binary_buffer: &[u8],
-        debug_macho: &MachO,
+        debug_binary: &BinaryRef,
         debug_buffer: &[u8],
         show_timings: bool,
         symbol_index: Option<&'a SymbolIndex>,
@@ -261,7 +260,7 @@ impl<'a> CallGraph<'a> {
 
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
-        let (functions, inlined, strings) = get_functions_from_dwarf(debug_macho, debug_buffer)?;
+        let (functions, inlined, strings) = get_functions_from_dwarf(debug_binary, debug_buffer)?;
         let num_functions = functions.len();
         let num_inlined = inlined.len();
         // Build function index for O(log n) lookups instead of O(n) linear search
@@ -276,13 +275,13 @@ impl<'a> CallGraph<'a> {
         }
 
         let step = Instant::now();
-        let dwarf = load_dwarf_sections(debug_macho, debug_buffer)?;
+        let dwarf = load_dwarf_sections(debug_binary, debug_buffer)?;
         if show_timings {
             eprintln!("    [cg timing] load_dwarf_sections: {:?}", step.elapsed());
         }
 
-        let Some((text_addr, text_data)) =
-            get_section_by_name(binary_macho, binary_buffer, "__text")
+        let text_section_name = binary.text_section_name();
+        let Some((text_addr, text_data)) = binary.find_section(binary_buffer, text_section_name)
         else {
             return Ok(Self {
                 edges: HashMap::new(),
@@ -691,8 +690,9 @@ mod tests {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
         if let Ok(buffer) = std::fs::read(&binary_path) {
             if let Ok(macho) = MachO::parse(&buffer, 0) {
+                let binary_ref = BinaryRef::MachO(&macho);
                 let symbol_index = SymbolIndex::new(&macho);
-                let graph = CallGraph::build(&macho, &buffer, symbol_index.as_ref());
+                let graph = CallGraph::build(&binary_ref, &buffer, symbol_index.as_ref());
                 assert!(graph.is_ok());
                 let graph = graph.unwrap();
                 // A real binary should have many call edges
@@ -707,8 +707,9 @@ mod tests {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
         if let Ok(buffer) = std::fs::read(&binary_path) {
             if let Ok(macho) = MachO::parse(&buffer, 0) {
+                let binary_ref = BinaryRef::MachO(&macho);
                 // Build without symbol index — should still work but find no callers
-                let graph = CallGraph::build(&macho, &buffer, None);
+                let graph = CallGraph::build(&binary_ref, &buffer, None);
                 assert!(graph.is_ok());
             }
         }

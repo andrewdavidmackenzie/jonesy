@@ -4,6 +4,7 @@
 //! in Mach-O binaries and library archives.
 
 use crate::args::OutputFormat;
+use crate::binary_format::BinaryRef;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
     collect_crate_code_points, filter_allowed_causes,
@@ -111,9 +112,9 @@ struct PanicCaller {
     target: String,
 }
 
-/// Analyze a single MachO binary/object for panic points.
+/// Analyze a single MachO or ELF binary for panic points.
 /// Returns a summary of panic code points found, plus code points.
-pub fn analyze_macho(
+pub fn analyze_binary_target(
     symbols: &SymbolTable,
     buffer: &[u8],
     binary_path: &Path,
@@ -122,9 +123,13 @@ pub fn analyze_macho(
     output: &OutputFormat,
     project_context: &ProjectContext,
 ) -> Result<BinaryAnalysisResult, String> {
-    let macho = symbols
-        .macho()
-        .ok_or_else(|| "Expected MachO binary, got archive or fat binary".to_string())?;
+    // Construct BinaryRef from the SymbolTable
+    let binary_ref = match symbols {
+        SymbolTable::MachO(Binary(macho)) => BinaryRef::MachO(macho),
+        SymbolTable::Elf(elf) => BinaryRef::Elf(elf),
+        _ => return Err("Expected MachO or ELF binary".to_string()),
+    };
+
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
 
@@ -158,7 +163,7 @@ pub fn analyze_macho(
         eprintln!("  Loading debug information...");
     }
     let step_start = show_timings.then(Instant::now);
-    let debug_info = load_debug_info(macho, binary_path, !show_progress);
+    let debug_info = load_debug_info(&binary_ref, binary_path, !show_progress);
     if let Some(step_start) = step_start {
         eprintln!("  [timing] Load debug info: {:?}", step_start.elapsed());
     }
@@ -169,14 +174,14 @@ pub fn analyze_macho(
     let step_start = show_timings.then(Instant::now);
 
     // Create SymbolIndex once - CallGraph borrows from it to avoid allocations in hot path
-    let symbol_index = SymbolIndex::new(macho);
+    let symbol_index = SymbolIndex::from_binary(&binary_ref);
 
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
             CallGraph::build_with_debug_info(
-                macho,
+                &binary_ref,
                 buffer,
-                macho,
+                &binary_ref,
                 buffer,
                 show_timings,
                 symbol_index.as_ref(),
@@ -184,7 +189,7 @@ pub fn analyze_macho(
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                CallGraph::build(macho, buffer, symbol_index.as_ref())
+                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref())
             })
             .unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
@@ -193,10 +198,11 @@ pub fn analyze_macho(
         }
         DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
             if let Binary(debug_mach) = debug_macho {
+                let debug_binary_ref = BinaryRef::MachO(debug_mach);
                 CallGraph::build_with_debug_info(
-                    macho,
+                    &binary_ref,
                     buffer,
-                    debug_mach,
+                    &debug_binary_ref,
                     dsym_info.borrow_debug_buffer(),
                     show_timings,
                     symbol_index.as_ref(),
@@ -204,21 +210,21 @@ pub fn analyze_macho(
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                    CallGraph::build(macho, buffer, symbol_index.as_ref())
+                    CallGraph::build(&binary_ref, buffer, symbol_index.as_ref())
                 })
                 .unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             } else {
-                CallGraph::build(macho, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
+                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             }
         }),
         DebugInfo::DebugMap(_) | DebugInfo::None => {
-            CallGraph::build(macho, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
+            CallGraph::build(&binary_ref, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
                 CallGraph::empty()
             })
