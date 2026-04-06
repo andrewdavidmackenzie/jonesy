@@ -223,27 +223,6 @@ impl LibraryCallGraph {
         let dwarf = load_dwarf_sections(&binary_ref, buffer).ok();
         let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
 
-        // Debug: list all section names to understand the ELF layout
-        eprintln!("  ELF sections ({} total):", elf.section_headers.len());
-        for (i, sh) in elf.section_headers.iter().enumerate() {
-            let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("???");
-            if name.contains("text") || name.contains("rela") {
-                eprintln!(
-                    "    [{i}] {name} (type={}, info={}, size={})",
-                    sh.sh_type, sh.sh_info, sh.sh_size
-                );
-            }
-        }
-        eprintln!("  ELF symbols: {} total", symbols.len());
-        eprintln!(
-            "  Symbol index: {}",
-            if symbol_index.is_some() {
-                "built"
-            } else {
-                "empty"
-            }
-        );
-
         // Find .text section index
         let text_section_idx = elf
             .section_headers
@@ -251,10 +230,8 @@ impl LibraryCallGraph {
             .position(|sh| elf.shdr_strtab.get_at(sh.sh_name) == Some(".text"));
 
         let Some(text_idx) = text_section_idx else {
-            eprintln!("  No .text section found!");
             return Ok(Self { edges });
         };
-        eprintln!("  .text section index: {text_idx}");
 
         // Find relocation sections for .text (may be .rela.text or .rela.text.*)
         for sh in &elf.section_headers {
@@ -274,10 +251,6 @@ impl LibraryCallGraph {
             if !target_name.starts_with(".text") {
                 continue;
             }
-
-            eprintln!(
-                "  Processing relocations: {name} -> {target_name} (idx={target_section_idx})"
-            );
 
             // Get the target section's base address
             let text_section = &elf.section_headers[target_section_idx];
@@ -304,8 +277,6 @@ impl LibraryCallGraph {
             }
 
             let num_relocs = rela_size / rela_entsize;
-            let mut call26_count = 0u32;
-
             for i in 0..num_relocs {
                 let offset = rela_offset + i * rela_entsize;
                 if offset + rela_entsize > buffer.len() {
@@ -327,7 +298,6 @@ impl LibraryCallGraph {
                 if r_type != R_AARCH64_CALL26 {
                     continue;
                 }
-                call26_count += 1;
 
                 // Get the target symbol name
                 let Some((target_sym_name, _)) = symbols.get(r_sym) else {
@@ -393,10 +363,8 @@ impl LibraryCallGraph {
                     column,
                 });
             }
-            eprintln!("    {num_relocs} relocs total, {call26_count} CALL26");
         }
 
-        eprintln!("  ELF call graph: {} edges", edges.len());
         Ok(Self { edges })
     }
 
