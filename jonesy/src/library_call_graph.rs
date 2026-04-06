@@ -253,7 +253,9 @@ impl LibraryCallGraph {
             }
 
             // Get the target section's base address
-            let text_section = &elf.section_headers[target_section_idx];
+            let Some(text_section) = elf.section_headers.get(target_section_idx) else {
+                continue;
+            };
             let text_addr = text_section.sh_addr;
 
             // For per-function sections (.text.func_name), extract the caller
