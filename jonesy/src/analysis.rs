@@ -176,9 +176,9 @@ pub fn analyze_macho(
     let call_graph = match &debug_info {
         DebugInfo::Embedded => {
             CallGraph::build_with_debug_info(
-                macho,
+                &binary_ref,
                 buffer,
-                macho,
+                &binary_ref,
                 buffer,
                 show_timings,
                 symbol_index.as_ref(),
@@ -186,7 +186,7 @@ pub fn analyze_macho(
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                CallGraph::build(macho, buffer, symbol_index.as_ref())
+                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref())
             })
             .unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
@@ -195,10 +195,11 @@ pub fn analyze_macho(
         }
         DebugInfo::DSym(dsym_info) => dsym_info.with_debug_macho(|debug_macho| {
             if let Binary(debug_mach) = debug_macho {
+                let debug_binary_ref = BinaryRef::MachO(debug_mach);
                 CallGraph::build_with_debug_info(
-                    macho,
+                    &binary_ref,
                     buffer,
-                    debug_mach,
+                    &debug_binary_ref,
                     dsym_info.borrow_debug_buffer(),
                     show_timings,
                     symbol_index.as_ref(),
@@ -206,21 +207,21 @@ pub fn analyze_macho(
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                    CallGraph::build(macho, buffer, symbol_index.as_ref())
+                    CallGraph::build(&binary_ref, buffer, symbol_index.as_ref())
                 })
                 .unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             } else {
-                CallGraph::build(macho, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
+                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             }
         }),
         DebugInfo::DebugMap(_) | DebugInfo::None => {
-            CallGraph::build(macho, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
+            CallGraph::build(&binary_ref, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
                 CallGraph::empty()
             })
