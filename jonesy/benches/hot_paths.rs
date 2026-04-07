@@ -142,7 +142,8 @@ fn bench_find_function_name(c: &mut Criterion) {
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         // Build function index from DWARF
         let binary_ref = BinaryRef::MachO(macho);
-        let (functions, inlined, strings) = match get_functions_from_dwarf(&binary_ref, &buffer) {
+        let project_root = root.to_str().unwrap_or(".");
+        let (functions, inlined, strings) = match get_functions_from_dwarf(&binary_ref, &buffer, project_root) {
             Ok(result) => result,
             Err(_) => {
                 eprintln!("Skipping find_function_name benchmark: no DWARF info");
@@ -587,9 +588,10 @@ fn bench_get_functions_from_dwarf(c: &mut Criterion) {
 
     if let SymbolTable::MachO(Binary(ref macho)) = symbols {
         let binary_ref = BinaryRef::MachO(macho);
+        let project_root = root.to_str().unwrap_or(".");
         c.bench_function("get_functions_from_dwarf_jonesy", |b| {
             b.iter(|| {
-                let funcs = get_functions_from_dwarf(&binary_ref, &buffer);
+                let funcs = get_functions_from_dwarf(&binary_ref, &buffer, project_root);
                 black_box(funcs)
             })
         });
