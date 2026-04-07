@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: write  # Required for creating releases
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Get version from Cargo.toml
         id: version
