@@ -2112,6 +2112,7 @@ fn analyze_single_target(
             let result = analyze_archive(
                 archive,
                 &binary_buffer,
+                target_path,
                 false, // show_timings
                 &config,
                 &output,

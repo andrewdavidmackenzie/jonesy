@@ -291,6 +291,7 @@ pub fn analyze_binary_target(
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
+    binary_path: &Path,
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
@@ -309,10 +310,42 @@ pub fn analyze_archive(
     // Build a merged call graph from all .o files in the archive
     let mut merged_graph = LibraryCallGraph::empty();
 
+    // Get the crate name to filter out stdlib/dependency .o files
+    // For performance: only process .o files from the user's crate
+    // Extract library name from binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
+    let lib_name = binary_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("lib"))
+        .unwrap_or("");
+
+    // Find the crate directory for this library in the workspace
+    let crate_dir = crate::cargo::find_lib_crate_dir(workspace_root, lib_name);
+    let crate_name = if let Some(ref dir) = crate_dir {
+        crate::cargo::get_project_name(dir)
+    } else {
+        // Fallback: use workspace root (works for non-workspace crates)
+        crate::cargo::get_project_name(workspace_root)
+    };
+    let mut skipped_count = 0;
+    let mut processed_count = 0;
+
     for member_name in archive.members() {
         // Skip non-object files (like .rmeta)
         if !member_name.ends_with(".o") {
             continue;
+        }
+
+        // Skip stdlib and dependency .o files - only process user crate files
+        // .o file names follow pattern: <crate_name>-<hash>.<module>.<hash>-cgu.<number>.rcgu.o
+        if let Some(ref crate_name) = crate_name {
+            let normalized_crate_name = crate_name.replace('-', "_");
+            if !member_name.starts_with(&normalized_crate_name)
+                && !member_name.starts_with(&format!("{}-", crate_name))
+            {
+                skipped_count += 1;
+                continue;
+            }
         }
 
         // Extract the member data
@@ -332,7 +365,10 @@ pub fn analyze_archive(
                 let binary_ref = BinaryRef::MachO(&obj_macho);
                 match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
                 {
-                    Ok(obj_graph) => merged_graph.merge(obj_graph),
+                    Ok(obj_graph) => {
+                        merged_graph.merge(obj_graph);
+                        processed_count += 1;
+                    }
                     Err(e) => {
                         if show_progress {
                             eprintln!(
@@ -347,7 +383,10 @@ pub fn analyze_archive(
                 let binary_ref = BinaryRef::Elf(&obj_elf);
                 match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
                 {
-                    Ok(obj_graph) => merged_graph.merge(obj_graph),
+                    Ok(obj_graph) => {
+                        merged_graph.merge(obj_graph);
+                        processed_count += 1;
+                    }
                     Err(e) => {
                         if show_progress {
                             eprintln!(
@@ -364,6 +403,13 @@ pub fn analyze_archive(
                 }
             }
         }
+    }
+
+    if show_progress {
+        eprintln!(
+            "  Processed {} .o files ({} stdlib/dependency files skipped)",
+            processed_count, skipped_count
+        );
     }
 
     if let Some(step_start) = step_start {

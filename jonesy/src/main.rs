@@ -220,6 +220,7 @@ fn analyze_binary(
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
             buffer,
+            binary_path,
             show_timings,
             config,
             output,
