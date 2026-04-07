@@ -143,13 +143,14 @@ fn bench_find_function_name(c: &mut Criterion) {
         // Build function index from DWARF
         let binary_ref = BinaryRef::MachO(macho);
         let project_root = root.to_str().unwrap_or(".");
-        let (functions, inlined, strings) = match get_functions_from_dwarf(&binary_ref, &buffer, project_root) {
-            Ok(result) => result,
-            Err(_) => {
-                eprintln!("Skipping find_function_name benchmark: no DWARF info");
-                return;
-            }
-        };
+        let (functions, inlined, strings) =
+            match get_functions_from_dwarf(&binary_ref, &buffer, project_root) {
+                Ok(result) => result,
+                Err(_) => {
+                    eprintln!("Skipping find_function_name benchmark: no DWARF info");
+                    return;
+                }
+            };
         let func_index = FunctionIndex::new_with_inlined(functions, inlined, strings);
 
         // Get some sample addresses to look up
