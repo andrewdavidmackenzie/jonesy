@@ -310,23 +310,17 @@ pub fn analyze_archive(
     // Build a merged call graph from all .o files in the archive
     let mut merged_graph = LibraryCallGraph::empty();
 
-    // Get the crate name to filter out stdlib/dependency .o files
-    // For performance: only process .o files from the user's crate
+    // Get the library name to filter out stdlib/dependency .o files
+    // For performance: only process .o files from the user's library
     // Extract library name from binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
+    // Note: .o files are named using the library name (from [lib] name in Cargo.toml),
+    // not the package name, so we use lib_name directly for filtering
     let lib_name = binary_path
         .file_stem()
         .and_then(|s| s.to_str())
         .and_then(|s| s.strip_prefix("lib"))
         .unwrap_or("");
 
-    // Find the crate directory for this library in the workspace
-    let crate_dir = crate::cargo::find_lib_crate_dir(workspace_root, lib_name);
-    let crate_name = if let Some(ref dir) = crate_dir {
-        crate::cargo::get_project_name(dir)
-    } else {
-        // Fallback: use workspace root (works for non-workspace crates)
-        crate::cargo::get_project_name(workspace_root)
-    };
     let mut skipped_count = 0;
     let mut processed_count = 0;
 
@@ -336,12 +330,13 @@ pub fn analyze_archive(
             continue;
         }
 
-        // Skip stdlib and dependency .o files - only process user crate files
-        // .o file names follow pattern: <crate_name>-<hash>.<module>.<hash>-cgu.<number>.rcgu.o
-        if let Some(ref crate_name) = crate_name {
-            let normalized_crate_name = crate_name.replace('-', "_");
-            if !member_name.starts_with(&normalized_crate_name)
-                && !member_name.starts_with(&format!("{}-", crate_name))
+        // Skip stdlib and dependency .o files - only process user library files
+        // .o file names follow pattern: <lib_name>-<hash>.<module>.<hash>-cgu.<number>.rcgu.o
+        // where lib_name matches the library name (e.g., "staticlib_example", "multi_bin_lib")
+        if !lib_name.is_empty() {
+            let normalized_lib_name = lib_name.replace('-', "_");
+            if !member_name.starts_with(&normalized_lib_name)
+                && !member_name.starts_with(&format!("{}-", lib_name))
             {
                 skipped_count += 1;
                 continue;
