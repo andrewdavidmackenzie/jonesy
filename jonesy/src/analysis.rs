@@ -321,8 +321,14 @@ pub fn analyze_archive(
         .and_then(|s| s.strip_prefix("lib"))
         .unwrap_or("");
 
+    if show_progress {
+        eprintln!("  DEBUG: lib_name = '{}'", lib_name);
+    }
+
     let mut skipped_count = 0;
     let mut processed_count = 0;
+    let mut sample_kept = Vec::new();
+    let mut sample_skipped = Vec::new();
 
     for member_name in archive.members() {
         // Skip non-object files (like .rmeta)
@@ -338,8 +344,13 @@ pub fn analyze_archive(
             if !member_name.starts_with(&normalized_lib_name)
                 && !member_name.starts_with(&format!("{}-", lib_name))
             {
+                if sample_skipped.len() < 2 {
+                    sample_skipped.push(member_name.to_string());
+                }
                 skipped_count += 1;
                 continue;
+            } else if sample_kept.len() < 5 {
+                sample_kept.push(member_name.to_string());
             }
         }
 
@@ -401,6 +412,18 @@ pub fn analyze_archive(
     }
 
     if show_progress {
+        if !sample_kept.is_empty() {
+            eprintln!("  DEBUG: Sample kept files:");
+            for file in &sample_kept {
+                eprintln!("    {}", file);
+            }
+        }
+        if !sample_skipped.is_empty() {
+            eprintln!("  DEBUG: Sample skipped files:");
+            for file in &sample_skipped {
+                eprintln!("    {}", file);
+            }
+        }
         eprintln!(
             "  Processed {} .o files ({} stdlib/dependency files skipped)",
             processed_count, skipped_count
