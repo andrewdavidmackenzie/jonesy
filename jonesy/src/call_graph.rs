@@ -7,6 +7,8 @@ use crate::sym::SymbolIndex;
 use capstone::arch::BuildsCapstone;
 use capstone::{Capstone, arch};
 use dashmap::DashMap;
+use goblin::elf::Elf;
+use goblin::elf::reloc::*;
 use goblin::mach::MachO;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
@@ -53,6 +55,94 @@ const BL_OPCODE: u32 = 0x94000000;
 /// ARM64 B instruction mask: bits [31:26] must be 000101
 const B_MASK: u32 = 0xFC000000;
 const B_OPCODE: u32 = 0x14000000;
+
+/// Build a mapping from PLT stub addresses to actual function addresses using ELF relocations.
+/// Returns a HashMap mapping PLT address -> target function address.
+///
+/// PLT (Procedure Linkage Table) entries are used for lazy symbol resolution in shared libraries.
+/// Each PLT entry corresponds to a relocation in .rela.plt which points to the actual function.
+fn build_plt_map(elf: &Elf, buffer: &[u8]) -> HashMap<u64, u64> {
+    let mut plt_map = HashMap::new();
+
+    // Find .plt section
+    let plt_section = elf.section_headers.iter().find(|sh| {
+        elf.shdr_strtab
+            .get_at(sh.sh_name)
+            .map(|n| n == ".plt")
+            .unwrap_or(false)
+    });
+
+    let Some(plt_section) = plt_section else {
+        eprintln!("[PLT] No .plt section found in ELF");
+        return plt_map;
+    };
+
+    let plt_base = plt_section.sh_addr;
+
+    // Find .rela.plt section to get relocations
+    let rela_plt_section = elf.section_headers.iter().find(|sh| {
+        elf.shdr_strtab
+            .get_at(sh.sh_name)
+            .map(|n| n == ".rela.plt")
+            .unwrap_or(false)
+    });
+
+    let Some(rela_plt_section) = rela_plt_section else {
+        return plt_map;
+    };
+
+    // Get the .rela.plt section data from the buffer
+    let rela_plt_offset = rela_plt_section.sh_offset as usize;
+    let rela_plt_size = rela_plt_section.sh_size as usize;
+    let rela_plt_data = &buffer[rela_plt_offset..rela_plt_offset + rela_plt_size];
+
+    // Each Rela entry is 24 bytes on 64-bit
+    let num_relocs = rela_plt_size / 24;
+
+    // Parse each relocation entry
+    for index in 0..num_relocs {
+        let offset = index * 24;
+        if offset + 24 > rela_plt_data.len() {
+            break;
+        }
+
+        // Parse Rela structure (64-bit): r_offset (8), r_info (8), r_addend (8)
+        let r_offset = u64::from_le_bytes(rela_plt_data[offset..offset + 8].try_into().unwrap());
+        let r_info = u64::from_le_bytes(rela_plt_data[offset + 8..offset + 16].try_into().unwrap());
+        let _r_addend =
+            i64::from_le_bytes(rela_plt_data[offset + 16..offset + 24].try_into().unwrap());
+
+        // Extract symbol index from r_info (upper 32 bits)
+        let sym_index = (r_info >> 32) as usize;
+
+        // PLT entry address = plt_base + 32 + (index * 16)
+        let plt_addr = plt_base + 32 + (index as u64 * 16);
+
+        // Look up symbol and get its value (actual function address)
+        if let Some(sym) = elf.dynsyms.get(sym_index) {
+            let target_addr = sym.st_value;
+            if target_addr != 0 {
+                plt_map.insert(plt_addr, target_addr);
+            }
+        }
+    }
+
+    plt_map
+}
+
+/// Resolve a PLT (Procedure Linkage Table) stub address to the actual function address.
+///
+/// In ELF shared libraries (dylib), calls often go through PLT stubs for dynamic linking.
+/// For example:
+///   - PLT stub: 0x71ee0 <rust_panic@plt>
+///   - Actual function: 0x74f20 <rust_panic>
+///
+/// This function looks up the target address in the PLT map and returns the actual function address.
+///
+/// Returns the resolved address, or the original address if not a PLT stub.
+fn resolve_plt_stub(target_addr: u64, plt_map: &HashMap<u64, u64>) -> u64 {
+    plt_map.get(&target_addr).copied().unwrap_or(target_addr)
+}
 
 /// Decode ARM64 BL/B instruction target address from raw bytes.
 /// BL encoding: 100101 imm26
@@ -202,6 +292,13 @@ impl<'a> CallGraph<'a> {
         buffer: &[u8],
         symbol_index: Option<&'a SymbolIndex>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Build PLT map for ELF binaries (for resolving PLT stubs to actual functions)
+        let plt_map = if let BinaryRef::Elf(elf) = binary {
+            build_plt_map(elf, buffer)
+        } else {
+            HashMap::new()
+        };
+
         let text_section_name = binary.text_section_name();
         let Some((text_addr, text_data)) = binary.find_section(buffer, text_section_name) else {
             return Ok(Self {
@@ -224,7 +321,10 @@ impl<'a> CallGraph<'a> {
                 && let Some((func_addr, func_name)) =
                     symbol_index.and_then(|idx| idx.find_containing(data.address))
             {
-                edges.entry(call_target).or_default().push(CallerInfo {
+                // Resolve PLT stub to actual function address (for ELF dylib support)
+                let resolved_target = resolve_plt_stub(call_target, &plt_map);
+
+                edges.entry(resolved_target).or_default().push(CallerInfo {
                     caller_name: Cow::Borrowed(func_name), // No allocation - borrows from SymbolIndex
                     caller_start_address: func_addr,
                     caller_file: None,
@@ -257,6 +357,13 @@ impl<'a> CallGraph<'a> {
         project_context: &ProjectContext,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
+
+        // Build PLT map for ELF binaries (for resolving PLT stubs to actual functions)
+        let plt_map = if let BinaryRef::Elf(elf) = binary {
+            build_plt_map(elf, binary_buffer)
+        } else {
+            HashMap::new()
+        };
 
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
@@ -339,7 +446,9 @@ impl<'a> CallGraph<'a> {
                     project_context,
                 )
             {
-                edges.entry(target).or_default().push(caller_info);
+                // Resolve PLT stub to actual function address (for ELF dylib support)
+                let resolved_target = resolve_plt_stub(target, &plt_map);
+                edges.entry(resolved_target).or_default().push(caller_info);
             }
         });
         if show_timings {
