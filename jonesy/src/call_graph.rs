@@ -260,7 +260,8 @@ impl<'a> CallGraph<'a> {
 
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
-        let (functions, inlined, strings) = get_functions_from_dwarf(debug_binary, debug_buffer)?;
+        let (functions, inlined, strings) =
+            get_functions_from_dwarf(debug_binary, debug_buffer, project_context.project_root())?;
         let num_functions = functions.len();
         let num_inlined = inlined.len();
         // Build function index for O(log n) lookups instead of O(n) linear search

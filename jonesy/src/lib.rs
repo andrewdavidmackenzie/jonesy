@@ -13,6 +13,7 @@ pub mod cargo;
 pub mod config;
 pub mod crate_line_table;
 pub mod debug_info;
+pub(crate) mod elf_relocations;
 pub mod file_watcher;
 pub mod full_line_table;
 pub mod function_index;

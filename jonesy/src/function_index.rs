@@ -6,6 +6,7 @@ use gimli::{
 };
 use rayon::prelude::*;
 use rustc_demangle::demangle;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
@@ -217,6 +218,66 @@ struct ParsedFunctionInfo {
 }
 
 /// Load DWARF sections from binary
+/// Load DWARF sections with ELF relocation support for .o files
+/// This version uses gimli::RelocateReader to track which section each address belongs to
+#[allow(dead_code)] // TODO: integrate into ELF .o file processing
+pub(crate) fn load_dwarf_sections_with_relocations_elf<'a>(
+    elf: &goblin::elf::Elf,
+    buffer: &'a [u8],
+    endian: RunTimeEndian,
+) -> Result<
+    Dwarf<gimli::RelocateReader<DwarfReader<'a>, crate::elf_relocations::RelocationMap>>,
+    gimli::Error,
+> {
+    use gimli::RelocateReader;
+
+    // Parse relocations for .debug_line section
+    let debug_line_relocs =
+        crate::elf_relocations::RelocationMap::parse_from_elf(elf, buffer, ".rela.debug_line");
+
+    // Helper to find a DWARF section in the binary
+    let find_section = |name: &str| -> Option<&'a [u8]> {
+        let section_name = if name.starts_with('.') {
+            Cow::Borrowed(name)
+        } else {
+            Cow::Owned(format!(".debug_{}", name))
+        };
+
+        for sh in &elf.section_headers {
+            if let Some(sh_name) = elf.shdr_strtab.get_at(sh.sh_name) {
+                if sh_name == section_name.as_ref() {
+                    let offset = sh.sh_offset as usize;
+                    let size = sh.sh_size as usize;
+                    return buffer.get(offset..offset + size);
+                }
+            }
+        }
+        None
+    };
+
+    // Load each DWARF section, wrapping .debug_line with RelocateReader
+    let load_section = |id: SectionId| -> Result<
+        RelocateReader<DwarfReader<'a>, crate::elf_relocations::RelocationMap>,
+        gimli::Error,
+    > {
+        let data = find_section(id.name()).unwrap_or(&[]);
+        let slice = EndianSlice::new(data, endian);
+
+        // Only use RelocateReader for .debug_line (where we need section tracking)
+        if id == SectionId::DebugLine {
+            Ok(RelocateReader::new(slice, debug_line_relocs.clone()))
+        } else {
+            // For other sections, use an empty relocation map
+            Ok(RelocateReader::new(
+                slice,
+                crate::elf_relocations::RelocationMap::empty(),
+            ))
+        }
+    };
+
+    Dwarf::load(&load_section)
+}
+
 pub(crate) fn load_dwarf_sections<'a>(
     binary: &BinaryRef<'a>,
     buffer: &'a [u8],
@@ -260,6 +321,7 @@ pub(crate) fn load_dwarf_sections<'a>(
 pub fn get_functions_from_dwarf<'a>(
     binary: &BinaryRef<'a>,
     buffer: &'a [u8],
+    project_root: &str,
 ) -> Result<DwarfFunctionResult, Box<dyn std::error::Error>> {
     let dwarf = load_dwarf_sections(binary, buffer)?;
 
@@ -282,7 +344,9 @@ pub fn get_functions_from_dwarf<'a>(
             while let Some((_, entry)) = entries.next_dfs().ok()? {
                 match entry.tag() {
                     gimli::DW_TAG_subprogram => {
-                        if let Ok(Some(func)) = parse_function_die(&dwarf, &unit, entry) {
+                        if let Ok(Some(func)) =
+                            parse_function_die(&dwarf, &unit, entry, project_root)
+                        {
                             funcs.push(func);
                         }
                     }
@@ -332,6 +396,7 @@ fn parse_function_die<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     entry: &DebuggingInformationEntry<R>,
+    project_root: &str,
 ) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
     let mut name: Option<String> = None;
     let mut has_linkage_name = false;
@@ -379,7 +444,7 @@ fn parse_function_die<R: Reader>(
             },
             gimli::DW_AT_decl_file => {
                 if let AttributeValue::FileIndex(idx) = attr.value() {
-                    file = resolve_decl_file(dwarf, unit, idx)?;
+                    file = resolve_decl_file(dwarf, unit, idx, project_root)?;
                 }
             }
             gimli::DW_AT_decl_line => {
@@ -401,7 +466,7 @@ fn parse_function_die<R: Reader>(
     if let Some(spec_offset) = specification {
         if name.is_none() || file.is_none() || line.is_none() {
             let (spec_name, spec_file, spec_line) =
-                resolve_specification(dwarf, unit, spec_offset)?;
+                resolve_specification(dwarf, unit, spec_offset, project_root)?;
             if name.is_none() {
                 name = spec_name;
             }
@@ -567,6 +632,7 @@ pub(crate) fn resolve_line_file_path<R: Reader>(
     unit: &Unit<R>,
     file_entry: &gimli::FileEntry<R, R::Offset>,
     header: &gimli::LineProgramHeader<R, R::Offset>,
+    project_root: &str,
 ) -> Result<String, gimli::Error> {
     let file_name = dwarf
         .attr_string(unit, file_entry.path_name())?
@@ -591,19 +657,50 @@ pub(crate) fn resolve_line_file_path<R: Reader>(
     if !full_path.starts_with('/') {
         if let Some(comp_dir) = &unit.comp_dir {
             let comp_dir_str = comp_dir.to_string_lossy()?;
-            if !comp_dir_str.is_empty() {
+            // Only use comp_dir if it looks like a valid directory path.
+            // On some ELF binaries, comp_dir contains compiler info like
+            // "clang LLVM (rustc version ...)" instead of an actual path.
+            if !comp_dir_str.is_empty() && is_valid_directory_path(&comp_dir_str) {
                 return Ok(format!("{comp_dir_str}/{full_path}"));
             }
         }
+
+        // If comp_dir is missing or invalid, make the path absolute
+        // using the project root
+        return Ok(format!("{}/{}", project_root, full_path));
     }
 
     Ok(full_path)
+}
+
+/// Check if a string looks like a valid directory path.
+/// Returns false for strings that appear to be compiler identifiers or other non-path data.
+fn is_valid_directory_path(path: &str) -> bool {
+    // Valid paths start with '/', '.', or '~'
+    if path.starts_with('/') || path.starts_with('.') || path.starts_with('~') {
+        return true;
+    }
+
+    // Reject strings that look like compiler identifiers
+    // (e.g., "clang LLVM (rustc version ...)")
+    if path.contains("LLVM")
+        || path.contains("clang")
+        || path.contains("rustc")
+        || path.contains('(')
+        || path.contains(')')
+    {
+        return false;
+    }
+
+    // Treat other cases as potentially valid relative paths
+    true
 }
 
 fn resolve_decl_file<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     file_idx: u64,
+    project_root: &str,
 ) -> Result<Option<String>, gimli::Error> {
     let Some(line_program) = &unit.line_program else {
         return Ok(None);
@@ -616,6 +713,7 @@ fn resolve_decl_file<R: Reader>(
         unit,
         file_entry,
         line_program.header(),
+        project_root,
     )?))
 }
 
@@ -625,6 +723,7 @@ fn resolve_specification<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     offset: gimli::UnitOffset<R::Offset>,
+    project_root: &str,
 ) -> Result<SpecificationResult, gimli::Error> {
     let entry = unit.entry(offset)?;
     let mut name: Option<String> = None;
@@ -651,7 +750,7 @@ fn resolve_specification<R: Reader>(
             }
             gimli::DW_AT_decl_file => {
                 if let AttributeValue::FileIndex(idx) = attr.value() {
-                    file = resolve_decl_file(dwarf, unit, idx)?;
+                    file = resolve_decl_file(dwarf, unit, idx, project_root)?;
                 }
             }
             gimli::DW_AT_decl_line => {

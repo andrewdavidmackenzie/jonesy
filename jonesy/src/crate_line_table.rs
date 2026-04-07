@@ -36,7 +36,13 @@ impl CrateLineTable {
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
-                        let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
+                        let full_path = resolve_line_file_path(
+                            dwarf,
+                            &unit,
+                            file_entry,
+                            header,
+                            project_context.project_root(),
+                        )?;
 
                         // Only include entries from crate source
                         if project_context.is_crate_source(&full_path)

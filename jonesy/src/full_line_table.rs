@@ -165,7 +165,13 @@ impl FullLineTable {
 
                 while let Some((header, row)) = rows.next_row()? {
                     if let Some(file_entry) = row.file(header) {
-                        let full_path = resolve_line_file_path(dwarf, &unit, file_entry, header)?;
+                        let full_path = resolve_line_file_path(
+                            dwarf,
+                            &unit,
+                            file_entry,
+                            header,
+                            project_context.project_root(),
+                        )?;
 
                         // Check crate match before interning (needs &full_path)
                         let is_crate_match = project_context.is_crate_source(&full_path);

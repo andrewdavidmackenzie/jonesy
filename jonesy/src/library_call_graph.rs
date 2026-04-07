@@ -78,7 +78,10 @@ impl LibraryCallGraph {
 
         // Load DWARF for file/line lookups
         let dwarf = load_dwarf_sections(&binary_ref, buffer).ok();
-        let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
+        // MachO uses single __text section, so no function map needed
+        let line_lookup = dwarf
+            .as_ref()
+            .and_then(|d| ObjectLineTable::build(d, project_context.project_root(), &[]).ok());
 
         // Create a context for parsing relocations
         let container = if macho.is_64 {
@@ -219,9 +222,39 @@ impl LibraryCallGraph {
         let binary_ref = BinaryRef::Elf(elf);
         let symbol_index = SymbolIndex::from_binary(&binary_ref);
 
+        // Build function map from section headers for disambiguating overlapping addresses
+        let function_map: Vec<(crate::object_line_table::FunctionRange, String)> = elf
+            .section_headers
+            .iter()
+            .filter_map(|sh| {
+                let name = elf.shdr_strtab.get_at(sh.sh_name)?;
+                let mangled = name.strip_prefix(".text.")?;
+                let demangled = format!("{:#}", demangle(mangled));
+                let range = crate::object_line_table::FunctionRange {
+                    start: sh.sh_addr,
+                    end: sh.sh_addr + sh.sh_size,
+                };
+                Some((range, demangled))
+            })
+            .collect();
+
         // Load DWARF for file/line lookups
-        let dwarf = load_dwarf_sections(&binary_ref, buffer).ok();
-        let line_lookup = dwarf.as_ref().and_then(|d| ObjectLineTable::build(d).ok());
+        // For ELF .o files, we use RelocateReader to track which section each address belongs to
+        // This allows us to disambiguate overlapping section-relative addresses
+        use crate::function_index::load_dwarf_sections_with_relocations_elf;
+        use gimli::RunTimeEndian;
+
+        let endian = if elf.little_endian {
+            RunTimeEndian::Little
+        } else {
+            RunTimeEndian::Big
+        };
+
+        let line_lookup = load_dwarf_sections_with_relocations_elf(elf, buffer, endian)
+            .ok()
+            .and_then(|dwarf| {
+                ObjectLineTable::build(&dwarf, project_context.project_root(), &function_map).ok()
+            });
 
         // Find .text section index
         let text_section_idx = elf
@@ -307,14 +340,16 @@ impl LibraryCallGraph {
                 let call_site_addr = text_addr + r_offset;
 
                 // Find what function contains this call site
-                // For per-function sections, use the section name directly
-                let (func_addr, func_name) = if let Some(ref name) = section_func_name {
-                    (text_addr, name.clone())
-                } else if let Some((addr, name)) = symbol_index
+                // Use symbol index for accurate function address and name
+                let (func_addr, func_name) = if let Some((addr, name)) = symbol_index
                     .as_ref()
                     .and_then(|idx| idx.find_containing(call_site_addr))
                 {
                     (addr, name.to_string())
+                } else if let Some(ref name) = section_func_name {
+                    // Fall back to section name only if symbol index fails
+                    // Note: text_addr may not be a reliable absolute address for per-function sections
+                    (text_addr, name.clone())
                 } else {
                     continue;
                 };
@@ -323,29 +358,48 @@ impl LibraryCallGraph {
                 let target_demangled = format!("{:#}", demangle(target_sym_name));
 
                 // Look up file/line/column from DWARF at call site
-                let (file, line, column) = line_lookup
-                    .as_ref()
-                    .and_then(|lt| lt.lookup(call_site_addr))
-                    .unwrap_or((None, None, None));
+                // For .o files, use section name to disambiguate overlapping section-relative addresses
+                // target_name contains the section (e.g., ".text._ZN12rlib_example6module15cause_assert_eq...")
+                let (file, line, column) = if let Some(lt) = line_lookup.as_ref() {
+                    // Try section-aware lookup first (most precise for .o files)
+                    lt.lookup_for_function_and_section(
+                        call_site_addr,
+                        &func_name,
+                        Some(target_name),
+                    )
+                    .or_else(|| {
+                        // Fall back to function-only lookup
+                        lt.lookup_for_function(call_site_addr, &func_name)
+                    })
+                    .or_else(|| {
+                        // Final fallback to regular lookup for linked binaries
+                        lt.lookup(call_site_addr)
+                    })
+                    .unwrap_or((None, None, None))
+                } else {
+                    (None, None, None)
+                };
 
-                // If call site points to non-crate code (stdlib/dependency), find
-                // the last crate source line between function start and call site
+                // If call site points to non-crate code (stdlib/dependency), try to find
+                // the last crate source line between function start and call site.
+                // IMPORTANT: For archive (.o) files, func_addr may be section-relative (often 0),
+                // not absolute. In that case, skip range search to avoid matching wrong functions.
                 let (file, line, column) = if file
                     .as_ref()
                     .is_some_and(|f| !project_context.is_crate_source(f))
                 {
-                    // Try to find precise line in crate source
-                    if let Some(lt) = line_lookup.as_ref()
+                    // Only use range search if func_addr looks like an absolute address (> 0x1000)
+                    // For .o files with section-relative addresses, skip to avoid false matches
+                    if func_addr > 0x1000
+                        && let Some(lt) = line_lookup.as_ref()
                         && let Some((crate_file, crate_line, crate_col)) =
                             lt.get_crate_line_in_range(func_addr, call_site_addr, project_context)
                     {
                         (Some(crate_file), Some(crate_line), crate_col)
                     } else {
-                        // Fall back to function start address
-                        line_lookup
-                            .as_ref()
-                            .and_then(|lt| lt.lookup(func_addr))
-                            .unwrap_or((None, None, None))
+                        // For section-relative addresses or if range search fails,
+                        // we can't reliably find the crate line - skip this call site
+                        (None, None, None)
                     }
                 } else {
                     (file, line, column)

@@ -133,10 +133,16 @@ impl ProjectContext {
             // Relative path - check if it matches components in any source prefix
             // E.g., "examples/staticlib/src/lib.rs" should match ".../examples/staticlib/src/"
             self.source_prefixes.iter().any(|prefix| {
+                // Check if the full relative path is contained in the prefix
                 prefix.contains(file_path)
-                    || prefix
-                        .trim_end_matches('/')
-                        .ends_with(&file_path.rsplitn(2, '/').nth(1).unwrap_or("").to_string())
+                    // Or check if the prefix ends with the parent directory of the file
+                    || {
+                        if let Some((parent_dir, _)) = file_path.rsplit_once('/') {
+                            prefix.trim_end_matches('/').ends_with(parent_dir)
+                        } else {
+                            false
+                        }
+                    }
             })
         }
     }
@@ -144,6 +150,11 @@ impl ProjectContext {
     /// Get the absolute path to the project root.
     pub fn project_root(&self) -> &str {
         &self.project_root
+    }
+
+    /// Get the source prefixes (for debugging).
+    pub fn source_prefixes(&self) -> &[String] {
+        &self.source_prefixes
     }
 }
 
