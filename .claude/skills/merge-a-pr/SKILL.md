@@ -16,11 +16,26 @@ Check that integration tests were expanded to cover the changes.
 Check that tests and docs were updated to reflect any changes in the panic counts found or 
 the reason for the panics.
 
-## Anything left loose
+## Clean-up prior to Merge
 
-Check there are no uncommitted or unpushed changes or files present locally that are not in revision
-control or ignored. That could represent things forgotten, or the user wants to carry over to other
+Check there are no uncommitted changes or files present locally that are not in revision
+control or not ignored. examples would be .profraw profiling files, .o object files from
+working on an issue, other files created to debug issues.
+
+That could represent things forgotten, or the user wants to carry over to other
 work. Warn the user before causing any change that could lose it.
+
+Check there is no remaining debugging code that was added while working on the issue. Often it's
+marked with a comment containing "DEBUG:".
+
+Check there is no dead-code.
+
+Run:
+- cargo fmt
+- make clippy
+- make test
+
+Clean any files created in temporary directories such as "/tmp" or sub-folders not in version control.
 
 ## Merge the PR
 
