@@ -79,8 +79,8 @@ cargo test --release test_dylib_example
 cargo test --release test_rlib_example
 
 # Check what jonesy detects
-cd examples/dylib && ../../target/release/jonesy --lib
-cd examples/rlib && ../../target/release/jonesy --lib
+(cd examples/dylib && ../../target/release/jonesy --lib)
+(cd examples/rlib && ../../target/release/jonesy --lib)
 
 # Run all tests
 make test
