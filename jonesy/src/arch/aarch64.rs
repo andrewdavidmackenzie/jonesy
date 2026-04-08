@@ -20,9 +20,9 @@
 //!
 //! Both use PC-relative addressing with a 26-bit signed offset (±128MB range).
 
-use capstone::arch::arm64::ArchMode;
-use capstone::arch::BuildsCapstone;
 use capstone::Capstone;
+use capstone::arch::BuildsCapstone;
+use capstone::arch::arm64::ArchMode;
 use rayon::prelude::*;
 
 /// Extracted instruction data for parallel processing (avoids Insn lifetime issues).
@@ -44,6 +44,14 @@ const BL_OPCODE: u32 = 0x94000000;
 /// ARM64 B instruction mask: bits [31:26] must be 000101
 const B_MASK: u32 = 0xFC000000;
 const B_OPCODE: u32 = 0x14000000;
+
+// Relocation type constants
+
+/// MachO ARM64 relocation type for BL/B instructions (branch with 26-bit offset).
+pub(crate) const MACHO_RELOC_BRANCH26: u8 = 2;
+
+/// ELF ARM64 relocation type for BL/B instructions (call with 26-bit offset).
+pub(crate) const ELF_RELOC_CALL26: u32 = 283;
 
 /// Decode ARM64 BL/B instruction target address from raw bytes.
 /// BL encoding: 100101 imm26
