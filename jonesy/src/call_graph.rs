@@ -8,7 +8,6 @@ use capstone::arch::BuildsCapstone;
 use capstone::{Capstone, arch};
 use dashmap::DashMap;
 use goblin::elf::Elf;
-use goblin::elf::reloc::*;
 use goblin::mach::MachO;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
@@ -107,7 +106,7 @@ fn build_plt_map(elf: &Elf, buffer: &[u8]) -> HashMap<u64, u64> {
         }
 
         // Parse Rela structure (64-bit): r_offset (8), r_info (8), r_addend (8)
-        let r_offset = u64::from_le_bytes(rela_plt_data[offset..offset + 8].try_into().unwrap());
+        let _r_offset = u64::from_le_bytes(rela_plt_data[offset..offset + 8].try_into().unwrap());
         let r_info = u64::from_le_bytes(rela_plt_data[offset + 8..offset + 16].try_into().unwrap());
         let _r_addend =
             i64::from_le_bytes(rela_plt_data[offset + 16..offset + 24].try_into().unwrap());
