@@ -894,10 +894,7 @@ mod tests {
     fn test_build_plt_map_with_real_elf() {
         // Test with the dylib example binary if it exists
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let dylib_path = format!(
-            "{}/../../target/debug/libdylib_example.so",
-            manifest_dir
-        );
+        let dylib_path = format!("{}/../../target/debug/libdylib_example.so", manifest_dir);
 
         if let Ok(buffer) = std::fs::read(&dylib_path) {
             if let Ok(elf) = Elf::parse(&buffer) {
@@ -937,10 +934,7 @@ mod tests {
     fn test_build_plt_map_resolves_rust_panic() {
         // Test that rust_panic PLT stub is correctly mapped
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let dylib_path = format!(
-            "{}/../../target/debug/libdylib_example.so",
-            manifest_dir
-        );
+        let dylib_path = format!("{}/../../target/debug/libdylib_example.so", manifest_dir);
 
         if let Ok(buffer) = std::fs::read(&dylib_path) {
             if let Ok(elf) = Elf::parse(&buffer) {
