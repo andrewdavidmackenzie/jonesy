@@ -361,7 +361,6 @@ impl LibraryCallGraph {
                 // For .o files, use section name to disambiguate overlapping section-relative addresses
                 // target_name contains the section (e.g., ".text._ZN12rlib_example6module15cause_assert_eq...")
                 let (file, line, column) = if let Some(lt) = line_lookup.as_ref() {
-                    // Try section-aware lookup first (most precise for .o files)
                     lt.lookup_for_function_and_section(
                         call_site_addr,
                         &func_name,
@@ -383,22 +382,32 @@ impl LibraryCallGraph {
                 // If call site points to non-crate code (stdlib/dependency), try to find
                 // the last crate source line between function start and call site.
                 // IMPORTANT: For archive (.o) files, func_addr may be section-relative (often 0),
-                // not absolute. In that case, skip range search to avoid matching wrong functions.
+                // not absolute. In that case, use section-aware lookup instead of address range.
                 let (file, line, column) = if file
                     .as_ref()
                     .is_some_and(|f| !project_context.is_crate_source(f))
                 {
-                    // Only use range search if func_addr looks like an absolute address (> 0x1000)
-                    // For .o files with section-relative addresses, skip to avoid false matches
+                    // For absolute addresses (linked binaries), use address range search
                     if func_addr > 0x1000
                         && let Some(lt) = line_lookup.as_ref()
                         && let Some((crate_file, crate_line, crate_col)) =
                             lt.get_crate_line_in_range(func_addr, call_site_addr, project_context)
                     {
                         (Some(crate_file), Some(crate_line), crate_col)
+                    }
+                    // For section-relative addresses (.o files), use section-aware lookup
+                    else if let Some(lt) = line_lookup.as_ref()
+                        && let Some((crate_file, crate_line, crate_col)) = lt
+                            .get_crate_line_for_function_and_section(
+                                call_site_addr,
+                                &func_name,
+                                Some(target_name),
+                                project_context,
+                            )
+                    {
+                        (Some(crate_file), Some(crate_line), crate_col)
                     } else {
-                        // For section-relative addresses or if range search fails,
-                        // we can't reliably find the crate line - skip this call site
+                        // No fallback worked - skip this call site
                         (None, None, None)
                     }
                 } else {
