@@ -617,10 +617,6 @@ fn test_cdylib_example() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "Entry point detection issue - see PHASE6_HANDOFF.md"
-)]
 fn test_dylib_example() {
     setup();
     test_example("dylib");

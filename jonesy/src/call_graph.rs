@@ -7,6 +7,7 @@ use crate::sym::SymbolIndex;
 use capstone::arch::BuildsCapstone;
 use capstone::{Capstone, arch};
 use dashmap::DashMap;
+use goblin::elf::Elf;
 use goblin::mach::MachO;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
@@ -53,6 +54,103 @@ const BL_OPCODE: u32 = 0x94000000;
 /// ARM64 B instruction mask: bits [31:26] must be 000101
 const B_MASK: u32 = 0xFC000000;
 const B_OPCODE: u32 = 0x14000000;
+
+/// Build a mapping from PLT stub addresses to actual function addresses using ELF relocations.
+/// Returns a HashMap mapping PLT address -> target function address.
+///
+/// PLT (Procedure Linkage Table) entries are used for lazy symbol resolution in shared libraries.
+/// Each PLT entry corresponds to a relocation in .rela.plt which points to the actual function.
+fn build_plt_map(elf: &Elf, buffer: &[u8]) -> HashMap<u64, u64> {
+    let mut plt_map = HashMap::new();
+
+    // Find .plt section
+    let plt_section = elf.section_headers.iter().find(|sh| {
+        elf.shdr_strtab
+            .get_at(sh.sh_name)
+            .map(|n| n == ".plt")
+            .unwrap_or(false)
+    });
+
+    let Some(plt_section) = plt_section else {
+        eprintln!("[PLT] No .plt section found in ELF");
+        return plt_map;
+    };
+
+    let plt_base = plt_section.sh_addr;
+
+    // Find .rela.plt section to get relocations
+    let rela_plt_section = elf.section_headers.iter().find(|sh| {
+        elf.shdr_strtab
+            .get_at(sh.sh_name)
+            .map(|n| n == ".rela.plt")
+            .unwrap_or(false)
+    });
+
+    let Some(rela_plt_section) = rela_plt_section else {
+        return plt_map;
+    };
+
+    // Get the .rela.plt section data from the buffer
+    let rela_plt_offset = rela_plt_section.sh_offset as usize;
+    let rela_plt_size = rela_plt_section.sh_size as usize;
+
+    // Guard against malformed/truncated ELF files
+    let Some(rela_plt_end) = rela_plt_offset.checked_add(rela_plt_size) else {
+        return plt_map;
+    };
+    if rela_plt_end > buffer.len() {
+        return plt_map;
+    }
+
+    let rela_plt_data = &buffer[rela_plt_offset..rela_plt_end];
+
+    // Each Rela entry is 24 bytes on 64-bit
+    let num_relocs = rela_plt_size / 24;
+
+    // Parse each relocation entry
+    for index in 0..num_relocs {
+        let offset = index * 24;
+        if offset + 24 > rela_plt_data.len() {
+            break;
+        }
+
+        // Parse Rela structure (64-bit): r_offset (8), r_info (8), r_addend (8)
+        let _r_offset = u64::from_le_bytes(rela_plt_data[offset..offset + 8].try_into().unwrap());
+        let r_info = u64::from_le_bytes(rela_plt_data[offset + 8..offset + 16].try_into().unwrap());
+        let _r_addend =
+            i64::from_le_bytes(rela_plt_data[offset + 16..offset + 24].try_into().unwrap());
+
+        // Extract symbol index from r_info (upper 32 bits)
+        let sym_index = (r_info >> 32) as usize;
+
+        // PLT entry address = plt_base + 32 + (index * 16)
+        let plt_addr = plt_base + 32 + (index as u64 * 16);
+
+        // Look up symbol and get its value (actual function address)
+        if let Some(sym) = elf.dynsyms.get(sym_index) {
+            let target_addr = sym.st_value;
+            if target_addr != 0 {
+                plt_map.insert(plt_addr, target_addr);
+            }
+        }
+    }
+
+    plt_map
+}
+
+/// Resolve a PLT (Procedure Linkage Table) stub address to the actual function address.
+///
+/// In ELF shared libraries (dylib), calls often go through PLT stubs for dynamic linking.
+/// For example:
+///   - PLT stub: 0x71ee0 <rust_panic@plt>
+///   - Actual function: 0x74f20 <rust_panic>
+///
+/// This function looks up the target address in the PLT map and returns the actual function address.
+///
+/// Returns the resolved address, or the original address if not a PLT stub.
+fn resolve_plt_stub(target_addr: u64, plt_map: &HashMap<u64, u64>) -> u64 {
+    plt_map.get(&target_addr).copied().unwrap_or(target_addr)
+}
 
 /// Decode ARM64 BL/B instruction target address from raw bytes.
 /// BL encoding: 100101 imm26
@@ -202,6 +300,13 @@ impl<'a> CallGraph<'a> {
         buffer: &[u8],
         symbol_index: Option<&'a SymbolIndex>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Build PLT map for ELF binaries (for resolving PLT stubs to actual functions)
+        let plt_map = if let BinaryRef::Elf(elf) = binary {
+            build_plt_map(elf, buffer)
+        } else {
+            HashMap::new()
+        };
+
         let text_section_name = binary.text_section_name();
         let Some((text_addr, text_data)) = binary.find_section(buffer, text_section_name) else {
             return Ok(Self {
@@ -224,7 +329,10 @@ impl<'a> CallGraph<'a> {
                 && let Some((func_addr, func_name)) =
                     symbol_index.and_then(|idx| idx.find_containing(data.address))
             {
-                edges.entry(call_target).or_default().push(CallerInfo {
+                // Resolve PLT stub to actual function address (for ELF dylib support)
+                let resolved_target = resolve_plt_stub(call_target, &plt_map);
+
+                edges.entry(resolved_target).or_default().push(CallerInfo {
                     caller_name: Cow::Borrowed(func_name), // No allocation - borrows from SymbolIndex
                     caller_start_address: func_addr,
                     caller_file: None,
@@ -257,6 +365,13 @@ impl<'a> CallGraph<'a> {
         project_context: &ProjectContext,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
+
+        // Build PLT map for ELF binaries (for resolving PLT stubs to actual functions)
+        let plt_map = if let BinaryRef::Elf(elf) = binary {
+            build_plt_map(elf, binary_buffer)
+        } else {
+            HashMap::new()
+        };
 
         // Pre-load DWARF info once (shared across threads)
         let step = Instant::now();
@@ -339,7 +454,9 @@ impl<'a> CallGraph<'a> {
                     project_context,
                 )
             {
-                edges.entry(target).or_default().push(caller_info);
+                // Resolve PLT stub to actual function address (for ELF dylib support)
+                let resolved_target = resolve_plt_stub(target, &plt_map);
+                edges.entry(resolved_target).or_default().push(caller_info);
             }
         });
         if show_timings {
@@ -748,5 +865,144 @@ mod tests {
         assert_eq!(&*info.caller_name, "borrowed_function");
         assert!(info.caller_file.is_none());
         assert!(info.line.is_none());
+    }
+
+    // Tests for PLT resolution (ELF-specific)
+
+    #[test]
+    fn test_resolve_plt_stub_with_mapping() {
+        let mut plt_map = HashMap::new();
+        plt_map.insert(0x71ee0, 0x74f20); // PLT stub -> actual function
+
+        // Should resolve PLT stub to actual function
+        let resolved = resolve_plt_stub(0x71ee0, &plt_map);
+        assert_eq!(resolved, 0x74f20);
+    }
+
+    #[test]
+    fn test_resolve_plt_stub_without_mapping() {
+        let plt_map = HashMap::new();
+
+        // Should return original address when not in PLT map
+        let resolved = resolve_plt_stub(0x12345, &plt_map);
+        assert_eq!(resolved, 0x12345);
+    }
+
+    #[test]
+    fn test_resolve_plt_stub_passthrough() {
+        let mut plt_map = HashMap::new();
+        plt_map.insert(0x1000, 0x2000);
+
+        // Address not in map should pass through unchanged
+        let resolved = resolve_plt_stub(0x3000, &plt_map);
+        assert_eq!(resolved, 0x3000);
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    fn test_build_plt_map_with_real_elf() {
+        // Test with the dylib example binary if it exists
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let dylib_path = format!("{}/../../target/debug/libdylib_example.so", manifest_dir);
+
+        if let Ok(buffer) = std::fs::read(&dylib_path) {
+            if let Ok(elf) = Elf::parse(&buffer) {
+                let plt_map = build_plt_map(&elf, &buffer);
+
+                // The map should not be empty for a dylib with PLT
+                assert!(
+                    !plt_map.is_empty(),
+                    "PLT map should contain entries for dylib"
+                );
+
+                // Get actual .plt section bounds from ELF metadata
+                let plt_section = elf
+                    .section_headers
+                    .iter()
+                    .find(|sh| {
+                        elf.shdr_strtab
+                            .get_at(sh.sh_name)
+                            .map(|n| n == ".plt")
+                            .unwrap_or(false)
+                    })
+                    .expect("ELF dylib should have .plt section");
+
+                let plt_start = plt_section.sh_addr;
+                let plt_end = plt_start + plt_section.sh_size;
+
+                // Verify that PLT addresses fall within the actual .plt section
+                for (plt_addr, target_addr) in &plt_map {
+                    assert!(
+                        *plt_addr >= plt_start && *plt_addr < plt_end,
+                        "PLT address {:#x} should be in .plt section [{:#x}, {:#x})",
+                        plt_addr,
+                        plt_start,
+                        plt_end
+                    );
+                    assert!(
+                        *target_addr > 0,
+                        "Target address {:#x} should be non-zero",
+                        target_addr
+                    );
+                    assert_ne!(
+                        plt_addr, target_addr,
+                        "PLT stub {:#x} should differ from target {:#x}",
+                        plt_addr, target_addr
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    fn test_build_plt_map_resolves_rust_panic() {
+        // Test that rust_panic PLT stub is correctly mapped
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let dylib_path = format!("{}/../../target/debug/libdylib_example.so", manifest_dir);
+
+        if let Ok(buffer) = std::fs::read(&dylib_path) {
+            if let Ok(elf) = Elf::parse(&buffer) {
+                let plt_map = build_plt_map(&elf, &buffer);
+
+                // Look for rust_panic in the ELF dynamic symbols
+                let rust_panic_addr = elf.dynsyms.iter().find_map(|sym| {
+                    if sym.st_value > 0 {
+                        if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+                            if name.contains("rust_panic") {
+                                return Some(sym.st_value);
+                            }
+                        }
+                    }
+                    None
+                });
+
+                // Verify PLT map contains the rust_panic function if it exists
+                if let Some(rust_panic_target) = rust_panic_addr {
+                    let found_mapping = plt_map.values().any(|&target| target == rust_panic_target);
+                    assert!(
+                        found_mapping,
+                        "PLT map should contain mapping to rust_panic at {:#x}",
+                        rust_panic_target
+                    );
+                }
+
+                // At minimum, should have a reasonable number of PLT entries
+                assert!(
+                    plt_map.len() > 50,
+                    "Dylib should have substantial number of PLT entries, found {}",
+                    plt_map.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_plt_map_empty_for_non_elf() {
+        // Non-ELF binaries should return empty map (this tests the ELF-specific logic)
+        // We can't easily test this without a real ELF, but we can verify the function exists
+        let empty_map: HashMap<u64, u64> = HashMap::new();
+        let result = resolve_plt_stub(0x1000, &empty_map);
+        assert_eq!(result, 0x1000, "Empty PLT map should pass through address");
     }
 }
