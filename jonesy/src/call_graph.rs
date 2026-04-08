@@ -93,7 +93,16 @@ fn build_plt_map(elf: &Elf, buffer: &[u8]) -> HashMap<u64, u64> {
     // Get the .rela.plt section data from the buffer
     let rela_plt_offset = rela_plt_section.sh_offset as usize;
     let rela_plt_size = rela_plt_section.sh_size as usize;
-    let rela_plt_data = &buffer[rela_plt_offset..rela_plt_offset + rela_plt_size];
+
+    // Guard against malformed/truncated ELF files
+    let Some(rela_plt_end) = rela_plt_offset.checked_add(rela_plt_size) else {
+        return plt_map;
+    };
+    if rela_plt_end > buffer.len() {
+        return plt_map;
+    }
+
+    let rela_plt_data = &buffer[rela_plt_offset..rela_plt_end];
 
     // Each Rela entry is 24 bytes on 64-bit
     let num_relocs = rela_plt_size / 24;
@@ -906,13 +915,29 @@ mod tests {
                     "PLT map should contain entries for dylib"
                 );
 
-                // Verify that PLT addresses are in the expected range
-                // (PLT section typically starts around 0x71940 for this binary)
+                // Get actual .plt section bounds from ELF metadata
+                let plt_section = elf
+                    .section_headers
+                    .iter()
+                    .find(|sh| {
+                        elf.shdr_strtab
+                            .get_at(sh.sh_name)
+                            .map(|n| n == ".plt")
+                            .unwrap_or(false)
+                    })
+                    .expect("ELF dylib should have .plt section");
+
+                let plt_start = plt_section.sh_addr;
+                let plt_end = plt_start + plt_section.sh_size;
+
+                // Verify that PLT addresses fall within the actual .plt section
                 for (plt_addr, target_addr) in &plt_map {
                     assert!(
-                        *plt_addr > 0x70000 && *plt_addr < 0x80000,
-                        "PLT address {:#x} should be in PLT section range",
-                        plt_addr
+                        *plt_addr >= plt_start && *plt_addr < plt_end,
+                        "PLT address {:#x} should be in .plt section [{:#x}, {:#x})",
+                        plt_addr,
+                        plt_start,
+                        plt_end
                     );
                     assert!(
                         *target_addr > 0,
@@ -940,24 +965,33 @@ mod tests {
             if let Ok(elf) = Elf::parse(&buffer) {
                 let plt_map = build_plt_map(&elf, &buffer);
 
-                // Look for rust_panic in the ELF dynamic symbols to verify mapping exists
-                let mut found_rust_panic_mapping = false;
-                for (plt_addr, target_addr) in &plt_map {
-                    // Check if this maps to the rust_panic function (around 0x74f20)
-                    if *target_addr > 0x74000 && *target_addr < 0x75000 {
-                        // Verify it's mapped from a PLT stub
-                        assert!(
-                            *plt_addr < *target_addr,
-                            "PLT stub should have lower address than function"
-                        );
-                        found_rust_panic_mapping = true;
+                // Look for rust_panic in the ELF dynamic symbols
+                let rust_panic_addr = elf.dynsyms.iter().find_map(|sym| {
+                    if sym.st_value > 0 {
+                        if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+                            if name.contains("rust_panic") {
+                                return Some(sym.st_value);
+                            }
+                        }
                     }
+                    None
+                });
+
+                // Verify PLT map contains the rust_panic function if it exists
+                if let Some(rust_panic_target) = rust_panic_addr {
+                    let found_mapping = plt_map.values().any(|&target| target == rust_panic_target);
+                    assert!(
+                        found_mapping,
+                        "PLT map should contain mapping to rust_panic at {:#x}",
+                        rust_panic_target
+                    );
                 }
 
-                // Should have found at least one panic-related mapping
+                // At minimum, should have a reasonable number of PLT entries
                 assert!(
-                    found_rust_panic_mapping || plt_map.len() > 100,
-                    "Should have PLT mappings for panic functions or a reasonable number of entries"
+                    plt_map.len() > 50,
+                    "Dylib should have substantial number of PLT entries, found {}",
+                    plt_map.len()
                 );
             }
         }
