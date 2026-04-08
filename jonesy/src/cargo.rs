@@ -238,6 +238,46 @@ fn check_manifest_for_binary(manifest: &Manifest, bin_name: &str) -> Option<Stri
     None
 }
 
+/// Search workspace members to find the crate directory for a library by its name.
+/// Returns the absolute path to the crate directory (e.g., "/path/to/workspace/examples/cdylib").
+pub fn find_lib_crate_dir(workspace_root: &Path, lib_name: &str) -> Option<PathBuf> {
+    let cargo_toml = workspace_root.join("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).ok()?;
+    let manifest = Manifest::from_slice(content.as_bytes()).ok()?;
+
+    let workspace = manifest.workspace.as_ref()?;
+
+    for member_pattern in &workspace.members {
+        let member_paths = expand_workspace_members(workspace_root, member_pattern);
+
+        for member_path in member_paths {
+            let member_cargo_toml = member_path.join("Cargo.toml");
+            if !member_cargo_toml.exists() {
+                continue;
+            }
+
+            if let Ok(member_content) = fs::read_to_string(&member_cargo_toml)
+                && let Ok(member_manifest) = Manifest::from_slice(member_content.as_bytes())
+                && let Some(lib) = &member_manifest.lib
+            {
+                let manifest_lib_name = lib
+                    .name
+                    .clone()
+                    .or_else(|| member_manifest.package.as_ref().map(|p| p.name.clone()))
+                    .unwrap_or_default();
+
+                // Check if this lib matches the target name
+                if manifest_lib_name == lib_name || manifest_lib_name.replace('-', "_") == lib_name
+                {
+                    return Some(member_path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Search workspace members to find the source path for a library by its name.
 /// Returns the relative path to the src directory (e.g., "examples/cdylib/src/").
 pub fn find_lib_src_path(workspace_root: &Path, lib_name: &str) -> Option<String> {

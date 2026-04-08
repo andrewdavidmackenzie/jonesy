@@ -5,3 +5,4 @@
 modules.xml
 vcs.xml
 **/*.profraw
+**/*.o

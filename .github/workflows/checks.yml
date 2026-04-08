@@ -1,4 +1,4 @@
-name: CI
+name: Code Checks
 
 on:
   push:
@@ -11,10 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-latest]
+        os: [macos-14, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -26,6 +26,3 @@ jobs:
 
       - name: Run clippy
         run: make clippy
-
-      - name: Run tests (includes build)
-        run: make test

@@ -30,7 +30,7 @@ jobs:
     if: github.repository != 'andrewdavidmackenzie/jonesy'
     runs-on: macos-latest  # jonesy requires macOS (Mach-O binary analysis)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Install Rust
         uses: dtolnay/rust-action@stable

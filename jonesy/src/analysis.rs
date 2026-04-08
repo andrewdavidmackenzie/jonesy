@@ -291,6 +291,7 @@ pub fn analyze_binary_target(
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
+    binary_path: &Path,
     show_timings: bool,
     config: &Config,
     output: &OutputFormat,
@@ -309,10 +310,48 @@ pub fn analyze_archive(
     // Build a merged call graph from all .o files in the archive
     let mut merged_graph = LibraryCallGraph::empty();
 
+    // Get the library name to filter out stdlib/dependency .o files
+    // For performance: only process .o files from the user's library
+    // Extract library name from binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
+    // Note: .o files are named using the library name (from [lib] name in Cargo.toml),
+    // not the package name, so we use lib_name directly for filtering
+    let lib_name = binary_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("lib"))
+        .unwrap_or("");
+
+    if show_progress {
+        eprintln!("  DEBUG: lib_name = '{}'", lib_name);
+    }
+
+    let mut skipped_count = 0;
+    let mut processed_count = 0;
+    let mut sample_kept = Vec::new();
+    let mut sample_skipped = Vec::new();
+
     for member_name in archive.members() {
         // Skip non-object files (like .rmeta)
         if !member_name.ends_with(".o") {
             continue;
+        }
+
+        // Skip stdlib and dependency .o files - only process user library files
+        // .o file names follow pattern: <lib_name>-<hash>.<module>.<hash>-cgu.<number>.rcgu.o
+        // where lib_name matches the library name (e.g., "staticlib_example", "multi_bin_lib")
+        if !lib_name.is_empty() {
+            let normalized_lib_name = lib_name.replace('-', "_");
+            if !member_name.starts_with(&normalized_lib_name)
+                && !member_name.starts_with(&format!("{}-", lib_name))
+            {
+                if sample_skipped.len() < 2 {
+                    sample_skipped.push(member_name.to_string());
+                }
+                skipped_count += 1;
+                continue;
+            } else if sample_kept.len() < 5 {
+                sample_kept.push(member_name.to_string());
+            }
         }
 
         // Extract the member data
@@ -332,7 +371,10 @@ pub fn analyze_archive(
                 let binary_ref = BinaryRef::MachO(&obj_macho);
                 match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
                 {
-                    Ok(obj_graph) => merged_graph.merge(obj_graph),
+                    Ok(obj_graph) => {
+                        merged_graph.merge(obj_graph);
+                        processed_count += 1;
+                    }
                     Err(e) => {
                         if show_progress {
                             eprintln!(
@@ -347,7 +389,10 @@ pub fn analyze_archive(
                 let binary_ref = BinaryRef::Elf(&obj_elf);
                 match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
                 {
-                    Ok(obj_graph) => merged_graph.merge(obj_graph),
+                    Ok(obj_graph) => {
+                        merged_graph.merge(obj_graph);
+                        processed_count += 1;
+                    }
                     Err(e) => {
                         if show_progress {
                             eprintln!(
@@ -364,6 +409,25 @@ pub fn analyze_archive(
                 }
             }
         }
+    }
+
+    if show_progress {
+        if !sample_kept.is_empty() {
+            eprintln!("  DEBUG: Sample kept files:");
+            for file in &sample_kept {
+                eprintln!("    {}", file);
+            }
+        }
+        if !sample_skipped.is_empty() {
+            eprintln!("  DEBUG: Sample skipped files:");
+            for file in &sample_skipped {
+                eprintln!("    {}", file);
+            }
+        }
+        eprintln!(
+            "  Processed {} .o files ({} stdlib/dependency files skipped)",
+            processed_count, skipped_count
+        );
     }
 
     if let Some(step_start) = step_start {
