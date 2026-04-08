@@ -415,4 +415,53 @@ impl ObjectLineTable {
 
         None
     }
+
+    /// Find the last crate source line entry for a specific function/section up to call_site_addr.
+    /// This works for .o files with section-relative addresses (where func_addr may be 0).
+    ///
+    /// # Arguments
+    /// * `call_site_addr` - The call site address (section-relative for .o files)
+    /// * `function_name` - Function name for matching
+    /// * `section_name` - Optional section name for precise matching
+    /// * `project_context` - Project context to identify crate source files
+    pub(crate) fn get_crate_line_for_function_and_section(
+        &self,
+        call_site_addr: u64,
+        function_name: &str,
+        section_name: Option<&str>,
+        project_context: &ProjectContext,
+    ) -> Option<(String, u32, Option<u32>)> {
+        if self.entries.is_empty() {
+            return None;
+        }
+
+        // Extract the plain function name (last component after ::)
+        let plain_name = function_name.rsplit("::").next().unwrap_or(function_name);
+
+        // Find all entries for this function/section up to call_site_addr
+        let candidates: Vec<&ObjectLineEntry> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                e.address <= call_site_addr
+                    && e.function_name
+                        .as_ref()
+                        .is_some_and(|f| f.contains(plain_name) || f.contains(function_name))
+                    && (section_name.is_none()
+                        || e.section_name.as_deref() == section_name
+                        || e.section_name
+                            .as_ref()
+                            .is_some_and(|s| section_name.is_some_and(|sn| s.contains(sn))))
+            })
+            .collect();
+
+        // Search backwards through candidates to find the last crate source entry
+        for entry in candidates.iter().rev() {
+            if project_context.is_crate_source(&entry.file) {
+                return Some((entry.file.clone(), entry.line, entry.column));
+            }
+        }
+
+        None
+    }
 }
