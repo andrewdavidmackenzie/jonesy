@@ -314,7 +314,7 @@ jobs:
 - [ ] **Step 2: Commit**
 
 ```bash
-git add .github/workflows/ci.yml
+git add .github/workflows/checks.yml
 git commit -m "ci: add Linux to CI matrix (build + clippy)"
 ```
 
