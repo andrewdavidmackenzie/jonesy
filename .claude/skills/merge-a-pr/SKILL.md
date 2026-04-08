@@ -52,3 +52,4 @@ Ensure that the remote branch is also deleted along with the local branch.
 If everything is OK, then wait 5 seconds and then check out the master/main branch and git pull. 
 Check that the commits in the PR are present and everything is OK.
 Check that all checks pass by running "make test".
+Delete the feature branch that was merged, locally and remote.
