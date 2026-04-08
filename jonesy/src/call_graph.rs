@@ -77,12 +77,8 @@ impl<'a> CallGraph<'a> {
             });
         };
 
-        // Parallel disassembly - divides text section into chunks (ARM64 only)
-        #[cfg(target_arch = "aarch64")]
+        // Parallel disassembly - divides text section into chunks
         let insn_data = arch::parallel_disassemble(text_data, text_addr);
-
-        #[cfg(not(target_arch = "aarch64"))]
-        let insn_data = arch::sequential_disassemble(text_data, text_addr);
 
         // Process bl instructions in parallel (the expensive part is function lookup)
         let edges: DashMap<u64, Vec<CallerInfo<'a>>> = DashMap::new();
@@ -175,11 +171,7 @@ impl<'a> CallGraph<'a> {
 
         // Parallel disassembly - divides text section into chunks (ARM64 only)
         let step = Instant::now();
-        #[cfg(target_arch = "aarch64")]
         let insn_data = arch::parallel_disassemble(text_data, text_addr);
-
-        #[cfg(not(target_arch = "aarch64"))]
-        let insn_data = arch::sequential_disassemble(text_data, text_addr);
         if show_timings {
             // insn_data contains only BL/B branch instructions (not all instructions)
             eprintln!(

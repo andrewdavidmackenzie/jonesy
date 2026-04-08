@@ -20,19 +20,16 @@
 //!
 //! Both use PC-relative addressing with a 26-bit signed offset (±128MB range).
 
-use capstone::Capstone;
-use capstone::arch::BuildsCapstone;
-use capstone::arch::arm64::ArchMode;
 use rayon::prelude::*;
 
 /// Extracted instruction data for parallel processing (avoids Insn lifetime issues).
 pub(crate) struct InsnData {
-    pub address: u64,
-    pub call_target: Option<u64>,
+    pub(crate) address: u64,
+    pub(crate) call_target: Option<u64>,
 }
 
 /// ARM64 instruction size in bytes (fixed-size ISA).
-pub const INSN_SIZE: usize = 4;
+const INSN_SIZE: usize = 4;
 
 /// Minimum chunk size for parallel disassembly (avoid overhead for small sections).
 const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
@@ -95,7 +92,6 @@ pub(crate) fn scan_branch_instructions(data: &[u8], base_addr: u64) -> Vec<InsnD
 /// BL = branch with link (function calls)
 /// B = unconditional branch (tail calls to other functions)
 /// Directly scans raw bytes for patterns - no disassembly needed.
-/// This is much faster than using Capstone for full disassembly.
 pub(crate) fn parallel_disassemble(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
     let num_threads = rayon::current_num_threads();
 
@@ -132,39 +128,6 @@ pub(crate) fn parallel_disassemble(text_data: &[u8], text_addr: u64) -> Vec<Insn
 
     // Flatten results from all chunks
     results.into_iter().flatten().collect()
-}
-
-/// Sequential disassembly using Capstone - kept for non-ARM64 platforms.
-#[allow(dead_code)]
-pub(crate) fn sequential_disassemble(text_data: &[u8], text_addr: u64) -> Vec<InsnData> {
-    let Ok(cs) = Capstone::new().arm64().mode(ArchMode::Arm).build() else {
-        eprintln!("Warning: failed to initialize Capstone disassembler");
-        return Vec::new();
-    };
-
-    let Ok(instructions) = cs.disasm_all(text_data, text_addr) else {
-        eprintln!("Warning: disassembly failed for text section at {text_addr:#x}");
-        return Vec::new();
-    };
-
-    instructions
-        .iter()
-        .filter_map(|insn| {
-            // Match both BL (branch with link) and B (branch) for tail call detection
-            let mnemonic = insn.mnemonic();
-            if mnemonic == Some("bl") || mnemonic == Some("b") {
-                let operand = insn.op_str()?;
-                let addr_str = operand.trim_start_matches("#0x");
-                let call_target = u64::from_str_radix(addr_str, 16).ok();
-                Some(InsnData {
-                    address: insn.address(),
-                    call_target,
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 /// PLT (Procedure Linkage Table) resolution for ELF shared libraries.
@@ -517,31 +480,6 @@ mod tests {
     #[test]
     fn test_parallel_disassemble_empty() {
         let results = parallel_disassemble(&[], 0x1000);
-        assert!(results.is_empty());
-    }
-
-    // Tests for sequential_disassemble
-    #[test]
-    fn test_sequential_disassemble_bl_instruction() {
-        // BL +8 at address 0x1000
-        let code: Vec<u8> = 0x94000002_u32.to_le_bytes().to_vec();
-        let results = sequential_disassemble(&code, 0x1000);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].address, 0x1000);
-        assert!(results[0].call_target.is_some());
-    }
-
-    #[test]
-    fn test_sequential_disassemble_non_branch() {
-        // MOV x0, x1 — not a branch
-        let code: Vec<u8> = 0xAA0103E0_u32.to_le_bytes().to_vec();
-        let results = sequential_disassemble(&code, 0x1000);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn test_sequential_disassemble_empty() {
-        let results = sequential_disassemble(&[], 0x1000);
         assert!(results.is_empty());
     }
 }
