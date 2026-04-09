@@ -1,5 +1,6 @@
 #![allow(unused_variables)] // TODO Just for now
 
+use crate::arch;
 use crate::binary_format::BinaryRef;
 use crate::call_graph::CallerInfo;
 use crate::function_index::load_dwarf_sections;
@@ -13,12 +14,6 @@ use regex::Regex;
 use rustc_demangle::demangle;
 use std::borrow::Cow;
 use std::collections::HashMap;
-
-/// ARM64 relocation type for BL/B instructions (branch with 26-bit offset)
-const ARM64_RELOC_BRANCH26: u8 = 2;
-
-/// ELF ARM64 relocation type for BL/B instructions (call with 26-bit offset)
-const R_AARCH64_CALL26: u32 = 283;
 
 /// Call graph for library analysis - uses symbol names instead of addresses.
 /// This allows cross-object-file resolution in archives (rlib/staticlib).
@@ -115,7 +110,7 @@ impl LibraryCallGraph {
                         };
 
                         // Only process ARM64_RELOC_BRANCH26 (BL/B instructions)
-                        if reloc_info.r_type() != ARM64_RELOC_BRANCH26 {
+                        if reloc_info.r_type() != arch::MACHO_RELOC_BRANCH26 {
                             continue;
                         }
 
@@ -327,7 +322,7 @@ impl LibraryCallGraph {
                 let r_sym = (r_info >> 32) as usize;
 
                 // Only process R_AARCH64_CALL26 relocations
-                if r_type != R_AARCH64_CALL26 {
+                if r_type != arch::ELF_RELOC_CALL26 {
                     continue;
                 }
 
