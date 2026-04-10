@@ -7,9 +7,7 @@ can originate in their code.
 
 **[Documentation](https://jonesy.mackenzie-serres.net/)** | **[Panic Reference](https://jonesy.mackenzie-serres.net/panics/)**
 
-Focus is currently on getting something useful working. I work on macOS and ARM64, so that's what implemented, but I
-definitely want to make it
-cross-platform and multi-architecture in the future, but will probably need help from others on Linux and Mac.
+Jonesy supports macOS and Linux on both aarch64 (ARM64) and x86_64 architectures.
 
 ## Installation
 
@@ -40,12 +38,13 @@ cargo install --path jonesy
 Download the latest release from [GitHub Releases](https://github.com/andrewdavidmackenzie/jonesy/releases):
 
 ```bash
+# macOS ARM64 (Apple Silicon)
 curl -LO https://github.com/andrewdavidmackenzie/jonesy/releases/latest/download/jonesy-macos-arm64
 chmod +x jonesy-macos-arm64
 mv jonesy-macos-arm64 /usr/local/bin/jonesy
 ```
 
-> **Note:** Currently only macOS ARM64 (Apple Silicon) is supported.
+> **Supported platforms:** macOS (aarch64), Linux (aarch64, x86_64)
 
 ## Usage
 

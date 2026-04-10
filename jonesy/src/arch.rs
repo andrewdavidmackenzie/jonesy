@@ -33,13 +33,19 @@
 //! - PLT entry layout and size (ELF shared libraries)
 
 // Compile-time error for unsupported architectures
-#[cfg(not(target_arch = "aarch64"))]
-compile_error!("jonesy only supports aarch64 architecture");
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("jonesy only supports aarch64 and x86_64 architectures");
 
 // Architecture-specific modules
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;
 
+#[cfg(target_arch = "x86_64")]
+pub mod x86_64;
+
 // Re-export the current architecture's functionality
 #[cfg(target_arch = "aarch64")]
 pub use self::aarch64::*;
+
+#[cfg(target_arch = "x86_64")]
+pub use self::x86_64::*;

@@ -321,8 +321,8 @@ impl LibraryCallGraph {
                 let r_type = (r_info & 0xffffffff) as u32;
                 let r_sym = (r_info >> 32) as usize;
 
-                // Only process R_AARCH64_CALL26 relocations
-                if r_type != arch::ELF_RELOC_CALL26 {
+                // Only process call/branch relocations (BL/B on aarch64, CALL on x86_64)
+                if !arch::is_call_relocation(r_type) {
                     continue;
                 }
 

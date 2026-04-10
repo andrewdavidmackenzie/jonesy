@@ -42,7 +42,7 @@ reuse them if they can be with minimal changes
 
 ## Coding Rules
 
-- **macOS and Linux aarch64 only** — jonesy supports macOS and Linux on aarch64.
+- **macOS and Linux on aarch64 and x86_64** — jonesy supports macOS and Linux on both aarch64 and x86_64.
   Don't add support for other architectures or operating systems.
 - **Heuristics belong in `heuristics.rs`** — detection logic based on stdlib function
   names or file paths (e.g., `detect_panic_cause`, `is_panic_triggering_function`)
