@@ -168,6 +168,11 @@ pub(crate) const MACHO_RELOC_BRANCH26: u8 = 2;
 /// ELF relocation type for x86_64 PC-relative calls (R_X86_64_PLT32)
 pub(crate) const ELF_RELOC_CALL26: u32 = 4;
 
+/// Check if relocation type represents a function call.
+pub(crate) fn is_call_relocation(r_type: u32) -> bool {
+    r_type == 4 // R_X86_64_PLT32
+}
+
 /// GOT (Global Offset Table) resolution for x86_64 indirect calls.
 ///
 /// On x86_64 Linux, external function calls often go through the GOT:
