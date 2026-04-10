@@ -170,7 +170,7 @@ pub(crate) const ELF_RELOC_CALL26: u32 = 4;
 
 /// Check if relocation type represents a function call.
 pub(crate) fn is_call_relocation(r_type: u32) -> bool {
-    r_type == 4 // R_X86_64_PLT32
+    r_type == ELF_RELOC_CALL26
 }
 
 /// GOT (Global Offset Table) resolution for x86_64 indirect calls.
