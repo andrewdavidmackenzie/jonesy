@@ -326,11 +326,7 @@ pub fn analyze_archive(
     }
 
     // Collect member names for parallel processing
-    let all_members: Vec<String> = archive
-        .members()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let all_members: Vec<String> = archive.members().iter().map(|s| s.to_string()).collect();
 
     // Filter and categorize members
     let mut member_names = Vec::new();
@@ -367,27 +363,31 @@ pub fn analyze_archive(
 
     // Pre-extract all member data to avoid potential serialization in archive.extract()
     if show_progress {
-        eprintln!("  Extracting {} .o files from archive...", member_names.len());
+        eprintln!(
+            "  Extracting {} .o files from archive...",
+            member_names.len()
+        );
     }
     let extraction_start = show_timings.then(Instant::now);
 
     let member_data_list: Vec<(String, Vec<u8>)> = member_names
         .iter()
-        .filter_map(|member_name| {
-            match archive.extract(member_name, buffer) {
-                Ok(data) => Some((member_name.clone(), data.to_vec())),
-                Err(e) => {
-                    if show_progress {
-                        eprintln!("  Warning: Failed to extract {}: {}", member_name, e);
-                    }
-                    None
+        .filter_map(|member_name| match archive.extract(member_name, buffer) {
+            Ok(data) => Some((member_name.clone(), data.to_vec())),
+            Err(e) => {
+                if show_progress {
+                    eprintln!("  Warning: Failed to extract {}: {}", member_name, e);
                 }
+                None
             }
         })
         .collect();
 
     if let Some(extraction_start) = extraction_start {
-        eprintln!("  [timing] Extract .o files: {:?}", extraction_start.elapsed());
+        eprintln!(
+            "  [timing] Extract .o files: {:?}",
+            extraction_start.elapsed()
+        );
     }
 
     // Process .o files in parallel
@@ -395,7 +395,10 @@ pub fn analyze_archive(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     if show_progress {
-        eprintln!("  Processing {} .o files in parallel...", member_data_list.len());
+        eprintln!(
+            "  Processing {} .o files in parallel...",
+            member_data_list.len()
+        );
     }
     let processing_start = show_timings.then(Instant::now);
 
@@ -409,29 +412,37 @@ pub fn analyze_archive(
             let result = match goblin::Object::parse(member_data.as_slice()) {
                 Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(obj_macho))) => {
                     let binary_ref = BinaryRef::MachO(&obj_macho);
-                    LibraryCallGraph::build_from_object(&binary_ref, member_data.as_slice(), project_context)
-                        .map_err(|e| {
-                            if show_progress {
-                                eprintln!(
-                                    "  Warning: Failed to build call graph for {}: {}",
-                                    member_name, e
-                                );
-                            }
-                        })
-                        .ok()
+                    LibraryCallGraph::build_from_object(
+                        &binary_ref,
+                        member_data.as_slice(),
+                        project_context,
+                    )
+                    .map_err(|e| {
+                        if show_progress {
+                            eprintln!(
+                                "  Warning: Failed to build call graph for {}: {}",
+                                member_name, e
+                            );
+                        }
+                    })
+                    .ok()
                 }
                 Ok(goblin::Object::Elf(obj_elf)) => {
                     let binary_ref = BinaryRef::Elf(&obj_elf);
-                    LibraryCallGraph::build_from_object(&binary_ref, member_data.as_slice(), project_context)
-                        .map_err(|e| {
-                            if show_progress {
-                                eprintln!(
-                                    "  Warning: Failed to build call graph for {}: {}",
-                                    member_name, e
-                                );
-                            }
-                        })
-                        .ok()
+                    LibraryCallGraph::build_from_object(
+                        &binary_ref,
+                        member_data.as_slice(),
+                        project_context,
+                    )
+                    .map_err(|e| {
+                        if show_progress {
+                            eprintln!(
+                                "  Warning: Failed to build call graph for {}: {}",
+                                member_name, e
+                            );
+                        }
+                    })
+                    .ok()
                 }
                 _ => {
                     if show_progress {
@@ -452,7 +463,10 @@ pub fn analyze_archive(
         .collect();
 
     if let Some(processing_start) = processing_start {
-        eprintln!("  [timing] Process .o files (parallel): {:?}", processing_start.elapsed());
+        eprintln!(
+            "  [timing] Process .o files (parallel): {:?}",
+            processing_start.elapsed()
+        );
     }
 
     // Merge all graphs sequentially (fast operation)
