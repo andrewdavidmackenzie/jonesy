@@ -1,0 +1,92 @@
+========================================
+Jonesy Performance Benchmark
+========================================
+
+Platform: Darwin arm64
+Date: 2026-04-11T17:50:54Z
+
+CPU: Apple M2 Pro
+Cores: 12
+
+rustc 1.94.0 (4a4ef493e 2026-03-02)
+cargo 1.94.0 (85eff7c80 2026-01-15)
+
+Building jonesy (release)...
+Jonesy: jonesy 0.8.0
+
+========================================
+
+Benchmarking: simple_panic
+Binary size: 440K
+  Times: min=0.041s, median=0.042s, max=0.044s
+  Panic points detected: 41
+1
+
+Benchmarking: panic
+Binary size: 703K
+  Times: min=0.047s, median=0.048s, max=0.050s
+  Panic points detected: 8
+1
+
+Benchmarking: perfect
+Binary size: 468K
+  Times: min=0.040s, median=0.041s, max=0.043s
+  Panic points detected: 0
+0
+
+Benchmarking: rlib_example
+Binary size: 416K
+  Times: min=0.029s, median=0.030s, max=0.032s
+  Panic points detected: 21
+2
+
+⊘ Skipping dylib_example (binary not found: target/debug/libdylib_example.so)
+
+Benchmarking: staticlib_example
+Binary size: 16M
+  Times: min=0.010s, median=0.011s, max=0.012s
+  Panic points detected: 1
+1
+
+⊘ Skipping workspace_test_main (binary not found: target/debug/workspace_test_main)
+
+Benchmarking: meshchat/meshchat
+Binary size: 68M
+  Times: min=2.067s, median=2.085s, max=8.858s
+  Panic points detected: 135
+15
+
+Benchmarking: flow/flowc
+Binary size: 7.2M
+  Times: min=1.326s, median=1.330s, max=1.334s
+  Panic points detected: 781
+38
+
+Benchmarking: flow/flowrcli
+Binary size: 27M
+  Times: min=2.083s, median=2.087s, max=2.114s
+  Panic points detected: 931
+76
+
+Benchmarking: flow/flowrex
+Binary size: 19M
+  Times: min=1.059s, median=1.061s, max=1.067s
+  Panic points detected: 357
+45
+
+Benchmarking: flow/flowrgui
+Binary size: 33M
+  Times: min=2.364s, median=2.364s, max=2.394s
+  Panic points detected: 912
+78
+
+Benchmarking: flow/flowc
+Binary size: 7.2M
+  Times: min=1.337s, median=1.337s, max=1.337s
+  Panic points detected: 781
+38
+
+========================================
+Benchmark complete!
+Results saved to: benchmark_results_Darwin-arm64_20260411_195054.txt
+========================================
