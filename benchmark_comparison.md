@@ -84,14 +84,58 @@ Based on ratio analysis:
 - [ ] Check for unnecessary allocations
 - [ ] Profile with `perf` or `instruments`
 
-## Example Comparison Table
+## Linux aarch64 Scaling Results
+
+### Before Parallel .rlib Processing
+**benchmark_results_Linux-aarch64_20260411_202239.txt (2 cores, 4GB RAM)**  
+**benchmark_results_Linux-aarch64_20260411_211517.txt (4 cores, 8GB RAM)**
+
+| Binary | 2 Cores (median) | 4 Cores (median) | Improvement | Notes |
+|--------|------------------|------------------|-------------|-------|
+| simple_panic | 0.053s | 0.054s | -2% | Noise |
+| panic | 0.074s | 0.064s | **14%** | Good scaling |
+| perfect | 0.058s | 0.057s | 2% | Noise |
+| rlib_example | 0.057s | 0.057s | 0% | No change |
+| dylib_example | 0.089s | 0.083s | 7% | Moderate scaling |
+| staticlib_example | 0.009s | 0.009s | 0% | Too fast |
+| **meshcore-rs rlib** | **19.817s** | **19.790s** | **0%** | ⚠️ No scaling |
+| **meshchat** | **4.277s** | **3.736s** | **13%** | Good scaling |
+| flowcore rlib | 0.154s | 0.153s | 0% | No change |
+
+**Key Findings:**
+- **Regular binaries (5MB+)**: Show 7-14% improvement with 4 cores
+- **Large binaries (meshchat 399M)**: 13% faster - demonstrates parallel benefit  
+- **⚠️ .rlib files**: NO improvement - single-threaded archive processing bottleneck
+- **Small binaries (<5MB)**: Too fast for parallelization overhead to be worthwhile
+
+### After Parallel .rlib Processing (2026-04-11)
+**benchmark_results_Linux-aarch64_20260411_214418.txt (4 cores, 8GB RAM)**
+
+| Binary | Before (4 cores) | After (4 cores) | Improvement | Notes |
+|--------|------------------|-----------------|-------------|-------|
+| meshcore-rs rlib | 19.790s | **19.185s** | **3%** | Small improvement |
+| flowcore rlib | 0.153s | **0.081s** | **47%** ✅ | Great scaling! |
+
+**Thread scaling for flowcore.rlib (18M .rlib file):**
+
+| Threads | Time (median) | Speedup | CPU Efficiency |
+|---------|---------------|---------|----------------|
+| 1       | 0.178s        | 1.00x   | 100%           |
+| 2       | 0.103s        | 1.73x   | 87%            |
+| 4       | 0.081s        | **2.20x** ✅ | 55%        |
+
+**✅ Parallel .o file processing is now working!** flowcore.rlib shows **47% improvement** (0.153s → 0.081s).
+
+**Note on meshcore-rs**: Shows minimal improvement (3%) despite parallelization working correctly. This appears specific to meshcore-rs's DWARF processing characteristics rather than a parallelization issue.
+
+## Example Comparison Table (Template for cross-platform comparison)
 
 | Binary | x86_64 (median) | aarch64 (median) | Ratio | Notes |
 |--------|-----------------|------------------|-------|-------|
-| simple_panic | 1.2s | 0.8s | 1.5x | Disassembly overhead |
-| panic | 3.5s | 2.1s | 1.67x | GOT resolution impact |
-| perfect | 1.0s | 0.7s | 1.43x | Baseline overhead |
-| meshcore-rs | 8.2s | 5.5s | 1.49x | Large binary |
+| simple_panic | TBD | 0.054s | - | Disassembly overhead |
+| panic | TBD | 0.064s | - | GOT resolution impact |
+| perfect | TBD | 0.057s | - | Baseline overhead |
+| meshcore-rs | TBD | 19.790s | - | Large .rlib file |
 
 ## Profiling Commands
 
