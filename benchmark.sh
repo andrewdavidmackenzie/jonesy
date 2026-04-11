@@ -143,6 +143,11 @@ if [ -d "../meshcore-rs" ]; then
       benchmark_binary "meshcore-rs/$(basename $bin)" "$bin"
     fi
   done
+
+  # meshcore-rs is a library crate, benchmark .rlib file
+  if [ -f "../meshcore-rs/target/debug/libmeshcore_rs.rlib" ]; then
+    benchmark_binary "meshcore-rs/libmeshcore_rs.rlib" "../meshcore-rs/target/debug/libmeshcore_rs.rlib"
+  fi
 fi
 
 if [ -d "../meshchat" ]; then
@@ -172,6 +177,13 @@ if [ -d "../flow" ]; then
   if [ -f "../flow/target/debug/flowc" ]; then
     benchmark_binary "flow/flowc" "../flow/target/debug/flowc"
   fi
+
+  # Benchmark flow library files
+  for rlib in ../flow/target/debug/lib*.rlib; do
+    if [ -f "$rlib" ]; then
+      benchmark_binary "flow/$(basename $rlib)" "$rlib"
+    fi
+  done
 fi
 
 echo "========================================"  >> "$RESULTS"
