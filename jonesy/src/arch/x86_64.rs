@@ -31,7 +31,7 @@ fn scan_call_instructions(
     cs: &Capstone,
     data: &[u8],
     base_addr: u64,
-    got_cache: &std::collections::HashMap<u64, u64>,
+    got_cache: &ahash::AHashMap<u64, u64>,
 ) -> Vec<InsnData> {
     let mut results = Vec::new();
 
@@ -103,13 +103,11 @@ pub(crate) fn parallel_disassemble(
     elf: Option<&goblin::elf::Elf>,
     buffer: &[u8],
 ) -> Vec<InsnData> {
-    use std::collections::HashMap;
-
-    // Build GOT cache for resolving indirect calls
+    // Build GOT cache for resolving indirect calls (using AHashMap for speed)
     let got_cache = if let Some(elf) = elf {
         got::build_cache(elf, buffer)
     } else {
-        HashMap::new()
+        ahash::AHashMap::new()
     };
 
     // Create Capstone disassembler once (major optimization - was being created per chunk!)
@@ -154,14 +152,13 @@ pub(crate) fn is_call_relocation(r_type: u32) -> bool {
 /// using ELF relocations.
 pub mod got {
     use goblin::elf::Elf;
-    use std::collections::HashMap;
 
     /// Build a mapping from GOT entry addresses to target function addresses.
     ///
     /// This parses .rela.plt and .rela.dyn sections to build the mapping.
-    /// Returns HashMap: GOT address -> target function address
-    pub(crate) fn build_cache(elf: &Elf, buffer: &[u8]) -> HashMap<u64, u64> {
-        let mut got_cache = HashMap::new();
+    /// Returns AHashMap: GOT address -> target function address (faster than HashMap)
+    pub(crate) fn build_cache(elf: &Elf, buffer: &[u8]) -> ahash::AHashMap<u64, u64> {
+        let mut got_cache = ahash::AHashMap::new();
 
         // Process .rela.plt relocations
         if let Some(rela_plt) = find_section(elf, ".rela.plt") {
@@ -191,7 +188,7 @@ pub mod got {
         elf: &Elf,
         buffer: &[u8],
         section: &goblin::elf::SectionHeader,
-        got_cache: &mut HashMap<u64, u64>,
+        got_cache: &mut ahash::AHashMap<u64, u64>,
     ) {
         let offset = section.sh_offset as usize;
         let size = section.sh_size as usize;
@@ -255,7 +252,7 @@ pub mod got {
         insn_addr: u64,
         insn_size: u64,
         rip_offset: i64,
-        got_cache: &HashMap<u64, u64>,
+        got_cache: &ahash::AHashMap<u64, u64>,
     ) -> Option<u64> {
         // Compute GOT entry address: next_insn_addr + rip_offset
         let next_insn = insn_addr.wrapping_add(insn_size);
