@@ -1722,3 +1722,54 @@ fn test_rlib_inline_allow() {
         stdout
     );
 }
+
+/// Test that parallel .rlib processing produces identical results to sequential processing.
+/// This verifies that the parallel .o file processing implementation is deterministic.
+#[test]
+fn test_rlib_parallel_determinism() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    // Run with 1 thread (sequential processing)
+    let output_1_thread = run_jonesy_raw_output(
+        &example_dir,
+        &["--no-hyperlinks", "--lib", "--max-threads", "1"],
+    );
+
+    // Run with 4 threads (parallel processing)
+    let output_4_threads = run_jonesy_raw_output(
+        &example_dir,
+        &["--no-hyperlinks", "--lib", "--max-threads", "4"],
+    );
+
+    // Parse both outputs
+    let panics_1 = parse_jones_output(&output_1_thread);
+    let panics_4 = parse_jones_output(&output_4_threads);
+
+    // Should detect the same number of panic points
+    assert_eq!(
+        panics_1.len(),
+        panics_4.len(),
+        "Parallel processing (4 threads) detected {} panics, sequential (1 thread) detected {}.\nSequential output:\n{}\n\nParallel output:\n{}",
+        panics_4.len(),
+        panics_1.len(),
+        output_1_thread,
+        output_4_threads
+    );
+
+    // Convert to sets for order-independent comparison
+    let set_1: HashSet<_> = panics_1.into_iter().collect();
+    let set_4: HashSet<_> = panics_4.into_iter().collect();
+
+    // Find differences if any
+    let only_in_1: Vec<_> = set_1.difference(&set_4).collect();
+    let only_in_4: Vec<_> = set_4.difference(&set_1).collect();
+
+    assert!(
+        only_in_1.is_empty() && only_in_4.is_empty(),
+        "Parallel processing produces different results than sequential.\nOnly in 1-thread: {:?}\nOnly in 4-threads: {:?}",
+        only_in_1,
+        only_in_4
+    );
+}
