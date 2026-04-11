@@ -1,0 +1,50 @@
+========================================
+Jonesy Performance Benchmark
+========================================
+
+Platform: Linux x86_64
+Date: 2026-04-11T17:43:38Z
+
+CPU: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
+Cores: 8
+
+rustc 1.93.1 (01f6ddf75 2026-02-11)
+cargo 1.93.1 (083ac5135 2025-12-15)
+
+Building jonesy (release)...
+Jonesy: jonesy 0.8.0
+
+========================================
+
+Benchmarking: simple_panic
+Binary size: 3.8M
+  Times: min=0.007s, median=0.009s, max=0.012s
+  Panic points detected: 0
+
+Benchmarking: panic
+Binary size: 5.0M
+  Times: min=0.005s, median=0.005s, max=0.008s
+  Panic points detected: 0
+
+Benchmarking: perfect
+Binary size: 3.9M
+  Times: min=0.006s, median=0.011s, max=0.023s
+  Panic points detected: 0
+
+Benchmarking: rlib_example
+Binary size: 379K
+  Times: min=0.006s, median=0.006s, max=0.007s
+  Panic points detected: 0
+
+Benchmarking: dylib_example
+Binary size: 6.1M
+  Times: min=0.009s, median=0.011s, max=0.016s
+  Panic points detected: 0
+
+Benchmarking: staticlib_example
+Binary size: 20M
+  Times: min=0.012s, median=0.012s, max=0.018s
+  Panic points detected: 0
+
+⊘ Skipping workspace_test_main (binary not found: target/debug/workspace_test_main)
+
