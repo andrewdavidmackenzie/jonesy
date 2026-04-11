@@ -64,22 +64,33 @@ benchmark_binary() {
   local size=$(ls -lh "$binary" | awk '{print $5}')
   echo "Binary size: $size" >> "$RESULTS"
 
+  # Convert to absolute path
+  local abs_binary="$(cd "$(dirname "$binary")" && pwd)/$(basename "$binary")"
+
   # Run 3 times and collect timings
   local times=()
   for i in 1 2 3; do
     echo -n "  Run $i/3... "
 
-    # Use GNU time if available, fallback to bash time
-    if command -v /usr/bin/time >/dev/null 2>&1; then
-      elapsed=$(/usr/bin/time -f "%e" ./target/release/jonesy --bin "$binary" 2>&1 >/dev/null | tail -1)
+    # Use high-precision timing (run from jonesy/ directory to avoid workspace issues)
+    if command -v python3 >/dev/null 2>&1; then
+      # Python3 for high precision timing
+      elapsed=$(python3 -c "
+import subprocess, time, os
+os.chdir('jonesy')
+start = time.time()
+subprocess.run(['../target/release/jonesy', '--bin', '$abs_binary'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+elapsed = time.time() - start
+print(f'{elapsed:.3f}')
+")
       times+=("$elapsed")
       echo "${elapsed}s"
     else
-      # Fallback to bash time (less precise)
+      # Linux: use date with nanoseconds
       START=$(date +%s.%N)
-      ./target/release/jonesy --bin "$binary" >/dev/null 2>&1
+      (cd jonesy && ../target/release/jonesy --bin "$abs_binary" >/dev/null 2>&1)
       END=$(date +%s.%N)
-      elapsed=$(echo "$END - $START" | bc)
+      elapsed=$(echo "$END - $START" | bc -l | xargs printf "%.3f")
       times+=("$elapsed")
       echo "${elapsed}s"
     fi
@@ -94,7 +105,7 @@ benchmark_binary() {
   echo "  Times: min=${min}s, median=${median}s, max=${max}s" | tee -a "$RESULTS"
 
   # Count panic points (for verification)
-  COUNT=$(./target/release/jonesy --bin "$binary" 2>/dev/null | \
+  COUNT=$((cd jonesy && ../target/release/jonesy --bin "$abs_binary" 2>/dev/null) | \
     grep -E "Panic points: [0-9]+" | grep -oE "[0-9]+" || echo "0")
   echo "  Panic points detected: $COUNT" | tee -a "$RESULTS"
 
