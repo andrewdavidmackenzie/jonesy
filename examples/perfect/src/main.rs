@@ -42,6 +42,6 @@ fn demonstrate_inline_allows() {
     // Example 4: Allow panic in a known code path
     // jonesy:allow(capacity)
     if std::env::args().len() > 100 {
-        panic!("Too many arguments!"); // jonesy:allow(panic, *)
+        panic!("Too many arguments!"); // jonesy:allow(panic)
     }
 }
