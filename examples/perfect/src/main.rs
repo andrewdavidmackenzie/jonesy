@@ -28,7 +28,7 @@ fn demonstrate_inline_allows() {
     let value = always_some.unwrap();
     println!("Got value: {value}"); // jonesy:allow(format)
 
-    // Example 2: Allow expect with a descriptive message
+    // Example 2: Allow `expect` with a descriptive message, and `format` for the message
     let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect,format)
     println!("PATH length: {}", config.len()); // jonesy:allow(format)
 
