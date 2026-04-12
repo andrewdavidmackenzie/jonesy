@@ -214,11 +214,16 @@ pub(crate) fn parallel_disassemble(
 pub(crate) const MACHO_RELOC_BRANCH26: u8 = 2;
 
 /// ELF relocation type for x86_64 PC-relative calls (R_X86_64_PLT32)
-pub(crate) const ELF_RELOC_CALL26: u32 = 4;
+pub(crate) const ELF_RELOC_PLT32: u32 = 4;
+
+/// ELF relocation type for x86_64 GOT-relative calls (R_X86_64_GOTPCREL)
+/// Used for indirect calls through the Global Offset Table
+pub(crate) const ELF_RELOC_GOTPCREL: u32 = 9;
 
 /// Check if relocation type represents a function call.
+/// Accepts both direct PLT calls and GOT-based indirect calls.
 pub(crate) fn is_call_relocation(r_type: u32) -> bool {
-    r_type == ELF_RELOC_CALL26
+    r_type == ELF_RELOC_PLT32 || r_type == ELF_RELOC_GOTPCREL
 }
 
 /// GOT (Global Offset Table) resolution for x86_64 indirect calls.
