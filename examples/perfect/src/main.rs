@@ -22,35 +22,39 @@ fn main() {
 /// These would normally be flagged by jonesy, but are suppressed with comments.
 #[allow(clippy::unnecessary_literal_unwrap)]
 fn demonstrate_inline_allows() {
-    // Example 1: Allow `unwrap` on a known-safe value
+    // Allow `unwrap` on a known-safe value
     let always_some: Option<i32> = Some(42);
     // jonesy:allow(unwrap)
     let value = always_some.unwrap();
 
-    // Example 2: Allow `format` in `println!()`
+    // Allow `format` in `println!()`
     // jonesy:allow(format)
     println!("Got value: {value}");
 
-    // Example 3: Allow `expect` with a descriptive message, and `format` for the message
+    // Allow `expect` with a descriptive message, and `format` for the message
     // jonesy:allow(expect,format)
     let config = std::env::var("PATH").expect("PATH must be set");
+
+    // Allow `format` in `println!()`
     // jonesy:allow(format)
     println!("PATH length: {}", config.len());
 
-    // Example 4: Allow `oom`
+    // Allow `oom` on constructing a Vec
     // jonesy:allow(oom)
     let data: Result<Vec<u8>, &str> = Ok(vec![1, 2, 3]);
 
-    // Example 5: Allow an explicit `unwrap`
+    // Allow an explicit `unwrap`
     // jonesy:allow(unwrap)
     let bytes = data.unwrap();
+
+    // Allow `format` in `println!()`
     // jonesy:allow(bounds,format)
     println!("First byte: {}", bytes[0]);
 
-    // Example 6: Allow `capacity` inside `len()`
+    // Allow `capacity` inside `len()`
     // jonesy:allow(capacity)
     if std::env::args().len() > 100 {
-        // Example 6: Allow explicit `panic`
+        // Allow explicit `panic`
         // jonesy:allow(panic)
         panic!("Too many arguments!");
     }
