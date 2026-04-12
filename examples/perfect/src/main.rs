@@ -22,26 +22,36 @@ fn main() {
 /// These would normally be flagged by jonesy, but are suppressed with comments.
 #[allow(clippy::unnecessary_literal_unwrap)]
 fn demonstrate_inline_allows() {
-    // Example 1: Allow unwrap on a known-safe value
-    // jonesy:allow(unwrap)
+    // Example 1: Allow `unwrap` on a known-safe value
     let always_some: Option<i32> = Some(42);
+    // jonesy:allow(unwrap)
     let value = always_some.unwrap();
-    println!("Got value: {value}"); // jonesy:allow(format)
 
-    // Example 2: Allow `expect` with a descriptive message, and `format` for the message
-    let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect,format)
-    println!("PATH length: {}", config.len()); // jonesy:allow(format)
+    // Example 2: Allow `format` in `println!()`
+    // jonesy:allow(format)
+    println!("Got value: {value}");
 
-    // Example 3: Allow unwrap and bounds check
+    // Example 3: Allow `expect` with a descriptive message, and `format` for the message
+    // jonesy:allow(expect,format)
+    let config = std::env::var("PATH").expect("PATH must be set");
+    // jonesy:allow(format)
+    println!("PATH length: {}", config.len());
+
+    // Example 4: Allow `oom`
     // jonesy:allow(oom)
     let data: Result<Vec<u8>, &str> = Ok(vec![1, 2, 3]);
+
+    // Example 5: Allow an explicit `unwrap`
     // jonesy:allow(unwrap)
     let bytes = data.unwrap();
-    println!("First byte: {}", bytes[0]); // jonesy:allow(bounds,format)
+    // jonesy:allow(bounds,format)
+    println!("First byte: {}", bytes[0]);
 
-    // Example 4: Allow panic in a known code path
+    // Example 6: Allow `capacity` inside `len()`
     // jonesy:allow(capacity)
     if std::env::args().len() > 100 {
-        panic!("Too many arguments!"); // jonesy:allow(panic)
+        // Example 6: Allow explicit `panic`
+        // jonesy:allow(panic)
+        panic!("Too many arguments!");
     }
 }
