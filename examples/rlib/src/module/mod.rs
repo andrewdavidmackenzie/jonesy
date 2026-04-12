@@ -5,7 +5,11 @@ pub fn cause_a_panic() {
 
 pub fn cause_an_unwrap() {
     // Use runtime check that won't be optimized away
-    let opt: Option<i32> = if std::env::args().len() > 1000 { Some(42) } else { None };
+    let opt: Option<i32> = if std::env::args().len() > 1000 {
+        Some(42)
+    } else {
+        None
+    };
     // jonesy: expect panic unwrap on None
     opt.unwrap();
 }

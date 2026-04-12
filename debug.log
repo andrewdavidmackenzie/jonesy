@@ -1,0 +1,1 @@
+Error: --bin and --lib are not supported at workspace level. cd into a member crate directory for target-specific analysis.
