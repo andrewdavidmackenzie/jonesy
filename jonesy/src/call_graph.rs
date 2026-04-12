@@ -331,20 +331,32 @@ fn process_instruction_data_with_crate_table<'a>(
                             column = crate_column;
                         }
                     } else {
-                        // Got a specific line from crate table. Check if DWARF
-                        // inline info gives a more precise location — this
-                        // handles inlined code (e.g., Option::unwrap) where the
-                        // crate line table returns the setup line before the
-                        // inlined expansion rather than the actual call site.
-                        if let Some((call_file, call_line_num, _)) =
-                            function_index.get_inlined_call_site(data.address)
-                        {
-                            if project_context.is_crate_source(call_file)
-                                && call_line_num > 0
-                                && Some(call_line_num) != crate_line
+                        // Got a specific line from crate table. Only consider
+                        // DWARF inline info when crate_line is in the function
+                        // prologue area (within a few lines of the declaration).
+                        // This is where the crate line table may return the
+                        // setup line before an inlined expansion (e.g.,
+                        // Option::unwrap) rather than the actual call site.
+                        // For lines deep inside the function body, the crate
+                        // line table result is already correct.
+                        let near_prologue = match (crate_line, func_line) {
+                            (Some(cl), Some(fl)) => cl.saturating_sub(fl) <= 5,
+                            _ => false,
+                        };
+                        if near_prologue {
+                            if let Some((call_file, call_line_num, _)) =
+                                function_index.get_inlined_call_site(data.address)
                             {
-                                line = Some(call_line_num);
-                                column = None;
+                                if project_context.is_crate_source(call_file)
+                                    && call_line_num > 0
+                                    && Some(call_line_num) != crate_line
+                                {
+                                    line = Some(call_line_num);
+                                    column = None;
+                                } else {
+                                    line = crate_line;
+                                    column = crate_column;
+                                }
                             } else {
                                 line = crate_line;
                                 column = crate_column;
