@@ -26,6 +26,12 @@ pub(crate) struct InsnData {
     pub(crate) call_target: Option<u64>,
 }
 
+/// Tracks RIP-relative loads into registers for resolving register-indirect calls
+struct RegisterLoad {
+    /// Address where the GOT entry will be after the instruction executes
+    got_addr: u64,
+}
+
 /// Scan a chunk of x86_64 code for CALL instructions using Capstone disassembler.
 fn scan_call_instructions(
     cs: &Capstone,
@@ -41,9 +47,78 @@ fn scan_call_instructions(
         Err(_) => return results,
     };
 
+    // Track register loads from GOT for resolving call *%reg patterns
+    // Map: register_id -> RegisterLoad
+    // We track recent GOT loads but only within the same basic block (cleared on any control flow)
+    let mut register_loads: ahash::AHashMap<u16, RegisterLoad> = ahash::AHashMap::new();
+
     // Extract CALL instructions
     for insn in insns.iter() {
         let mnemonic = insn.mnemonic().unwrap_or("");
+
+        // Clear register tracking on control flow instructions (except call)
+        // This prevents false matches across basic block boundaries
+        if matches!(
+            mnemonic,
+            "jmp"
+                | "je"
+                | "jne"
+                | "jz"
+                | "jnz"
+                | "ja"
+                | "jae"
+                | "jb"
+                | "jbe"
+                | "jg"
+                | "jge"
+                | "jl"
+                | "jle"
+                | "ret"
+        ) {
+            register_loads.clear();
+        }
+
+        // Track MOV instructions that load from GOT into registers
+        if mnemonic == "mov" {
+            if let Ok(detail) = cs.insn_detail(insn) {
+                let arch_detail = detail.arch_detail();
+                let operands = arch_detail.operands();
+
+                // Pattern: mov offset(%rip), %reg
+                if operands.len() == 2 {
+                    if let (
+                        arch::ArchOperand::X86Operand(dst),
+                        arch::ArchOperand::X86Operand(src),
+                    ) = (&operands[0], &operands[1])
+                    {
+                        // Check if destination is a register (this will get overwritten)
+                        if let arch::x86::X86OperandType::Reg(dst_reg) = dst.op_type {
+                            // Check if source is RIP-relative memory load
+                            if let arch::x86::X86OperandType::Mem(mem_op) = src.op_type {
+                                if mem_op.base()
+                                    == capstone::RegId(arch::x86::X86Reg::X86_REG_RIP as u16)
+                                {
+                                    let rip_offset = mem_op.disp();
+                                    let insn_size = insn.bytes().len() as u64;
+                                    let next_insn = insn.address().wrapping_add(insn_size);
+                                    let got_addr = next_insn.wrapping_add(rip_offset as u64);
+
+                                    // Update this register's GOT load
+                                    register_loads.insert(dst_reg.0, RegisterLoad { got_addr });
+                                } else {
+                                    // Non-RIP-relative write to register - clear it
+                                    register_loads.remove(&dst_reg.0);
+                                }
+                            } else {
+                                // Register being written with non-memory source - clear it
+                                register_loads.remove(&dst_reg.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if mnemonic == "call" {
             let detail = match cs.insn_detail(insn) {
                 Ok(detail) => detail,
@@ -76,6 +151,11 @@ fn scan_call_instructions(
                                 None
                             }
                         }
+                        // Indirect call through register: call *%rax
+                        // Check if this register was loaded from GOT recently (within same basic block)
+                        arch::x86::X86OperandType::Reg(reg) => register_loads
+                            .get(&reg.0)
+                            .and_then(|load| got_cache.get(&load.got_addr).copied()),
                         _ => None,
                     },
                     _ => None,
