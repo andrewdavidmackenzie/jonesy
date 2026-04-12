@@ -87,6 +87,59 @@ impl CrateLineTable {
         }
     }
 
+    /// Find the nearest crate line entry to a call address within a function.
+    ///
+    /// Searches both backward and forward from `call_site_addr` and returns the
+    /// entry closest by address. This handles inlined stdlib code correctly:
+    /// when the call address is inside inlined code (e.g., `Option::unwrap`),
+    /// the backward entry is the setup code before the inlined expansion, while
+    /// the forward entry is the source line that triggered the inline call.
+    /// Picking the nearest entry returns the correct call site line.
+    pub fn get_nearest_line(
+        &self,
+        func_start: u64,
+        call_site_addr: u64,
+        func_end: u64,
+    ) -> (Option<u32>, Option<u32>) {
+        let start_idx = self.entries.partition_point(|e| e.address < func_start);
+        let end_idx = self
+            .entries
+            .partition_point(|e| e.address <= call_site_addr);
+
+        // Last backward entry in [func_start, call_site_addr]
+        let backward = if end_idx > start_idx {
+            Some(&self.entries[end_idx - 1])
+        } else {
+            None
+        };
+
+        // First forward entry in (call_site_addr, func_end)
+        let forward = if end_idx < self.entries.len() {
+            let entry = &self.entries[end_idx];
+            if entry.address < func_end {
+                Some(entry)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        match (backward, forward) {
+            (Some(bw), Some(fw)) => {
+                let bw_dist = call_site_addr - bw.address;
+                let fw_dist = fw.address - call_site_addr;
+                if fw_dist < bw_dist {
+                    (Some(fw.line), fw.column)
+                } else {
+                    (Some(bw.line), bw.column)
+                }
+            }
+            (Some(bw), None) => (Some(bw.line), bw.column),
+            (None, _) => (None, None),
+        }
+    }
+
     /// Get the number of entries
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -177,5 +230,49 @@ mod tests {
         assert_eq!(table.len(), 3);
         // from_entries doesn't sort — entries are used as-is
         // (build() sorts, but from_entries trusts the caller)
+    }
+
+    // -- get_nearest_line tests --
+
+    #[test]
+    fn test_nearest_line_prefers_forward_when_closer() {
+        // Simulates inlined stdlib code: crate entries at 100 (line 26) and 200 (line 28)
+        // with a call at 180 (inside inlined code). Forward (200) is closer than backward (100).
+        let table = make_table(&[(100, 26, None), (200, 28, Some(29))]);
+        assert_eq!(table.get_nearest_line(100, 180, 300), (Some(28), Some(29)));
+    }
+
+    #[test]
+    fn test_nearest_line_prefers_backward_when_closer() {
+        // Normal call: crate entries at 100 (line 10) and 200 (line 11)
+        // with a call at 104 (just after line 10 start). Backward (100) is closer.
+        let table = make_table(&[(100, 10, Some(5)), (200, 11, None)]);
+        assert_eq!(table.get_nearest_line(100, 104, 300), (Some(10), Some(5)));
+    }
+
+    #[test]
+    fn test_nearest_line_exact_match() {
+        let table = make_table(&[(100, 10, Some(5)), (200, 20, None)]);
+        assert_eq!(table.get_nearest_line(100, 100, 300), (Some(10), Some(5)));
+    }
+
+    #[test]
+    fn test_nearest_line_no_entries() {
+        let table = make_table(&[]);
+        assert_eq!(table.get_nearest_line(100, 150, 300), (None, None));
+    }
+
+    #[test]
+    fn test_nearest_line_forward_beyond_func_end() {
+        // Forward entry exists but is beyond func_end — should use backward
+        let table = make_table(&[(100, 10, None), (400, 40, None)]);
+        assert_eq!(table.get_nearest_line(100, 150, 300), (Some(10), None));
+    }
+
+    #[test]
+    fn test_nearest_line_equal_distance_prefers_backward() {
+        // Equal distance: prefer backward (the call instruction is on that source line)
+        let table = make_table(&[(100, 10, None), (200, 20, None)]);
+        assert_eq!(table.get_nearest_line(100, 150, 300), (Some(10), None));
     }
 }

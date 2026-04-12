@@ -121,9 +121,12 @@ pub fn is_library_panic_symbol(name: &str) -> bool {
 
 /// Returns `true` if the function directly triggers a panic.
 ///
-/// Equivalent to `detect_panic_cause(func_name).is_some()`.
+/// This includes all functions recognized by `detect_panic_cause`, plus
+/// `panic_fmt` which is the entry point for `panic!("literal")` in Rust 1.78+.
+/// `panic_fmt` is not in the rules table (it would cause false positives for
+/// all panic paths) but IS a direct panic trigger when called from user code.
 pub fn is_panic_triggering_function(func_name: &str) -> bool {
-    detect_panic_cause(func_name).is_some()
+    detect_panic_cause(func_name).is_some() || func_name.contains("panic_fmt")
 }
 
 // ---------------------------------------------------------------------------
@@ -585,8 +588,10 @@ mod tests {
             detect_panic_cause("panic_display"),
             Some(PanicCause::ExplicitPanic)
         );
-        // panic_fmt is the generic runtime entry — not classified
-        // (it calls rust_panic, so paths through it are already traced)
+        // panic_fmt is NOT classified via detect_panic_cause (it's the generic
+        // runtime entry). Instead, is_panic_triggering_function handles it
+        // separately so that direct panic!() calls get ExplicitPanic via
+        // assign_unknown_causes.
         assert_eq!(detect_panic_cause("panic_fmt"), None);
     }
 

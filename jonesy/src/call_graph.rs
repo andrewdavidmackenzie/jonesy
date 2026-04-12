@@ -314,13 +314,8 @@ fn process_instruction_data_with_crate_table<'a>(
                 let (crate_line, crate_column) =
                     crate_line_table.get_line(func.start_address, data.address);
                 if crate_line.is_some() {
-                    // If the crate line table only found the function-start line,
-                    // try the full line table as a fallback. When stdlib code is
-                    // inlined (e.g., unwrap()), the DWARF line entries at the call
-                    // address point to stdlib source, so the crate line table only
-                    // has the function definition entry. The full line table can
-                    // find the nearest crate-source line by searching backward.
                     if crate_line == func_line {
+                        // Only found function-start line. Try full line table.
                         let (full_line, full_column) = full_line_table.get_nearest_crate_line(
                             data.address,
                             func.start_address,
@@ -336,8 +331,28 @@ fn process_instruction_data_with_crate_table<'a>(
                             column = crate_column;
                         }
                     } else {
-                        line = crate_line;
-                        column = crate_column;
+                        // Got a specific line from crate table. Check if DWARF
+                        // inline info gives a more precise location — this
+                        // handles inlined code (e.g., Option::unwrap) where the
+                        // crate line table returns the setup line before the
+                        // inlined expansion rather than the actual call site.
+                        if let Some((call_file, call_line_num, _)) =
+                            function_index.get_inlined_call_site(data.address)
+                        {
+                            if project_context.is_crate_source(call_file)
+                                && call_line_num > 0
+                                && Some(call_line_num) != crate_line
+                            {
+                                line = Some(call_line_num);
+                                column = None;
+                            } else {
+                                line = crate_line;
+                                column = crate_column;
+                            }
+                        } else {
+                            line = crate_line;
+                            column = crate_column;
+                        }
                     }
                 }
             }

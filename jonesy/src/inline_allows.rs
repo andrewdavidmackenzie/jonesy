@@ -343,7 +343,7 @@ fn foo() {
             "unwrap",
             None
         ));
-        // Line 3 is within ±2 range of line 2
+        // Line 3 checks line 2 (previous line) which has the allow
         assert!(check_inline_allow(
             file_path.to_str().unwrap(),
             3,
