@@ -49,7 +49,7 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
     }
 }
 
-/// Result of analyzing a single binary, includes summary and optionally code points.
+/// Result of analysing a single binary, includes summary and optionally code points.
 #[derive(Default)]
 pub struct BinaryAnalysisResult {
     pub summary: AnalysisSummary,
@@ -111,7 +111,7 @@ struct PanicCaller {
     target: String,
 }
 
-/// Analyze a single MachO or ELF binary for panic points.
+/// Analyse a single MachO or ELF binary for panic points.
 /// Returns a summary of panic code points found, plus code points.
 pub fn analyze_binary_target(
     symbols: &SymbolTable,
@@ -286,7 +286,7 @@ pub fn analyze_binary_target(
     Ok(final_result)
 }
 
-/// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
+/// Analyse an archive (rlib/staticlib) for panic points using relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
@@ -328,7 +328,7 @@ pub fn analyze_archive(
     // Collect member names for parallel processing
     let all_members: Vec<String> = archive.members().iter().map(|s| s.to_string()).collect();
 
-    // Filter and categorize members
+    // Filter and categorise members
     let mut member_names = Vec::new();
     let mut skipped_count = 0;
     let mut sample_kept = Vec::new();
