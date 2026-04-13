@@ -14,9 +14,8 @@ fn main() {
     }
 
     // Demonstrate inline allow comments - these panics are intentionally suppressed
-    // jonesy:allow(*)
-    demonstrate_inline_allows();
-}
+    demonstrate_inline_allows(); // jonesy:allow(*)
+} // jonesy:allow(*)
 
 /// Examples of using inline allow comments to suppress specific panic warnings.
 /// These would normally be flagged by jonesy, but are suppressed with comments.
@@ -27,16 +26,16 @@ fn demonstrate_inline_allows() {
     // jonesy:allow(unwrap)
     let value = always_some.unwrap();
 
-    // Allow `format` in `println!()`
-    // jonesy:allow(format)
+    // Allow `format` in `println!()` (and oom from internal allocations)
+    // jonesy:allow(format,oom)
     println!("Got value: {value}");
 
-    // Allow `expect` with a descriptive message, and `format` for the message
-    // jonesy:allow(expect,format)
+    // Allow `expect` with a descriptive message, and `format` for the message (and oom from allocation)
+    // jonesy:allow(expect,format,oom)
     let config = std::env::var("PATH").expect("PATH must be set");
 
-    // Allow `format` in `println!()`
-    // jonesy:allow(format)
+    // Allow `format` in `println!()` (and oom from internal allocations)
+    // jonesy:allow(format,oom)
     println!("PATH length: {}", config.len());
 
     // Allow `oom` on constructing a Vec
@@ -47,12 +46,12 @@ fn demonstrate_inline_allows() {
     // jonesy:allow(unwrap)
     let bytes = data.unwrap();
 
-    // Allow `format` in `println!()`
-    // jonesy:allow(bounds,format)
+    // Allow `format` in `println!()` (and oom from internal allocations)
+    // jonesy:allow(bounds,format,oom)
     println!("First byte: {}", bytes[0]);
 
-    // Allow `capacity` inside `len()`
-    // jonesy:allow(capacity)
+    // Allow `capacity` inside `len()` (and oom from Vec allocation in args())
+    // jonesy:allow(capacity,oom)
     if std::env::args().len() > 100 {
         // Allow explicit `panic`
         // jonesy:allow(panic)

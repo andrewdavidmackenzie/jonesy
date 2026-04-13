@@ -1700,10 +1700,10 @@ fn test_rlib_inline_allow() {
 
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
-    // cause_allowed_overflow (line 122) has `// jonesy:allow(overflow)` — should NOT appear
+    // cause_allowed_overflow (line 124) has `// jonesy:allow(overflow)` — should NOT appear
     let has_allowed_detection = stdout
         .lines()
-        .any(|line| line.contains("mod.rs:122") && line.contains("overflow"));
+        .any(|line| line.contains("mod.rs:124") && line.contains("overflow"));
 
     assert!(
         !has_allowed_detection,
@@ -1711,10 +1711,10 @@ fn test_rlib_inline_allow() {
         stdout
     );
 
-    // cause_arithmetic_overflow (line 109) does NOT have an inline allow — should still appear
+    // cause_arithmetic_overflow (line 111) does NOT have an inline allow — should still appear
     let has_denied_detection = stdout
         .lines()
-        .any(|line| line.contains("mod.rs:109") && line.contains("overflow"));
+        .any(|line| line.contains("mod.rs:111") && line.contains("overflow"));
 
     assert!(
         has_denied_detection,
