@@ -1,12 +1,18 @@
-# Jonesy Performance Comparison: x86_64 vs aarch64
+# Jonesy Performance Comparison Across Platforms
+
+> **Note:** These benchmarks compare different machines with different CPUs,
+> core counts, and operating systems. Performance differences reflect the
+> combined effect of hardware, OS, and architecture — not architecture alone.
+> A fair architecture comparison would require the same CPU generation and
+> core count on both sides.
 
 ## Platform Details
 
 | Platform | CPU | Cores | Rust Version |
 |----------|-----|-------|--------------|
-| **Linux x86_64** | Intel i7-8665U @ 1.90GHz | 8 | 1.93.1 |
+| **Linux x86_64** | Intel i7-8665U @ 1.90GHz | 8 (4C/8T, 2019 laptop) | 1.93.1 |
 | **Linux aarch64** | (Unknown ARM) | 2 | 1.93.1 |
-| **macOS aarch64** | Apple M2 Pro | 12 | 1.94.0 |
+| **macOS aarch64** | Apple M2 Pro | 12 (2023 desktop) | 1.94.0 |
 
 ## Performance Comparison
 
@@ -35,7 +41,11 @@
 
 ## Key Findings
 
-### 🔴 CRITICAL PERFORMANCE ISSUES (x86_64)
+### 🔴 x86_64 Platform Significantly Slower
+
+The x86_64 Linux platform is consistently slower, though the magnitude
+reflects both architectural overhead (Capstone disassembly vs direct
+pattern matching) and hardware differences (older/slower CPU).
 
 1. **Simple binaries 10-21x slower**
    - simple_panic: **21.2x slower** (1.123s vs 0.053s)
@@ -43,7 +53,7 @@
    - dylib_example: **15.5x slower** (1.382s vs 0.089s)
 
 2. **Large binaries 4-40x slower**
-   - **meshchat: 38.6x slower** (165s vs 4.3s) - WORST CASE
+   - **meshchat: 38.6x slower** (165s vs 4.3s) - worst case
    - flowrcli: 4.4x slower
    - flowrgui: 4.0x slower
 
@@ -69,9 +79,13 @@
 
 ### 🔍 Architecture-Specific Analysis
 
+> The slowdowns below mix hardware and architecture factors. The Capstone
+> and GOT overhead is genuinely architectural; the raw magnitude is inflated
+> by comparing a 2019 laptop CPU against a 2023 desktop chip.
+
 #### x86_64 Bottlenecks
 
-Based on the massive slowdown (10-40x), likely culprits:
+Likely culprits for the architectural portion of the slowdown:
 
 1. **Capstone disassembly overhead**
    - Variable-length instruction decoding is expensive
@@ -111,7 +125,7 @@ Why aarch64 is so fast:
 | Large binaries (> 50M) | **21.5x** | 4-40x |
 | **Overall** | **15.6x** | 4-40x |
 
-## Optimization Priorities
+## Optimisation Priorities
 
 ### 🎯 High Priority (Fix These First)
 
@@ -156,7 +170,7 @@ Why aarch64 is so fast:
 2. **Identify hotspots** (Capstone? GOT? DWARF?)
 3. **Implement targeted fixes**
 4. **Re-benchmark and measure improvement**
-5. **Target: < 3x slowdown vs aarch64** (acceptable for different ISA)
+5. **Target: < 3x slowdown vs aarch64 on comparable hardware**
 
 ---
 
