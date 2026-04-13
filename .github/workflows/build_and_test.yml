@@ -29,7 +29,6 @@ jobs:
 
       - name: Run tests with coverage
         env:
-          CARGO_INCREMENTAL: '0'
           RUSTFLAGS: '-Cinstrument-coverage'
           LLVM_PROFILE_FILE: 'cargo-test-%p-%m.profraw'
         run: cargo test -p jonesy

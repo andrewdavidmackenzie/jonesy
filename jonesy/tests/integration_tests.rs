@@ -440,6 +440,7 @@ fn setup() {
             .current_dir(&workspace_root)
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_INCREMENTAL")
             .status()
             .expect("Failed to build examples");
         assert!(status.success(), "Failed to build examples");
@@ -639,6 +640,7 @@ fn test_workspace_test_example() {
         .current_dir(&workspace_test_dir)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
         .status()
         .expect("Failed to build workspace_test");
     assert!(status.success(), "Failed to build workspace_test");
@@ -1032,6 +1034,7 @@ fn test_inlined_function_names() {
         .current_dir(&example_dir)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1346,6 +1349,7 @@ fn test_dsym_auto_generation() {
         .current_dir(&panic_example)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
