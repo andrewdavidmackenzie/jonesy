@@ -586,11 +586,11 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
                     }
                     AttributeValue::DebugInfoRef(debug_info_offset) => {
                         // Section-relative reference (common after dsymutil merging).
-                        // Convert to unit-relative offset.
-                        let unit_offset = debug_info_offset
-                            .to_unit_offset(&unit.header)
-                            .unwrap_or(gimli::UnitOffset(debug_info_offset.0));
-                        abstract_origin = Some(unit_offset);
+                        // Convert to unit-relative offset; skip if the reference
+                        // points outside this compilation unit.
+                        if let Some(unit_offset) = debug_info_offset.to_unit_offset(&unit.header) {
+                            abstract_origin = Some(unit_offset);
+                        }
                     }
                     _ => {}
                 }

@@ -287,7 +287,7 @@ fn process_instruction_data_with_crate_table<'a>(
         let func_line = function_index.get_line(func);
         // Clone once for caller_file, then move func_file into match
         let caller_file = func_file.clone();
-        let (file, mut line, mut column) = match (func_file, func_line) {
+        let (mut file, mut line, mut column) = match (func_file, func_line) {
             (Some(f), Some(l)) => {
                 // Fast path: use DWARF function info directly
                 (Some(f), Some(l), None)
@@ -351,6 +351,7 @@ fn process_instruction_data_with_crate_table<'a>(
                                     && call_line_num > 0
                                     && Some(call_line_num) != crate_line
                                 {
+                                    file = Some(call_file.to_string());
                                     line = Some(call_line_num);
                                     column = None;
                                 } else {

@@ -5,4 +5,5 @@
 modules.xml
 vcs.xml
 **/*.profraw
-**/*.obenchmark_results_*.txt
+**/*.o
+benchmark_results_*.txt

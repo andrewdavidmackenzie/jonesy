@@ -128,7 +128,11 @@ benchmark_binary "simple_panic" "target/debug/simple_panic"
 benchmark_binary "panic" "target/debug/panic"
 benchmark_binary "perfect" "target/debug/perfect"
 benchmark_binary "rlib_example" "target/debug/librlib_example.rlib"
-benchmark_binary "dylib_example" "target/debug/libdylib_example.so"
+if [ "$(uname)" = "Darwin" ]; then
+  benchmark_binary "dylib_example" "target/debug/libdylib_example.dylib"
+else
+  benchmark_binary "dylib_example" "target/debug/libdylib_example.so"
+fi
 benchmark_binary "staticlib_example" "target/debug/libstaticlib_example.a"
 benchmark_binary "workspace_test_main" "target/debug/workspace_test_main"
 
