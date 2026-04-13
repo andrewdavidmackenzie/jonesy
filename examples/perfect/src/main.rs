@@ -14,9 +14,8 @@ fn main() {
     }
 
     // Demonstrate inline allow comments - these panics are intentionally suppressed
-    // jonesy:allow(*)
-    demonstrate_inline_allows();
-}
+    demonstrate_inline_allows(); // jonesy:allow(*)
+} // jonesy:allow(*)
 
 /// Examples of using inline allow comments to suppress specific panic warnings.
 /// These would normally be flagged by jonesy, but are suppressed with comments.
@@ -26,21 +25,21 @@ fn demonstrate_inline_allows() {
     // jonesy:allow(unwrap)
     let always_some: Option<i32> = Some(42);
     let value = always_some.unwrap();
-    println!("Got value: {value}"); // jonesy:allow(format)
+    println!("Got value: {value}"); // jonesy:allow(format,oom)
 
     // Example 2: Allow expect with a descriptive message
-    let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect,format)
-    println!("PATH length: {}", config.len()); // jonesy:allow(format)
+    let config = std::env::var("PATH").expect("PATH must be set"); // jonesy:allow(expect,format,oom)
+    println!("PATH length: {}", config.len()); // jonesy:allow(format,oom)
 
     // Example 3: Allow unwrap and bounds check
     // jonesy:allow(oom)
     let data: Result<Vec<u8>, &str> = Ok(vec![1, 2, 3]);
     // jonesy:allow(unwrap)
     let bytes = data.unwrap();
-    println!("First byte: {}", bytes[0]); // jonesy:allow(bounds,format)
+    println!("First byte: {}", bytes[0]); // jonesy:allow(bounds,format,oom)
 
     // Example 4: Allow panic in a known code path
-    // jonesy:allow(capacity)
+    // jonesy:allow(capacity,oom)
     if std::env::args().len() > 100 {
         panic!("Too many arguments!"); // jonesy:allow(panic, *)
     }
