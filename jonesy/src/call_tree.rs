@@ -474,14 +474,24 @@ pub fn collect_crate_code_points(
 /// Assign `Unknown` cause to leaf points that have no identified causes.
 /// A leaf point is one with no children (closest to the panic in the call chain).
 /// This makes it clear that jonesy detected a panic path but couldn't identify the specific cause.
+///
+/// Special case: if the leaf is a direct panic (user code directly calls a
+/// panic-triggering function like `panic_fmt`), assign `ExplicitPanic` instead
+/// of `Unknown`. This handles `panic!("literal")` in Rust 1.78+ where the macro
+/// routes through `panic_fmt` without an intermediate function that
+/// `detect_panic_cause` recognizes.
 fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
     for point in points.iter_mut() {
         // Recursively process children first
         assign_unknown_causes(&mut point.children);
 
-        // If this is a leaf (no children) with no causes, assign Unknown
+        // If this is a leaf (no children) with no causes, assign a cause
         if point.children.is_empty() && point.causes.is_empty() {
-            point.causes.insert(PanicCause::Unknown);
+            if point.is_direct_panic {
+                point.causes.insert(PanicCause::ExplicitPanic);
+            } else {
+                point.causes.insert(PanicCause::Unknown);
+            }
         }
     }
 }

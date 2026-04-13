@@ -1,0 +1,122 @@
+========================================
+Jonesy Performance Benchmark
+========================================
+
+Platform: Darwin arm64
+Date: 2026-04-11T18:36:26Z
+
+CPU: Apple M2 Pro
+Cores: 12
+
+rustc 1.94.0 (4a4ef493e 2026-03-02)
+cargo 1.94.0 (85eff7c80 2026-01-15)
+
+Building jonesy (release)...
+Jonesy: jonesy 0.8.0
+
+========================================
+
+Benchmarking: simple_panic
+Binary size: 440K
+  Times: min=0.040s, median=0.042s, max=0.044s
+  Panic points detected: 41
+1
+
+Benchmarking: panic
+Binary size: 703K
+  Times: min=0.048s, median=0.050s, max=0.053s
+  Panic points detected: 8
+1
+
+Benchmarking: perfect
+Binary size: 468K
+  Times: min=0.042s, median=0.043s, max=0.045s
+  Panic points detected: 0
+0
+
+Benchmarking: rlib_example
+Binary size: 416K
+  Times: min=0.030s, median=0.030s, max=0.032s
+  Panic points detected: 21
+2
+
+⊘ Skipping dylib_example (binary not found: target/debug/libdylib_example.so)
+
+Benchmarking: staticlib_example
+Binary size: 16M
+  Times: min=0.010s, median=0.011s, max=0.011s
+  Panic points detected: 1
+1
+
+⊘ Skipping workspace_test_main (binary not found: target/debug/workspace_test_main)
+
+Benchmarking: meshcore-rs/libmeshcore_rs.rlib
+Binary size: 4.5M
+  Times: min=0.030s, median=0.032s, max=0.033s
+  Panic points detected: 0
+0
+
+Benchmarking: meshchat/meshchat
+Binary size: 68M
+  Times: min=1.930s, median=1.963s, max=2.330s
+  Panic points detected: 135
+15
+
+Benchmarking: flow/flowc
+Binary size: 7.2M
+  Times: min=1.267s, median=1.308s, max=1.439s
+  Panic points detected: 781
+38
+
+Benchmarking: flow/flowrcli
+Binary size: 27M
+  Times: min=1.986s, median=2.011s, max=2.035s
+  Panic points detected: 931
+76
+
+Benchmarking: flow/flowrex
+Binary size: 19M
+  Times: min=1.022s, median=1.028s, max=1.030s
+  Panic points detected: 357
+45
+
+Benchmarking: flow/flowrgui
+Binary size: 33M
+  Times: min=2.278s, median=2.281s, max=2.362s
+  Panic points detected: 912
+78
+
+Benchmarking: flow/flowc
+Binary size: 7.2M
+  Times: min=1.268s, median=1.280s, max=1.283s
+  Panic points detected: 781
+38
+
+Benchmarking: flow/libflowcore.rlib
+Binary size: 17M
+  Times: min=0.096s, median=0.097s, max=0.098s
+  Panic points detected: 21
+14
+
+Benchmarking: flow/libflowrclib.rlib
+Binary size: 14M
+  Times: min=0.083s, median=0.084s, max=0.085s
+  Panic points detected: 44
+22
+
+Benchmarking: flow/libflowrlib.rlib
+Binary size: 12M
+  Times: min=0.059s, median=0.060s, max=0.060s
+  Panic points detected: 24
+11
+
+Benchmarking: flow/libflowstdlib.rlib
+Binary size: 3.2M
+  Times: min=0.027s, median=0.028s, max=0.028s
+  Panic points detected: 24
+21
+
+========================================
+Benchmark complete!
+Results saved to: benchmark_results_Darwin-arm64_20260411_203626.txt
+========================================
