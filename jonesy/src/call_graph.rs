@@ -236,6 +236,12 @@ impl<'a> CallGraph<'a> {
             eprintln!("    [cg timing] process instructions: {:?}", step.elapsed(),);
         }
 
+        eprintln!(
+            "  DEBUG: Call graph has {} unique target addresses, {} total edges",
+            edges.len(),
+            edges.iter().map(|e| e.value().len()).sum::<usize>()
+        );
+
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
         let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = edges.into_iter().collect();
         for callers in edges.values_mut() {
