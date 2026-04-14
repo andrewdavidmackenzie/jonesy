@@ -14,6 +14,11 @@ members = [
     "examples/unwrap_or_default",
 ]
 
+# Reduce aggressive inlining in perfect example (dev builds) to keep behavior
+# consistent across architectures (x86_64 was inlining .expect() completely)
+[profile.dev.package.perfect]
+opt-level = 1
+
 # Optimize release builds for performance
 [profile.release]
 lto = "thin"

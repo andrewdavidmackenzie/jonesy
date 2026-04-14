@@ -1,0 +1,29 @@
+Benchmarking: flow/flowc
+Binary size: 30M
+  Times: min=0.00s, median=0.00s, max=0.01s
+  Panic points detected: 0
+
+Benchmarking: flow/flowrcli
+Binary size: 113M
+  Times: min=0.00s, median=0.00s, max=0.00s
+  Panic points detected: 0
+
+Benchmarking: flow/flowrex
+Binary size: 84M
+  Times: min=0.00s, median=0.00s, max=0.00s
+  Panic points detected: 0
+
+Benchmarking: flow/flowrgui
+Binary size: 158M
+  Times: min=0.00s, median=0.00s, max=0.00s
+  Panic points detected: 0
+
+Benchmarking: flow/flowc
+Binary size: 30M
+  Times: min=0.00s, median=0.00s, max=0.00s
+  Panic points detected: 0
+
+========================================
+Benchmark complete!
+Results saved to: benchmark_results_Linux-x86_64_20260411_194004.txt
+========================================

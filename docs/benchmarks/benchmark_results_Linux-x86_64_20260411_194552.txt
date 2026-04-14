@@ -1,0 +1,88 @@
+========================================
+Jonesy Performance Benchmark
+========================================
+
+Platform: Linux x86_64
+Date: 2026-04-11T17:45:52Z
+
+CPU: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
+Cores: 8
+
+rustc 1.93.1 (01f6ddf75 2026-02-11)
+cargo 1.93.1 (083ac5135 2025-12-15)
+
+Building jonesy (release)...
+Jonesy: jonesy 0.8.0
+
+========================================
+
+Benchmarking: simple_panic
+Binary size: 3.8M
+  Times: min=1.057s, median=1.123s, max=1.315s
+  Panic points detected: 33
+1
+
+Benchmarking: panic
+Binary size: 5.0M
+  Times: min=0.704s, median=0.751s, max=1.073s
+  Panic points detected: 0
+0
+
+Benchmarking: perfect
+Binary size: 3.9M
+  Times: min=0.671s, median=0.817s, max=0.951s
+  Panic points detected: 0
+0
+
+Benchmarking: rlib_example
+Binary size: 379K
+  Times: min=0.028s, median=0.046s, max=0.050s
+  Panic points detected: 0
+0
+
+Benchmarking: dylib_example
+Binary size: 6.1M
+  Times: min=1.180s, median=1.382s, max=1.417s
+  Panic points detected: 33
+2
+
+Benchmarking: staticlib_example
+Binary size: 20M
+  Times: min=0.068s, median=0.075s, max=0.162s
+  Panic points detected: 0
+0
+
+⊘ Skipping workspace_test_main (binary not found: target/debug/workspace_test_main)
+
+Benchmarking: meshchat/meshchat
+Binary size: 415M
+  Times: min=150.149s, median=165.313s, max=172.323s
+  Panic points detected: 557
+19
+
+Benchmarking: flow/flowc
+Binary size: 30M
+  Times: min=1.969s, median=2.024s, max=2.168s
+  Panic points detected: 0
+0
+
+Benchmarking: flow/flowrcli
+Binary size: 113M
+  Times: min=8.770s, median=8.841s, max=9.008s
+  Panic points detected: 0
+0
+
+Benchmarking: flow/flowrex
+Binary size: 84M
+  Times: min=5.791s, median=5.915s, max=6.268s
+  Panic points detected: 0
+0
+
+Benchmarking: flow/flowrgui
+Binary size: 158M
+  Times: min=8.751s, median=9.080s, max=11.679s
+  Panic points detected: 0
+0
+
+Benchmarking: flow/flowc
+Binary size: 30M

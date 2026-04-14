@@ -335,16 +335,18 @@ impl LibraryCallGraph {
                 let call_site_addr = text_addr + r_offset;
 
                 // Find what function contains this call site
-                // Use symbol index for accurate function address and name
-                let (func_addr, func_name) = if let Some((addr, name)) = symbol_index
+                // For .o files with per-function sections, prefer section name over symbol index
+                // because symbol index may find anonymous symbols like .Lanon instead of the actual function
+                let (func_addr, func_name) = if let Some(ref name) = section_func_name {
+                    // Per-function section - use section name
+                    // Note: text_addr may be section-relative (often 0)
+                    (text_addr, name.clone())
+                } else if let Some((addr, name)) = symbol_index
                     .as_ref()
                     .and_then(|idx| idx.find_containing(call_site_addr))
                 {
+                    // Use symbol index for non-per-function sections
                     (addr, name.to_string())
-                } else if let Some(ref name) = section_func_name {
-                    // Fall back to section name only if symbol index fails
-                    // Note: text_addr may not be a reliable absolute address for per-function sections
-                    (text_addr, name.clone())
                 } else {
                     continue;
                 };

@@ -161,13 +161,16 @@ impl FunctionIndex {
         }
     }
 
-    /// Find the most specific function name for an address.
-    /// This checks inlined functions first (more specific), then falls back
-    /// to the containing function. Use this when displaying function names.
+    /// Find the most specific crate function name for an address.
+    /// Checks inlined functions first (preferring crate-source ones), then
+    /// falls back to the containing function. Use this for display: users
+    /// want to see their function names, not stdlib internals.
     #[inline]
     pub fn find_function_name(&self, addr: u64) -> Option<&str> {
-        // First check inlined functions (more specific)
-        if let Some(inlined) = self.find_in_inlined(addr) {
+        // First check inlined functions — prefer crate-source inlined
+        // functions over stdlib inlined functions (e.g., prefer "run"
+        // over "Option::unwrap" inlined inside "run")
+        if let Some(inlined) = self.find_crate_inlined(addr) {
             return Some(self.strings.get_name(inlined.name_idx));
         }
         // Fall back to containing function
@@ -175,22 +178,30 @@ impl FunctionIndex {
             .map(|f| self.strings.get_name(f.name_idx))
     }
 
-    /// Find an inlined function containing the given address.
-    /// Uses bucketed lookup for O(k) where k is functions in the bucket,
-    /// instead of O(n) scanning all inlined functions.
-    #[inline]
-    fn find_in_inlined(&self, addr: u64) -> Option<&FunctionInfo> {
-        // Look up the bucket for this address
+    /// Find a crate-source inlined function containing the given address.
+    /// Skips stdlib inlined functions (`core::`, `std::`, `alloc::`) and
+    /// returns the innermost crate function. Note: third-party dependency
+    /// inlines are not currently filtered and will be treated as crate code.
+    fn find_crate_inlined(&self, addr: u64) -> Option<&FunctionInfo> {
         let bucket = Self::bucket_id(addr);
         let indices = self.inlined_buckets.get(&bucket)?;
 
-        // Search only functions in this bucket for the smallest containing range
         let mut best: Option<&FunctionInfo> = None;
         let mut best_size: u64 = u64::MAX;
 
         for &idx in indices {
             let func = &self.inlined[idx];
             if addr >= func.start_address && addr < func.end_address {
+                // Only consider entries whose call_file is set (has DW_AT_call_file)
+                // and whose name looks like a crate function (not stdlib).
+                // Crate inlined functions have call_file in the crate source.
+                let name = self.strings.get_name(func.name_idx);
+                let is_stdlib = name.starts_with("core::")
+                    || name.starts_with("std::")
+                    || name.starts_with("alloc::");
+                if is_stdlib {
+                    continue;
+                }
                 let size = func.end_address - func.start_address;
                 if size < best_size {
                     best = Some(func);
@@ -200,6 +211,57 @@ impl FunctionIndex {
         }
 
         best
+    }
+
+    /// Get the call site for an inlined stdlib function containing the address.
+    ///
+    /// Uses DWARF DW_AT_call_file and DW_AT_call_line from DW_TAG_inlined_subroutine
+    /// entries, the same mechanism debuggers use for correct line numbers in
+    /// inlined code (e.g., `Option::unwrap`, `Result::expect`).
+    ///
+    /// Only returns results for stdlib inlined functions (`core::`, `std::`,
+    /// `alloc::`) — third-party dependency inlines are not currently handled.
+    /// For inlined crate functions, the crate line table already gives the
+    /// correct location within the function body.
+    ///
+    /// Selects the outermost (largest) stdlib inline, since its DW_AT_call_file
+    /// and DW_AT_call_line point back to the crate code that called it.
+    ///
+    /// Returns `(call_file, call_line, inlined_function_name)`.
+    pub fn get_inlined_call_site(&self, addr: u64) -> Option<(&str, u32, &str)> {
+        let bucket = Self::bucket_id(addr);
+        let indices = self.inlined_buckets.get(&bucket)?;
+
+        // Find the outermost stdlib inlined function containing addr.
+        // The outermost inline's call_file/call_line points to crate code.
+        let mut best: Option<&FunctionInfo> = None;
+        let mut best_size: u64 = 0;
+
+        for &idx in indices {
+            let func = &self.inlined[idx];
+            if addr >= func.start_address && addr < func.end_address {
+                let name = self.strings.get_name(func.name_idx);
+                let is_stdlib = name.starts_with("core::")
+                    || name.starts_with("std::")
+                    || name.starts_with("alloc::");
+                if !is_stdlib {
+                    continue;
+                }
+                let size = func.end_address - func.start_address;
+                if size > best_size {
+                    best = Some(func);
+                    best_size = size;
+                }
+            }
+        }
+
+        let func = best?;
+        let file = self.strings.get_file(func.file_idx)?;
+        if func.line == 0 {
+            return None;
+        }
+        let name = self.strings.get_name(func.name_idx);
+        Some((file, func.line, name))
     }
 
     /// Get a reference to the underlying functions slice.
@@ -351,7 +413,9 @@ pub fn get_functions_from_dwarf<'a>(
                         }
                     }
                     gimli::DW_TAG_inlined_subroutine => {
-                        if let Ok(Some(func)) = parse_inlined_subroutine(&dwarf, &unit, entry) {
+                        if let Ok(Some(func)) =
+                            parse_inlined_subroutine(&dwarf, &unit, entry, project_root)
+                        {
                             inl.push(func);
                         }
                     }
@@ -501,23 +565,38 @@ fn parse_function_die<R: Reader>(
 /// Parse a DW_TAG_inlined_subroutine DIE into ParsedFunctionInfo.
 /// Inlined subroutines use DW_AT_abstract_origin to reference the original function.
 /// Handles both DW_AT_low_pc/DW_AT_high_pc and DW_AT_ranges (DWARF 5).
+/// Extracts DW_AT_call_file/DW_AT_call_line for the call site in the caller.
 fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     entry: &DebuggingInformationEntry<R>,
+    project_root: &str,
 ) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
     let mut abstract_origin: Option<gimli::UnitOffset<usize>> = None;
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
     let mut high_pc_is_offset = false;
     let mut ranges_attr: Option<AttributeValue<R>> = None;
+    let mut call_file: Option<String> = None;
+    let mut call_line: Option<u32> = None;
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
         match attr.name() {
             gimli::DW_AT_abstract_origin => {
-                if let AttributeValue::UnitRef(offset) = attr.value() {
-                    abstract_origin = Some(offset);
+                match attr.value() {
+                    AttributeValue::UnitRef(offset) => {
+                        abstract_origin = Some(offset);
+                    }
+                    AttributeValue::DebugInfoRef(debug_info_offset) => {
+                        // Section-relative reference (common after dsymutil merging).
+                        // Convert to unit-relative offset; skip if the reference
+                        // points outside this compilation unit.
+                        if let Some(unit_offset) = debug_info_offset.to_unit_offset(&unit.header) {
+                            abstract_origin = Some(unit_offset);
+                        }
+                    }
+                    _ => {}
                 }
             }
             gimli::DW_AT_low_pc => {
@@ -538,6 +617,23 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
             gimli::DW_AT_ranges => {
                 // DWARF 5: inlined subroutines can use DW_AT_ranges for non-contiguous ranges
                 ranges_attr = Some(attr.value());
+            }
+            gimli::DW_AT_call_file => {
+                // DWARF 5 uses FileIndex, DWARF 4 uses constant (Udata)
+                let file_idx = match attr.value() {
+                    AttributeValue::FileIndex(idx) => Some(idx),
+                    AttributeValue::Udata(idx) => Some(idx),
+                    _ => None,
+                };
+                if let Some(idx) = file_idx {
+                    // Non-fatal: if file resolution fails, just skip the call site info
+                    call_file = resolve_decl_file(dwarf, unit, idx, project_root).unwrap_or(None);
+                }
+            }
+            gimli::DW_AT_call_line => {
+                if let AttributeValue::Udata(l) = attr.value() {
+                    call_line = Some(l as u32);
+                }
             }
             _ => {}
         }
@@ -581,14 +677,16 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
             name,
             start_address: low_pc,
             end_address: high_pc,
-            file: None,
-            line: None,
+            file: call_file,
+            line: call_line,
         })),
         _ => Ok(None),
     }
 }
 
 /// Resolve the function name from an abstract_origin reference.
+/// Follows DW_AT_specification chains when the referenced DIE doesn't
+/// directly have a name (common for inlined template instantiations).
 fn resolve_abstract_origin_name<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
@@ -596,6 +694,7 @@ fn resolve_abstract_origin_name<R: Reader>(
 ) -> Result<Option<String>, gimli::Error> {
     let entry = unit.entry(offset)?;
     let mut name: Option<String> = None;
+    let mut specification: Option<gimli::UnitOffset<R::Offset>> = None;
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
@@ -615,7 +714,19 @@ fn resolve_abstract_origin_name<R: Reader>(
                     }
                 }
             }
+            gimli::DW_AT_specification => {
+                if let AttributeValue::UnitRef(spec_offset) = attr.value() {
+                    specification = Some(spec_offset);
+                }
+            }
             _ => {}
+        }
+    }
+
+    // Follow DW_AT_specification chain if no name found directly
+    if name.is_none() {
+        if let Some(spec_offset) = specification {
+            return resolve_abstract_origin_name(dwarf, unit, spec_offset);
         }
     }
 

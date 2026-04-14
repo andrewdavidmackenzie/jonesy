@@ -481,10 +481,11 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
         })
         .collect();
 
+    let ctx = jonesy::project_context::ProjectContext::default();
     c.bench_function("filter_allowed_causes", |b| {
         b.iter(|| {
             let mut points = sample_points.clone();
-            filter_allowed_causes(&mut points, &config, None);
+            filter_allowed_causes(&mut points, &config, &ctx);
             black_box(points)
         })
     });

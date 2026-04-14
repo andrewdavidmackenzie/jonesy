@@ -501,10 +501,9 @@ impl JonesyLspServer {
 
             let analysis_result = {
                 let target = target.clone();
-                let workspace_root = workspace_root.clone();
                 let project_context = Arc::clone(&project_context);
                 tokio::task::spawn_blocking(move || {
-                    analyze_single_target(&target, &workspace_root, &project_context)
+                    analyze_single_target(&target, &project_context)
                 })
                 .await
             };
@@ -1691,12 +1690,9 @@ async fn run_analysis_task(
         analyzed_count += 1;
         let analysis_result = {
             let target = target.clone();
-            let workspace_root = workspace_root.clone();
             let project_context = Arc::clone(&project_context);
-            tokio::task::spawn_blocking(move || {
-                analyze_single_target(&target, &workspace_root, &project_context)
-            })
-            .await
+            tokio::task::spawn_blocking(move || analyze_single_target(&target, &project_context))
+                .await
         };
 
         if let Ok(Ok(points)) = analysis_result {
@@ -1934,14 +1930,13 @@ struct AnalysisResult {
 #[cfg(test)]
 fn analyze_workspace_targets(
     targets: &[PathBuf],
-    workspace_root: &Path,
     project_context: &ProjectContext,
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
     let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
 
     for target in targets {
-        match analyze_single_target(target, workspace_root, project_context) {
+        match analyze_single_target(target, project_context) {
             Ok(points) => {
                 result.analyzed_count += 1;
                 let point_count = points.len();
@@ -2010,7 +2005,6 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
 /// This reuses the same analysis functions as the CLI for consistency.
 fn analyze_single_target(
     target_path: &Path,
-    workspace_root: &Path,
     project_context: &ProjectContext,
 ) -> std::result::Result<Vec<CrateCodePoint>, String> {
     use crate::analysis::{analyze_archive, analyze_binary_target};
@@ -2027,8 +2021,8 @@ fn analyze_single_target(
     let symbols =
         SymbolTable::from(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;
 
-    let config =
-        Config::load_for_project(workspace_root, None).unwrap_or_else(|_| Config::with_defaults());
+    let config = Config::load_for_project(Path::new(project_context.project_root()), None)
+        .unwrap_or_else(|_| Config::with_defaults());
 
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
@@ -2117,7 +2111,6 @@ fn analyze_single_target(
                 &config,
                 &output,
                 project_context,
-                workspace_root,
             )?;
             Ok(result.code_points)
         }
@@ -2501,7 +2494,7 @@ mod tests {
         let mut lsp_points: HashSet<(String, u32)> = HashSet::new();
 
         for target in &targets {
-            let result = analyze_single_target(target, &workspace_test_dir, &project_context);
+            let result = analyze_single_target(target, &project_context);
             if let Ok(points) = result {
                 for point in points {
                     // Normalize path
@@ -3045,9 +3038,8 @@ mod tests {
     #[test]
     fn test_analyze_workspace_targets_empty() {
         let targets: Vec<PathBuf> = vec![];
-        let workspace_root = PathBuf::from("/workspace");
         let project_context = ProjectContext::default();
-        let result = analyze_workspace_targets(&targets, &workspace_root, &project_context);
+        let result = analyze_workspace_targets(&targets, &project_context);
 
         assert!(result.points.is_empty());
         assert_eq!(result.total_count, 0);
@@ -3059,9 +3051,8 @@ mod tests {
     fn test_analyze_workspace_targets_nonexistent() {
         // Non-existent targets should be skipped
         let targets = vec![PathBuf::from("/nonexistent/binary")];
-        let workspace_root = PathBuf::from("/workspace");
         let project_context = ProjectContext::default();
-        let result = analyze_workspace_targets(&targets, &workspace_root, &project_context);
+        let result = analyze_workspace_targets(&targets, &project_context);
 
         assert!(result.points.is_empty());
         assert_eq!(result.analyzed_count, 0);
@@ -3093,7 +3084,7 @@ mod tests {
         let targets = vec![binary];
         let project_context = ProjectContext::from_project_root(&panic_example)
             .expect("Should build project context for panic example");
-        let result = analyze_workspace_targets(&targets, &panic_example, &project_context);
+        let result = analyze_workspace_targets(&targets, &project_context);
 
         assert_eq!(result.analyzed_count, 1);
         assert_eq!(result.skipped_count, 0);

@@ -239,6 +239,10 @@ pub fn load_debug_info(binary: &BinaryRef, binary_path: &Path, quiet: bool) -> D
 fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
     use std::process::Command;
 
+    if !binary_path.exists() {
+        return None;
+    }
+
     let dsym_path = binary_path.with_extension("dSYM");
 
     // Check if dsymutil is available
@@ -246,6 +250,7 @@ fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
         .arg(binary_path)
         .arg("-o")
         .arg(&dsym_path)
+        .stderr(std::process::Stdio::null())
         .status()
         .ok()?;
 

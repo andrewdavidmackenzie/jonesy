@@ -451,7 +451,6 @@ pub fn collect_crate_code_points(
     node: &CallTreeNode,
     config: &Config,
     project_context: &ProjectContext,
-    workspace_root: Option<&std::path::Path>,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
     let mut roots = collect_crate_code_points_hierarchical(node, project_context);
 
@@ -459,7 +458,7 @@ pub fn collect_crate_code_points(
     assign_unknown_causes(&mut roots);
 
     // Filter out code points with allowed causes
-    filter_allowed_causes(&mut roots, config, workspace_root);
+    filter_allowed_causes(&mut roots, config, project_context);
 
     // Deduplicate roots by (file, line)
     dedupe_crate_points(&mut roots);
@@ -474,14 +473,24 @@ pub fn collect_crate_code_points(
 /// Assign `Unknown` cause to leaf points that have no identified causes.
 /// A leaf point is one with no children (closest to the panic in the call chain).
 /// This makes it clear that jonesy detected a panic path but couldn't identify the specific cause.
+///
+/// Special case: if the leaf is a direct panic (user code directly calls a
+/// panic-triggering function like `panic_fmt`), assign `ExplicitPanic` instead
+/// of `Unknown`. This handles `panic!("literal")` in Rust 1.78+ where the macro
+/// routes through `panic_fmt` without an intermediate function that
+/// `detect_panic_cause` recognizes.
 fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
     for point in points.iter_mut() {
         // Recursively process children first
         assign_unknown_causes(&mut point.children);
 
-        // If this is a leaf (no children) with no causes, assign Unknown
+        // If this is a leaf (no children) with no causes, assign a cause
         if point.children.is_empty() && point.causes.is_empty() {
-            point.causes.insert(PanicCause::Unknown);
+            if point.is_direct_panic {
+                point.causes.insert(PanicCause::ExplicitPanic);
+            } else {
+                point.causes.insert(PanicCause::Unknown);
+            }
         }
     }
 }
@@ -495,9 +504,11 @@ fn assign_unknown_causes(points: &mut [CrateCodePoint]) {
 pub fn filter_allowed_causes(
     points: &mut Vec<CrateCodePoint>,
     config: &Config,
-    workspace_root: Option<&std::path::Path>,
+    project_context: &ProjectContext,
 ) {
     use crate::inline_allows::check_inline_allow;
+
+    let workspace_root = Some(std::path::Path::new(project_context.project_root()));
 
     points.retain_mut(|point| {
         // Track if we originally had no causes (conservative - keep these unless inline allowed)
@@ -540,7 +551,7 @@ pub fn filter_allowed_causes(
 
         if should_keep {
             // Recursively filter children
-            filter_allowed_causes(&mut point.children, config, workspace_root);
+            filter_allowed_causes(&mut point.children, config, project_context);
         }
 
         should_keep
@@ -740,7 +751,8 @@ mod tests {
             called_function: Some("my_crate::time::TimeStamp::now".to_string()),
         }];
 
-        filter_allowed_causes(&mut points, &config, None);
+        let ctx = ProjectContext::default();
+        filter_allowed_causes(&mut points, &config, &ctx);
 
         // The point should be filtered out because the rule allows unwrap on that function
         assert!(
@@ -775,7 +787,8 @@ mod tests {
             called_function: Some("core::hash::Hash::hash".to_string()),
         }];
 
-        filter_allowed_causes(&mut points, &config, None);
+        let ctx = ProjectContext::default();
+        filter_allowed_causes(&mut points, &config, &ctx);
 
         // The point should be filtered out because capacity is globally allowed
         assert!(
@@ -813,7 +826,8 @@ mod tests {
             called_function: Some("core::hash::Hash::hash".to_string()),
         }];
 
-        filter_allowed_causes(&mut points, &config, None);
+        let ctx = ProjectContext::default();
+        filter_allowed_causes(&mut points, &config, &ctx);
 
         // The point should remain because Unknown is NOT allowed
         assert_eq!(
@@ -862,7 +876,8 @@ mod tests {
             called_function: Some("other_crate::Config::parse".to_string()),
         }];
 
-        filter_allowed_causes(&mut points, &config, None);
+        let ctx = ProjectContext::default();
+        filter_allowed_causes(&mut points, &config, &ctx);
 
         // The point should be kept because the rule doesn't match Config::parse
         assert_eq!(

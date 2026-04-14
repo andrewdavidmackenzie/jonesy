@@ -287,7 +287,7 @@ fn process_instruction_data_with_crate_table<'a>(
         let func_line = function_index.get_line(func);
         // Clone once for caller_file, then move func_file into match
         let caller_file = func_file.clone();
-        let (file, mut line, mut column) = match (func_file, func_line) {
+        let (mut file, mut line, mut column) = match (func_file, func_line) {
             (Some(f), Some(l)) => {
                 // Fast path: use DWARF function info directly
                 (Some(f), Some(l), None)
@@ -314,13 +314,8 @@ fn process_instruction_data_with_crate_table<'a>(
                 let (crate_line, crate_column) =
                     crate_line_table.get_line(func.start_address, data.address);
                 if crate_line.is_some() {
-                    // If the crate line table only found the function-start line,
-                    // try the full line table as a fallback. When stdlib code is
-                    // inlined (e.g., unwrap()), the DWARF line entries at the call
-                    // address point to stdlib source, so the crate line table only
-                    // has the function definition entry. The full line table can
-                    // find the nearest crate-source line by searching backward.
                     if crate_line == func_line {
+                        // Only found function-start line. Try full line table.
                         let (full_line, full_column) = full_line_table.get_nearest_crate_line(
                             data.address,
                             func.start_address,
@@ -336,8 +331,41 @@ fn process_instruction_data_with_crate_table<'a>(
                             column = crate_column;
                         }
                     } else {
-                        line = crate_line;
-                        column = crate_column;
+                        // Got a specific line from crate table. Only consider
+                        // DWARF inline info when crate_line is in the function
+                        // prologue area (within a few lines of the declaration).
+                        // This is where the crate line table may return the
+                        // setup line before an inlined expansion (e.g.,
+                        // Option::unwrap) rather than the actual call site.
+                        // For lines deep inside the function body, the crate
+                        // line table result is already correct.
+                        let near_prologue = match (crate_line, func_line) {
+                            (Some(cl), Some(fl)) => cl.saturating_sub(fl) <= 5,
+                            _ => false,
+                        };
+                        if near_prologue {
+                            if let Some((call_file, call_line_num, _)) =
+                                function_index.get_inlined_call_site(data.address)
+                            {
+                                if project_context.is_crate_source(call_file)
+                                    && call_line_num > 0
+                                    && Some(call_line_num) != crate_line
+                                {
+                                    file = Some(call_file.to_string());
+                                    line = Some(call_line_num);
+                                    column = None;
+                                } else {
+                                    line = crate_line;
+                                    column = crate_column;
+                                }
+                            } else {
+                                line = crate_line;
+                                column = crate_column;
+                            }
+                        } else {
+                            line = crate_line;
+                            column = crate_column;
+                        }
                     }
                 }
             }

@@ -1,0 +1,78 @@
+========================================
+Jonesy Performance Benchmark
+========================================
+
+Platform: Linux aarch64
+Date: 2026-04-11T18:22:39Z
+
+CPU: -
+Cores: 2
+
+rustc 1.93.1 (01f6ddf75 2026-02-11)
+cargo 1.93.1 (083ac5135 2025-12-15)
+
+Building jonesy (release)...
+Jonesy: jonesy 0.8.0
+
+========================================
+
+Benchmarking: simple_panic
+Binary size: 3.8M
+  Times: min=0.053s, median=0.053s, max=0.064s
+  Panic points detected: 41
+1
+
+Benchmarking: panic
+Binary size: 4.9M
+  Times: min=0.074s, median=0.074s, max=0.084s
+  Panic points detected: 91
+3
+
+Benchmarking: perfect
+Binary size: 3.9M
+  Times: min=0.057s, median=0.058s, max=0.066s
+  Panic points detected: 0
+0
+
+Benchmarking: rlib_example
+Binary size: 550K
+  Times: min=0.056s, median=0.057s, max=0.060s
+  Panic points detected: 21
+2
+
+Benchmarking: dylib_example
+Binary size: 6.6M
+  Times: min=0.084s, median=0.089s, max=0.094s
+  Panic points detected: 45
+2
+
+Benchmarking: staticlib_example
+Binary size: 21M
+  Times: min=0.008s, median=0.009s, max=0.032s
+  Panic points detected: 1
+1
+
+⊘ Skipping workspace_test_main (binary not found: target/debug/workspace_test_main)
+
+Benchmarking: meshcore-rs/libmeshcore_rs.rlib
+Binary size: 6.0M
+  Times: min=19.745s, median=19.817s, max=20.178s
+  Panic points detected: 0
+0
+
+Benchmarking: meshchat/meshchat
+Binary size: 399M
+  Times: min=4.094s, median=4.277s, max=4.686s
+  Panic points detected: 745
+20
+
+Benchmarking: flow/libflowcore.rlib
+Binary size: 18M
+  Times: min=0.152s, median=0.154s, max=0.192s
+  Panic points detected: 11
+6
+
+========================================
+Benchmark complete!
+Results saved to: benchmark_results_Linux-aarch64_20260411_202239.txt
+========================================

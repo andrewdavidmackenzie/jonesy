@@ -4,17 +4,19 @@ pub fn cause_a_panic() {
 }
 
 pub fn cause_an_unwrap() {
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let opt: Option<i32> = if rng.random_bool(0.0) { Some(42) } else { None };
+    // Use runtime check that won't be optimized away
+    let opt: Option<i32> = if std::env::args().len() > 1000 {
+        Some(42)
+    } else {
+        None
+    };
     // jonesy: expect panic unwrap on None
     opt.unwrap();
 }
 
 pub fn cause_unwrap_err() {
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let result: Result<i32, &str> = if rng.random_bool(0.0) {
+    // Use runtime check that won't be optimized away
+    let result: Result<i32, &str> = if std::env::args().len() > 1000 {
         Ok(42)
     } else {
         Err("error")

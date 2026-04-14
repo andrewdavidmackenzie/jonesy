@@ -19,7 +19,6 @@
 //! - **CALL [rip+offset]**: RIP-relative indirect call (common for GOT/PLT)
 
 use capstone::prelude::*;
-use rayon::prelude::*;
 
 /// Extracted instruction data for parallel processing
 pub(crate) struct InsnData {
@@ -27,27 +26,20 @@ pub(crate) struct InsnData {
     pub(crate) call_target: Option<u64>,
 }
 
-/// Minimum chunk size for parallel disassembly
-const MIN_CHUNK_SIZE: usize = 64 * 1024; // 64KB
+/// Tracks RIP-relative loads into registers for resolving register-indirect calls
+struct RegisterLoad {
+    /// Address where the GOT entry will be after the instruction executes
+    got_addr: u64,
+}
 
 /// Scan a chunk of x86_64 code for CALL instructions using Capstone disassembler.
 fn scan_call_instructions(
+    cs: &Capstone,
     data: &[u8],
     base_addr: u64,
-    got_cache: &std::collections::HashMap<u64, u64>,
+    got_cache: &ahash::AHashMap<u64, u64>,
 ) -> Vec<InsnData> {
     let mut results = Vec::new();
-
-    // Create Capstone disassembler for x86_64
-    let cs = match Capstone::new()
-        .x86()
-        .mode(arch::x86::ArchMode::Mode64)
-        .detail(true)
-        .build()
-    {
-        Ok(cs) => cs,
-        Err(_) => return results,
-    };
 
     // Disassemble the code section
     let insns = match cs.disasm_all(data, base_addr) {
@@ -55,9 +47,78 @@ fn scan_call_instructions(
         Err(_) => return results,
     };
 
+    // Track register loads from GOT for resolving call *%reg patterns
+    // Map: register_id -> RegisterLoad
+    // We track recent GOT loads but only within the same basic block (cleared on any control flow)
+    let mut register_loads: ahash::AHashMap<u16, RegisterLoad> = ahash::AHashMap::new();
+
     // Extract CALL instructions
     for insn in insns.iter() {
         let mnemonic = insn.mnemonic().unwrap_or("");
+
+        // Clear register tracking on control flow instructions (except call)
+        // This prevents false matches across basic block boundaries
+        if matches!(
+            mnemonic,
+            "jmp"
+                | "je"
+                | "jne"
+                | "jz"
+                | "jnz"
+                | "ja"
+                | "jae"
+                | "jb"
+                | "jbe"
+                | "jg"
+                | "jge"
+                | "jl"
+                | "jle"
+                | "ret"
+        ) {
+            register_loads.clear();
+        }
+
+        // Track MOV instructions that load from GOT into registers
+        if mnemonic == "mov" {
+            if let Ok(detail) = cs.insn_detail(insn) {
+                let arch_detail = detail.arch_detail();
+                let operands = arch_detail.operands();
+
+                // Pattern: mov offset(%rip), %reg
+                if operands.len() == 2 {
+                    if let (
+                        arch::ArchOperand::X86Operand(dst),
+                        arch::ArchOperand::X86Operand(src),
+                    ) = (&operands[0], &operands[1])
+                    {
+                        // Check if destination is a register (this will get overwritten)
+                        if let arch::x86::X86OperandType::Reg(dst_reg) = dst.op_type {
+                            // Check if source is RIP-relative memory load
+                            if let arch::x86::X86OperandType::Mem(mem_op) = src.op_type {
+                                if mem_op.base()
+                                    == capstone::RegId(arch::x86::X86Reg::X86_REG_RIP as u16)
+                                {
+                                    let rip_offset = mem_op.disp();
+                                    let insn_size = insn.bytes().len() as u64;
+                                    let next_insn = insn.address().wrapping_add(insn_size);
+                                    let got_addr = next_insn.wrapping_add(rip_offset as u64);
+
+                                    // Update this register's GOT load
+                                    register_loads.insert(dst_reg.0, RegisterLoad { got_addr });
+                                } else {
+                                    // Non-RIP-relative write to register - clear it
+                                    register_loads.remove(&dst_reg.0);
+                                }
+                            } else {
+                                // Register being written with non-memory source - clear it
+                                register_loads.remove(&dst_reg.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if mnemonic == "call" {
             let detail = match cs.insn_detail(insn) {
                 Ok(detail) => detail,
@@ -90,6 +151,11 @@ fn scan_call_instructions(
                                 None
                             }
                         }
+                        // Indirect call through register: call *%rax
+                        // Check if this register was loaded from GOT recently (within same basic block)
+                        arch::x86::X86OperandType::Reg(reg) => register_loads
+                            .get(&reg.0)
+                            .and_then(|load| got_cache.get(&load.got_addr).copied()),
                         _ => None,
                     },
                     _ => None,
@@ -117,60 +183,47 @@ pub(crate) fn parallel_disassemble(
     elf: Option<&goblin::elf::Elf>,
     buffer: &[u8],
 ) -> Vec<InsnData> {
-    use std::collections::HashMap;
-
-    // Build GOT cache for resolving indirect calls
+    // Build GOT cache for resolving indirect calls (using AHashMap for speed)
     let got_cache = if let Some(elf) = elf {
         got::build_cache(elf, buffer)
     } else {
-        HashMap::new()
+        ahash::AHashMap::new()
     };
 
-    let num_threads = rayon::current_num_threads();
-
-    // Calculate chunk size
-    let ideal_chunk_size = text_data.len() / num_threads;
-    let chunk_size = if ideal_chunk_size < MIN_CHUNK_SIZE {
-        // Data too small to benefit from parallelization
-        text_data.len()
-    } else {
-        ideal_chunk_size
+    // Create Capstone disassembler once (major optimization - was being created per chunk!)
+    let cs = match Capstone::new()
+        .x86()
+        .mode(arch::x86::ArchMode::Mode64)
+        .detail(true)
+        .build()
+    {
+        Ok(cs) => cs,
+        Err(_) => return Vec::new(),
     };
 
-    if chunk_size >= text_data.len() {
-        // Single chunk - use sequential scanning
-        return scan_call_instructions(text_data, text_addr, &got_cache);
-    }
-
-    // Create chunks with their base addresses
-    let chunks: Vec<(usize, &[u8], u64)> = text_data
-        .chunks(chunk_size)
-        .enumerate()
-        .map(|(i, chunk)| {
-            let chunk_addr = text_addr + (i * chunk_size) as u64;
-            (i, chunk, chunk_addr)
-        })
-        .collect();
-
-    // Scan chunks in parallel for CALL instructions
-    let results: Vec<Vec<InsnData>> = chunks
-        .par_iter()
-        .map(|(_i, chunk, chunk_addr)| scan_call_instructions(chunk, *chunk_addr, &got_cache))
-        .collect();
-
-    // Flatten results from all chunks
-    results.into_iter().flatten().collect()
+    // Note: Capstone is not Sync, so we can't parallelize disassembly across threads.
+    // However, creating one instance and scanning sequentially is MUCH faster than
+    // the previous approach of creating a new Capstone instance per chunk (which
+    // happened 8-12 times on multi-core systems).
+    //
+    // Sequential scanning with one Capstone instance is the optimization here.
+    scan_call_instructions(&cs, text_data, text_addr, &got_cache)
 }
 
 /// MachO relocation type for x86_64 PC-relative calls (X86_64_RELOC_BRANCH)
 pub(crate) const MACHO_RELOC_BRANCH26: u8 = 2;
 
 /// ELF relocation type for x86_64 PC-relative calls (R_X86_64_PLT32)
-pub(crate) const ELF_RELOC_CALL26: u32 = 4;
+pub(crate) const ELF_RELOC_PLT32: u32 = 4;
+
+/// ELF relocation type for x86_64 GOT-relative calls (R_X86_64_GOTPCREL)
+/// Used for indirect calls through the Global Offset Table
+pub(crate) const ELF_RELOC_GOTPCREL: u32 = 9;
 
 /// Check if relocation type represents a function call.
+/// Accepts both direct PLT calls and GOT-based indirect calls.
 pub(crate) fn is_call_relocation(r_type: u32) -> bool {
-    r_type == ELF_RELOC_CALL26
+    r_type == ELF_RELOC_PLT32 || r_type == ELF_RELOC_GOTPCREL
 }
 
 /// GOT (Global Offset Table) resolution for x86_64 indirect calls.
@@ -184,14 +237,13 @@ pub(crate) fn is_call_relocation(r_type: u32) -> bool {
 /// using ELF relocations.
 pub mod got {
     use goblin::elf::Elf;
-    use std::collections::HashMap;
 
     /// Build a mapping from GOT entry addresses to target function addresses.
     ///
     /// This parses .rela.plt and .rela.dyn sections to build the mapping.
-    /// Returns HashMap: GOT address -> target function address
-    pub(crate) fn build_cache(elf: &Elf, buffer: &[u8]) -> HashMap<u64, u64> {
-        let mut got_cache = HashMap::new();
+    /// Returns AHashMap: GOT address -> target function address (faster than HashMap)
+    pub(crate) fn build_cache(elf: &Elf, buffer: &[u8]) -> ahash::AHashMap<u64, u64> {
+        let mut got_cache = ahash::AHashMap::new();
 
         // Process .rela.plt relocations
         if let Some(rela_plt) = find_section(elf, ".rela.plt") {
@@ -221,7 +273,7 @@ pub mod got {
         elf: &Elf,
         buffer: &[u8],
         section: &goblin::elf::SectionHeader,
-        got_cache: &mut HashMap<u64, u64>,
+        got_cache: &mut ahash::AHashMap<u64, u64>,
     ) {
         let offset = section.sh_offset as usize;
         let size = section.sh_size as usize;
@@ -285,7 +337,7 @@ pub mod got {
         insn_addr: u64,
         insn_size: u64,
         rip_offset: i64,
-        got_cache: &HashMap<u64, u64>,
+        got_cache: &ahash::AHashMap<u64, u64>,
     ) -> Option<u64> {
         // Compute GOT entry address: next_insn_addr + rip_offset
         let next_insn = insn_addr.wrapping_add(insn_size);

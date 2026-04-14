@@ -440,6 +440,7 @@ fn setup() {
             .current_dir(&workspace_root)
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("CARGO_INCREMENTAL")
             .status()
             .expect("Failed to build examples");
         assert!(status.success(), "Failed to build examples");
@@ -639,6 +640,7 @@ fn test_workspace_test_example() {
         .current_dir(&workspace_test_dir)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
         .status()
         .expect("Failed to build workspace_test");
     assert!(status.success(), "Failed to build workspace_test");
@@ -1032,6 +1034,7 @@ fn test_inlined_function_names() {
         .current_dir(&example_dir)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1346,6 +1349,7 @@ fn test_dsym_auto_generation() {
         .current_dir(&panic_example)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1700,10 +1704,10 @@ fn test_rlib_inline_allow() {
 
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
-    // cause_allowed_overflow (line 122) has `// jonesy:allow(overflow)` — should NOT appear
+    // cause_allowed_overflow (line 124) has `// jonesy:allow(overflow)` — should NOT appear
     let has_allowed_detection = stdout
         .lines()
-        .any(|line| line.contains("mod.rs:122") && line.contains("overflow"));
+        .any(|line| line.contains("mod.rs:124") && line.contains("overflow"));
 
     assert!(
         !has_allowed_detection,
@@ -1711,14 +1715,54 @@ fn test_rlib_inline_allow() {
         stdout
     );
 
-    // cause_arithmetic_overflow (line 109) does NOT have an inline allow — should still appear
+    // cause_arithmetic_overflow (line 111) does NOT have an inline allow — should still appear
     let has_denied_detection = stdout
         .lines()
-        .any(|line| line.contains("mod.rs:109") && line.contains("overflow"));
+        .any(|line| line.contains("mod.rs:111") && line.contains("overflow"));
 
     assert!(
         has_denied_detection,
         "cause_arithmetic_overflow (without inline allow) should still be detected.\nOutput:\n{}",
         stdout
+    );
+}
+
+/// Test that parallel .rlib processing produces identical results to sequential processing.
+/// This verifies that the parallel .o file processing implementation is deterministic.
+#[test]
+fn test_rlib_parallel_determinism() {
+    setup();
+    let workspace_root = find_workspace_root();
+    let example_dir = workspace_root.join("examples").join("rlib");
+
+    // Run with 1 thread (sequential processing)
+    let output_1_thread = run_jonesy_raw_output(
+        &example_dir,
+        &["--no-hyperlinks", "--lib", "--max-threads", "1"],
+    );
+
+    // Run with 4 threads (parallel processing)
+    let output_4_threads = run_jonesy_raw_output(
+        &example_dir,
+        &["--no-hyperlinks", "--lib", "--max-threads", "4"],
+    );
+
+    // First check: exact output match catches ordering, duplicates, and column differences
+    assert_eq!(
+        output_1_thread, output_4_threads,
+        "Parallel output differs from sequential.\n\nSequential:\n{}\n\nParallel:\n{}",
+        output_1_thread, output_4_threads
+    );
+
+    // Semantic backstop: verify same panic point sets in case output formatting changes
+    let set_1: HashSet<_> = parse_jones_output(&output_1_thread);
+    let set_4: HashSet<_> = parse_jones_output(&output_4_threads);
+    let only_in_1: Vec<_> = set_1.difference(&set_4).collect();
+    let only_in_4: Vec<_> = set_4.difference(&set_1).collect();
+    assert!(
+        only_in_1.is_empty() && only_in_4.is_empty(),
+        "Different panic point sets.\nOnly in 1-thread: {:?}\nOnly in 4-threads: {:?}",
+        only_in_1,
+        only_in_4
     );
 }

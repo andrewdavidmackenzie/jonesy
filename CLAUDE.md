@@ -58,6 +58,8 @@ reuse them if they can be with minimal changes
 with parameters if they can be
 - Use rust canonical code where possible. Implement `From` traits for conversion, create structs
 with methods, use traits when multiple implementations may be needed, etc.
+- Use British spelling in any variables or comments written
+- Use articles for correct grammar in comments written and docs.
 
 ## Code Invariants for jonesy
 

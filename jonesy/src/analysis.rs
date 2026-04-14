@@ -5,11 +5,11 @@
 
 use crate::args::OutputFormat;
 use crate::binary_format::BinaryRef;
+use crate::call_tree::filter_allowed_causes;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
-    collect_crate_code_points, filter_allowed_causes,
+    collect_crate_code_points,
 };
-use crate::cargo::find_project_root;
 use crate::config::Config;
 use crate::heuristics::{find_entry_points, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
@@ -49,7 +49,7 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
     }
 }
 
-/// Result of analyzing a single binary, includes summary and optionally code points.
+/// Result of analysing a single binary, includes summary and optionally code points.
 #[derive(Default)]
 pub struct BinaryAnalysisResult {
     pub summary: AnalysisSummary,
@@ -111,7 +111,7 @@ struct PanicCaller {
     target: String,
 }
 
-/// Analyze a single MachO or ELF binary for panic points.
+/// Analyse a single MachO or ELF binary for panic points.
 /// Returns a summary of panic code points found, plus code points.
 pub fn analyze_binary_target(
     symbols: &SymbolTable,
@@ -131,8 +131,6 @@ pub fn analyze_binary_target(
 
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
-
-    let project_root = find_project_root(binary_path)?;
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -257,8 +255,7 @@ pub fn analyze_binary_target(
             build_call_tree_parallel_filtered(&call_graph, *target_addr, &visited, project_context);
 
         // Collect code points from this tree
-        let (code_points, _summary) =
-            collect_crate_code_points(&root, config, project_context, Some(project_root.as_path()));
+        let (code_points, _summary) = collect_crate_code_points(&root, config, project_context);
         let entry_result = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points,
@@ -286,7 +283,7 @@ pub fn analyze_binary_target(
     Ok(final_result)
 }
 
-/// Analyze an archive (rlib/staticlib) for panic points using relocation-based call graph.
+/// Analyse an archive (rlib/staticlib) for panic points using a relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
@@ -296,7 +293,6 @@ pub fn analyze_archive(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
-    workspace_root: &Path,
 ) -> Result<BinaryAnalysisResult, String> {
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
@@ -312,7 +308,7 @@ pub fn analyze_archive(
 
     // Get the library name to filter out stdlib/dependency .o files
     // For performance: only process .o files from the user's library
-    // Extract library name from binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
+    // Extract library name from the binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
     // Note: .o files are named using the library name (from [lib] name in Cargo.toml),
     // not the package name, so we use lib_name directly for filtering
     let lib_name = binary_path
@@ -325,12 +321,16 @@ pub fn analyze_archive(
         eprintln!("  DEBUG: lib_name = '{}'", lib_name);
     }
 
+    // Collect member names for parallel processing
+    let all_members: Vec<String> = archive.members().iter().map(|s| s.to_string()).collect();
+
+    // Filter and categorise members
+    let mut member_names = Vec::new();
     let mut skipped_count = 0;
-    let mut processed_count = 0;
     let mut sample_kept = Vec::new();
     let mut sample_skipped = Vec::new();
 
-    for member_name in archive.members() {
+    for member_name in &all_members {
         // Skip non-object files (like .rmeta)
         if !member_name.ends_with(".o") {
             continue;
@@ -354,62 +354,123 @@ pub fn analyze_archive(
             }
         }
 
-        // Extract the member data
-        let member_data = match archive.extract(member_name, buffer) {
-            Ok(data) => data,
+        member_names.push(member_name.clone());
+    }
+
+    // Pre-extract all member data to avoid potential serialization in archive.extract()
+    if show_progress {
+        eprintln!(
+            "  Extracting {} .o files from archive...",
+            member_names.len()
+        );
+    }
+    let extraction_start = show_timings.then(Instant::now);
+
+    let member_data_list: Vec<(String, Vec<u8>)> = member_names
+        .iter()
+        .filter_map(|member_name| match archive.extract(member_name, buffer) {
+            Ok(data) => Some((member_name.clone(), data.to_vec())),
             Err(e) => {
                 if show_progress {
                     eprintln!("  Warning: Failed to extract {}: {}", member_name, e);
                 }
-                continue;
+                None
             }
-        };
+        })
+        .collect();
 
-        // Parse the object file and build its call graph
-        match goblin::Object::parse(member_data) {
-            Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(obj_macho))) => {
-                let binary_ref = BinaryRef::MachO(&obj_macho);
-                match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
-                {
-                    Ok(obj_graph) => {
-                        merged_graph.merge(obj_graph);
-                        processed_count += 1;
-                    }
-                    Err(e) => {
-                        if show_progress {
-                            eprintln!(
-                                "  Warning: Failed to build call graph for {}: {}",
-                                member_name, e
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(goblin::Object::Elf(obj_elf)) => {
-                let binary_ref = BinaryRef::Elf(&obj_elf);
-                match LibraryCallGraph::build_from_object(&binary_ref, member_data, project_context)
-                {
-                    Ok(obj_graph) => {
-                        merged_graph.merge(obj_graph);
-                        processed_count += 1;
-                    }
-                    Err(e) => {
-                        if show_progress {
-                            eprintln!(
-                                "  Warning: Failed to build call graph for {}: {}",
-                                member_name, e
-                            );
-                        }
-                    }
-                }
-            }
-            _ => {
-                if show_progress {
-                    eprintln!("  Warning: Failed to parse {} as MachO or ELF", member_name);
-                }
-            }
-        }
+    if let Some(extraction_start) = extraction_start {
+        eprintln!(
+            "  [timing] Extract .o files: {:?}",
+            extraction_start.elapsed()
+        );
     }
+
+    // Process .o files in parallel
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if show_progress {
+        eprintln!(
+            "  Processing {} .o files in parallel...",
+            member_data_list.len()
+        );
+    }
+    let processing_start = show_timings.then(Instant::now);
+
+    let processed_count = AtomicUsize::new(0);
+    let total_count = member_data_list.len();
+
+    let graphs: Vec<LibraryCallGraph> = member_data_list
+        .par_iter()
+        .filter_map(|(member_name, member_data)| {
+            // Parse the object file and build its call graph
+            let result = match goblin::Object::parse(member_data.as_slice()) {
+                Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(obj_macho))) => {
+                    let binary_ref = BinaryRef::MachO(&obj_macho);
+                    LibraryCallGraph::build_from_object(
+                        &binary_ref,
+                        member_data.as_slice(),
+                        project_context,
+                    )
+                    .map_err(|e| {
+                        if show_progress {
+                            eprintln!(
+                                "  Warning: Failed to build call graph for {}: {}",
+                                member_name, e
+                            );
+                        }
+                    })
+                    .ok()
+                }
+                Ok(goblin::Object::Elf(obj_elf)) => {
+                    let binary_ref = BinaryRef::Elf(&obj_elf);
+                    LibraryCallGraph::build_from_object(
+                        &binary_ref,
+                        member_data.as_slice(),
+                        project_context,
+                    )
+                    .map_err(|e| {
+                        if show_progress {
+                            eprintln!(
+                                "  Warning: Failed to build call graph for {}: {}",
+                                member_name, e
+                            );
+                        }
+                    })
+                    .ok()
+                }
+                _ => {
+                    if show_progress {
+                        eprintln!("  Warning: Failed to parse {} as MachO or ELF", member_name);
+                    }
+                    None
+                }
+            };
+
+            // Update progress counter
+            let count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if show_progress && count % 10 == 0 {
+                eprintln!("  Processing .o files: {}/{}", count, total_count);
+            }
+
+            result
+        })
+        .collect();
+
+    if let Some(processing_start) = processing_start {
+        eprintln!(
+            "  [timing] Process .o files (parallel): {:?}",
+            processing_start.elapsed()
+        );
+    }
+
+    // Merge all graphs sequentially (fast operation)
+    for graph in graphs {
+        merged_graph.merge(graph);
+    }
+
+    let processed_count = processed_count.load(Ordering::Relaxed);
 
     if show_progress {
         if !sample_kept.is_empty() {
@@ -532,7 +593,7 @@ pub fn analyze_archive(
 
     // Filter out allowed causes using the same logic as binary analysis,
     // including inline allow comments (e.g., `// jonesy:allow(overflow)`)
-    filter_allowed_causes(&mut code_points, config, Some(workspace_root));
+    filter_allowed_causes(&mut code_points, config, project_context);
 
     // Deduplicate by (file, line)
     let mut seen: std::collections::HashMap<(String, u32), usize> =
