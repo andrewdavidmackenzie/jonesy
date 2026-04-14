@@ -131,8 +131,12 @@ fn scan_call_instructions(
             let call_target = if operands.len() == 1 {
                 match &operands[0] {
                     arch::ArchOperand::X86Operand(op) => match op.op_type {
-                        // Direct call with immediate target
-                        arch::x86::X86OperandType::Imm(imm_val) => Some(imm_val as u64),
+                        // Direct call with immediate target — resolve through
+                        // stub cache if the target is a stub address
+                        arch::x86::X86OperandType::Imm(imm_val) => {
+                            let addr = imm_val as u64;
+                            Some(got_cache.get(&addr).copied().unwrap_or(addr))
+                        }
                         // Indirect call through memory (likely GOT)
                         arch::x86::X86OperandType::Mem(mem_op) => {
                             // Check for RIP-relative addressing
@@ -259,153 +263,96 @@ pub mod got {
         got_cache
     }
 
-    /// Build a cache mapping import pointer addresses to symbol addresses
-    /// for MachO x86_64 binaries.
+    /// Build a cache mapping stub and pointer addresses to actual function
+    /// addresses for MachO x86_64 binaries.
     ///
-    /// MachO indirect calls go through stubs that jump via lazy/non-lazy symbol
-    /// pointers. The `CALL *offset(%rip)` targets these pointer entries. We use
-    /// goblin's `imports()` API (which parses the bind opcodes) to map each
-    /// import's pointer address to the corresponding symbol's address in the
-    /// binary's symbol table.
+    /// On x86_64 MachO, even internal function calls go through `__stubs`:
+    ///   CALL stub_addr → JMP *ptr_addr(%rip) → actual_function
+    ///
+    /// We parse each stub's JMP instruction to find the `__la_symbol_ptr`
+    /// entry it targets, then read the pointer value from the binary to get
+    /// the actual function address.
     pub(crate) fn build_macho_stub_cache(
         macho: &MachO,
-        buffer: &[u8],
+        _buffer: &[u8],
     ) -> ahash::AHashMap<u64, u64> {
         let mut cache = ahash::AHashMap::new();
 
-        // Approach 1: Use imports() to map import pointer addresses to symbols
-        let mut resolved_via_imports = 0;
-        if let Ok(imports) = macho.imports() {
-            eprintln!("  DEBUG: MachO has {} imports", imports.len());
-            for import in &imports {
-                let target = find_symbol_addr_by_name(macho, import.name);
-                if target != 0 {
-                    cache.insert(import.address, target);
-                    resolved_via_imports += 1;
-                }
-            }
-            // Show a few samples
-            for (i, import) in imports.iter().enumerate().take(5) {
-                let target = cache.get(&import.address).copied().unwrap_or(0);
-                eprintln!(
-                    "  DEBUG: import[{}] name={} addr={:#x} lazy={} resolved={:#x}",
-                    i, import.name, import.address, import.is_lazy, target
-                );
-            }
-        }
-
-        // Approach 2: Also scan __stubs section directly
-        // On x86_64, __stubs contains 6-byte JMP *offset(%rip) instructions.
-        // The jump target is in __la_symbol_ptr. Map stub addresses to their
-        // resolved targets so direct calls to stubs also resolve.
-        let mut stubs_found = 0;
+        // Collect __la_symbol_ptr and __nl_symbol_ptr section data for pointer lookups
+        let mut ptr_sections: Vec<(u64, Vec<u8>)> = Vec::new();
         for segment in macho.segments.iter() {
-            let sections = match segment.sections() {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            for (section, data) in sections {
-                let name = section.name().unwrap_or("");
-                if name != "__stubs" {
-                    continue;
-                }
-                // Each stub is 6 bytes: FF 25 xx xx xx xx (JMP *offset(%rip))
-                let stub_size = 6usize;
-                let num_stubs = data.len() / stub_size;
-                eprintln!(
-                    "  DEBUG: __stubs section at {:#x}, {} stubs of {} bytes",
-                    section.addr, num_stubs, stub_size
-                );
-                for i in 0..num_stubs {
-                    let stub_offset = i * stub_size;
-                    let stub_addr = section.addr + stub_offset as u64;
-                    // Parse JMP *offset(%rip): FF 25 followed by 4-byte LE offset
-                    if stub_offset + 6 <= data.len()
-                        && data[stub_offset] == 0xFF
-                        && data[stub_offset + 1] == 0x25
-                    {
-                        let rip_offset = i32::from_le_bytes(
-                            data[stub_offset + 2..stub_offset + 6].try_into().unwrap(),
-                        );
-                        // Target pointer address = stub_addr + 6 + rip_offset
-                        let ptr_addr =
-                            (stub_addr + stub_size as u64).wrapping_add(rip_offset as u64);
-                        // If we resolved this pointer via imports, map stub -> target
-                        if let Some(&target) = cache.get(&ptr_addr) {
-                            cache.insert(stub_addr, target);
-                            stubs_found += 1;
-                        }
+            if let Ok(sections) = segment.sections() {
+                for (section, data) in sections {
+                    let name = section.name().unwrap_or("");
+                    if name == "__la_symbol_ptr" || name == "__nl_symbol_ptr" || name == "__got" {
+                        ptr_sections.push((section.addr, data.to_vec()));
                     }
                 }
             }
         }
 
-        // Also map __got entries to symbol addresses
-        for segment in macho.segments.iter() {
-            let sections = match segment.sections() {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            for (section, data) in sections {
-                let name = section.name().unwrap_or("");
-                if name != "__got" {
-                    continue;
+        // Helper: read an 8-byte pointer from any pointer section given a virtual address
+        let read_ptr = |vaddr: u64| -> Option<u64> {
+            for (sec_addr, data) in &ptr_sections {
+                if vaddr >= *sec_addr {
+                    let offset = (vaddr - sec_addr) as usize;
+                    if offset + 8 <= data.len() {
+                        return Some(u64::from_le_bytes(
+                            data[offset..offset + 8].try_into().unwrap(),
+                        ));
+                    }
                 }
-                // __got contains 8-byte pointers; read each and check if it's
-                // already in the cache (from imports). If not, read the pointer
-                // value directly from the section data.
-                let entry_size = 8usize;
-                let num_entries = data.len() / entry_size;
-                eprintln!(
-                    "  DEBUG: __got section at {:#x}, {} entries",
-                    section.addr, num_entries
-                );
-                for i in 0..num_entries {
-                    let entry_offset = i * entry_size;
-                    let got_addr = section.addr + entry_offset as u64;
-                    if cache.contains_key(&got_addr) {
+            }
+            None
+        };
+
+        // Parse __stubs: each is a 6-byte JMP *offset(%rip) instruction
+        for segment in macho.segments.iter() {
+            if let Ok(sections) = segment.sections() {
+                for (section, data) in sections {
+                    if section.name().unwrap_or("") != "__stubs" {
                         continue;
                     }
-                    // Read the pointer value from __got data
-                    if entry_offset + 8 <= data.len() {
-                        let ptr_value = u64::from_le_bytes(
-                            data[entry_offset..entry_offset + 8].try_into().unwrap(),
-                        );
-                        if ptr_value != 0 {
-                            cache.insert(got_addr, ptr_value);
+                    let stub_size = 6usize;
+                    let num_stubs = data.len() / stub_size;
+                    for i in 0..num_stubs {
+                        let off = i * stub_size;
+                        let stub_addr = section.addr + off as u64;
+                        if off + 6 <= data.len() && data[off] == 0xFF && data[off + 1] == 0x25 {
+                            let rip_offset =
+                                i32::from_le_bytes(data[off + 2..off + 6].try_into().unwrap());
+                            let ptr_addr =
+                                (stub_addr + stub_size as u64).wrapping_add(rip_offset as u64);
+                            if let Some(target) = read_ptr(ptr_addr) {
+                                if target != 0 {
+                                    cache.insert(stub_addr, target);
+                                    // Also map the pointer address for CALL *offset(%rip)
+                                    cache.insert(ptr_addr, target);
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        eprintln!(
-            "  DEBUG: MachO stub cache: {} from imports, {} stub->target mappings, {} total entries",
-            resolved_via_imports,
-            stubs_found,
-            cache.len()
-        );
-
-        // Also count how many CALL targets we'll be able to resolve
-        // by checking what fraction of __text calls target known addresses
-        let _ = buffer; // suppress unused warning
-
-        cache
-    }
-
-    /// Find a symbol's address by name in the full symbol table.
-    fn find_symbol_addr_by_name(macho: &MachO, target_name: &str) -> u64 {
-        // MachO symbols have a leading underscore; try both variants
-        for sym in macho.symbols() {
-            if let Ok((name, nlist)) = sym {
-                if nlist.n_value != 0
-                    && (name == target_name || name.strip_prefix('_') == Some(target_name))
-                {
-                    return nlist.n_value;
+        // Also map __got pointer values for CALL *offset(%rip) through __got
+        for (sec_addr, data) in &ptr_sections {
+            let entry_size = 8usize;
+            let num_entries = data.len() / entry_size;
+            for i in 0..num_entries {
+                let off = i * entry_size;
+                let addr = sec_addr + off as u64;
+                if !cache.contains_key(&addr) && off + 8 <= data.len() {
+                    let value = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+                    if value != 0 {
+                        cache.insert(addr, value);
+                    }
                 }
             }
         }
-        0
+
+        cache
     }
 
     /// Find a section by name
