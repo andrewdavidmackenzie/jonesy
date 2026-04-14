@@ -140,6 +140,13 @@ pub fn analyze_binary_target(
 
     let entry_points = find_entry_points(symbols);
 
+    for (mangled, demangled, addr) in &entry_points {
+        eprintln!(
+            "  DEBUG: entry point: {:#x} {} ({})",
+            addr, demangled, mangled
+        );
+    }
+
     if let Some(step_start) = step_start {
         eprintln!("  [timing] Find entry points: {:?}", step_start.elapsed());
     }
@@ -242,6 +249,14 @@ pub fn analyze_binary_target(
     let step_start = show_timings.then(Instant::now);
 
     for (_mangled, demangled, target_addr) in &entry_points {
+        let callers = call_graph.get_callers(*target_addr);
+        eprintln!(
+            "  DEBUG: entry {:#x} ({}) has {} direct callers in call graph",
+            target_addr,
+            demangled,
+            callers.len()
+        );
+
         // Skip if we've already visited this address from another entry point
         if !visited.insert(*target_addr) {
             continue;
