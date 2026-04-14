@@ -39,26 +39,37 @@
 use crate::sym::SymbolTable;
 
 /// Regex pattern for finding the main panic entry point in binaries.
-/// All other panic functions (`panic_fmt`, `panic_display`, `slice_index_fail`,
-/// `str_index_overflow`) call through to `rust_panic` and are already captured.
 /// The `$` anchors the match to the end of the symbol name.
 const PANIC_SYMBOL: &str = "rust_panic$";
+
+/// Regex pattern for the unwind entry point.
+/// On x86_64, user code calls through `core::panicking::panic_fmt` →
+/// `rust_begin_unwind` rather than reaching `rust_panic` directly.
+/// Adding this as an entry point ensures the call graph traces back
+/// from the point where user code enters the panic runtime.
+const UNWIND_SYMBOL: &str = "rust_begin_unwind$";
 
 /// Demangled symbol name for the abort-based error path.
 /// OOM via `alloc_error_handler` goes through `std::process::abort()` instead
 /// of the normal panic/unwind machinery.
 const ABORT_SYMBOL: &str = "std::process::abort";
 
+/// Panic entry point symbols, matched by regex on demangled names.
+const PANIC_SYMBOLS: &[&str] = &[PANIC_SYMBOL, UNWIND_SYMBOL];
+
 /// Find panic and abort entry point addresses in the binary's symbol table.
 /// Returns `(mangled_name, demangled_name, address)` for each entry point.
 pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
     let mut entry_points = Vec::new();
 
-    // Find the panic entry point
-    if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(PANIC_SYMBOL)
-        && let Some(addr) = symbols.find_symbol_address(&sym)
-    {
-        entry_points.push((sym, dem, addr));
+    // Find panic entry points (rust_panic and rust_begin_unwind)
+    for pattern in PANIC_SYMBOLS {
+        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
+            && let Some(addr) = symbols.find_symbol_address(&sym)
+            && !entry_points.iter().any(|(_, _, a)| *a == addr)
+        {
+            entry_points.push((sym, dem, addr));
+        }
     }
 
     // Find abort entry points
