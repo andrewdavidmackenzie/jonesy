@@ -1747,32 +1747,21 @@ fn test_rlib_parallel_determinism() {
         &["--no-hyperlinks", "--lib", "--max-threads", "4"],
     );
 
-    // Parse both outputs
-    let panics_1 = parse_jones_output(&output_1_thread);
-    let panics_4 = parse_jones_output(&output_4_threads);
-
-    // Should detect the same number of panic points
+    // First check: exact output match catches ordering, duplicates, and column differences
     assert_eq!(
-        panics_1.len(),
-        panics_4.len(),
-        "Parallel processing (4 threads) detected {} panics, sequential (1 thread) detected {}.\nSequential output:\n{}\n\nParallel output:\n{}",
-        panics_4.len(),
-        panics_1.len(),
-        output_1_thread,
-        output_4_threads
+        output_1_thread, output_4_threads,
+        "Parallel output differs from sequential.\n\nSequential:\n{}\n\nParallel:\n{}",
+        output_1_thread, output_4_threads
     );
 
-    // Convert to sets for order-independent comparison
-    let set_1: HashSet<_> = panics_1.into_iter().collect();
-    let set_4: HashSet<_> = panics_4.into_iter().collect();
-
-    // Find differences if any
+    // Semantic backstop: verify same panic point sets in case output formatting changes
+    let set_1: HashSet<_> = parse_jones_output(&output_1_thread);
+    let set_4: HashSet<_> = parse_jones_output(&output_4_threads);
     let only_in_1: Vec<_> = set_1.difference(&set_4).collect();
     let only_in_4: Vec<_> = set_4.difference(&set_1).collect();
-
     assert!(
         only_in_1.is_empty() && only_in_4.is_empty(),
-        "Parallel processing produces different results than sequential.\nOnly in 1-thread: {:?}\nOnly in 4-threads: {:?}",
+        "Different panic point sets.\nOnly in 1-thread: {:?}\nOnly in 4-threads: {:?}",
         only_in_1,
         only_in_4
     );
