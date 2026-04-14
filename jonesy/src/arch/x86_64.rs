@@ -269,24 +269,126 @@ pub mod got {
     /// binary's symbol table.
     pub(crate) fn build_macho_stub_cache(
         macho: &MachO,
-        _buffer: &[u8],
+        buffer: &[u8],
     ) -> ahash::AHashMap<u64, u64> {
         let mut cache = ahash::AHashMap::new();
 
-        let imports = match macho.imports() {
-            Ok(imports) => imports,
-            Err(_) => return cache,
-        };
-
-        for import in &imports {
-            // import.address = where the pointer lives (in __la_symbol_ptr / __got)
-            // import.name = the symbol name to resolve
-            // Find the symbol's actual address in the binary's symbol table
-            let target = find_symbol_addr_by_name(macho, import.name);
-            if target != 0 {
-                cache.insert(import.address, target);
+        // Approach 1: Use imports() to map import pointer addresses to symbols
+        let mut resolved_via_imports = 0;
+        if let Ok(imports) = macho.imports() {
+            eprintln!("  DEBUG: MachO has {} imports", imports.len());
+            for import in &imports {
+                let target = find_symbol_addr_by_name(macho, import.name);
+                if target != 0 {
+                    cache.insert(import.address, target);
+                    resolved_via_imports += 1;
+                }
+            }
+            // Show a few samples
+            for (i, import) in imports.iter().enumerate().take(5) {
+                let target = cache.get(&import.address).copied().unwrap_or(0);
+                eprintln!(
+                    "  DEBUG: import[{}] name={} addr={:#x} lazy={} resolved={:#x}",
+                    i, import.name, import.address, import.is_lazy, target
+                );
             }
         }
+
+        // Approach 2: Also scan __stubs section directly
+        // On x86_64, __stubs contains 6-byte JMP *offset(%rip) instructions.
+        // The jump target is in __la_symbol_ptr. Map stub addresses to their
+        // resolved targets so direct calls to stubs also resolve.
+        let mut stubs_found = 0;
+        for segment in macho.segments.iter() {
+            let sections = match segment.sections() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            for (section, data) in sections {
+                let name = section.name().unwrap_or("");
+                if name != "__stubs" {
+                    continue;
+                }
+                // Each stub is 6 bytes: FF 25 xx xx xx xx (JMP *offset(%rip))
+                let stub_size = 6usize;
+                let num_stubs = data.len() / stub_size;
+                eprintln!(
+                    "  DEBUG: __stubs section at {:#x}, {} stubs of {} bytes",
+                    section.addr, num_stubs, stub_size
+                );
+                for i in 0..num_stubs {
+                    let stub_offset = i * stub_size;
+                    let stub_addr = section.addr + stub_offset as u64;
+                    // Parse JMP *offset(%rip): FF 25 followed by 4-byte LE offset
+                    if stub_offset + 6 <= data.len()
+                        && data[stub_offset] == 0xFF
+                        && data[stub_offset + 1] == 0x25
+                    {
+                        let rip_offset = i32::from_le_bytes(
+                            data[stub_offset + 2..stub_offset + 6].try_into().unwrap(),
+                        );
+                        // Target pointer address = stub_addr + 6 + rip_offset
+                        let ptr_addr =
+                            (stub_addr + stub_size as u64).wrapping_add(rip_offset as u64);
+                        // If we resolved this pointer via imports, map stub -> target
+                        if let Some(&target) = cache.get(&ptr_addr) {
+                            cache.insert(stub_addr, target);
+                            stubs_found += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also map __got entries to symbol addresses
+        for segment in macho.segments.iter() {
+            let sections = match segment.sections() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            for (section, data) in sections {
+                let name = section.name().unwrap_or("");
+                if name != "__got" {
+                    continue;
+                }
+                // __got contains 8-byte pointers; read each and check if it's
+                // already in the cache (from imports). If not, read the pointer
+                // value directly from the section data.
+                let entry_size = 8usize;
+                let num_entries = data.len() / entry_size;
+                eprintln!(
+                    "  DEBUG: __got section at {:#x}, {} entries",
+                    section.addr, num_entries
+                );
+                for i in 0..num_entries {
+                    let entry_offset = i * entry_size;
+                    let got_addr = section.addr + entry_offset as u64;
+                    if cache.contains_key(&got_addr) {
+                        continue;
+                    }
+                    // Read the pointer value from __got data
+                    if entry_offset + 8 <= data.len() {
+                        let ptr_value = u64::from_le_bytes(
+                            data[entry_offset..entry_offset + 8].try_into().unwrap(),
+                        );
+                        if ptr_value != 0 {
+                            cache.insert(got_addr, ptr_value);
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "  DEBUG: MachO stub cache: {} from imports, {} stub->target mappings, {} total entries",
+            resolved_via_imports,
+            stubs_found,
+            cache.len()
+        );
+
+        // Also count how many CALL targets we'll be able to resolve
+        // by checking what fraction of __text calls target known addresses
+        let _ = buffer; // suppress unused warning
 
         cache
     }
