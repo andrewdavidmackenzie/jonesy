@@ -259,100 +259,32 @@ pub mod got {
         got_cache
     }
 
-    /// Build a cache mapping `__la_symbol_ptr` and `__got` addresses to symbol
-    /// addresses for MachO x86_64 binaries.
+    /// Build a cache mapping import pointer addresses to symbol addresses
+    /// for MachO x86_64 binaries.
     ///
     /// MachO indirect calls go through stubs that jump via lazy/non-lazy symbol
-    /// pointers. The `CALL *offset(%rip)` targets these pointer sections. We map
-    /// each pointer entry to the corresponding symbol's address using the indirect
-    /// symbol table from `LC_DYSYMTAB`.
+    /// pointers. The `CALL *offset(%rip)` targets these pointer entries. We use
+    /// goblin's `imports()` API (which parses the bind opcodes) to map each
+    /// import's pointer address to the corresponding symbol's address in the
+    /// binary's symbol table.
     pub(crate) fn build_macho_stub_cache(
         macho: &MachO,
-        buffer: &[u8],
+        _buffer: &[u8],
     ) -> ahash::AHashMap<u64, u64> {
-        use goblin::mach::constants::{S_LAZY_SYMBOL_POINTERS, S_NON_LAZY_SYMBOL_POINTERS};
-        use goblin::mach::load_command::CommandVariant;
-
         let mut cache = ahash::AHashMap::new();
 
-        // Find the LC_DYSYMTAB command for the indirect symbol table
-        let dysymtab = macho.load_commands.iter().find_map(|lc| match lc.command {
-            CommandVariant::Dysymtab(ref cmd) => Some(cmd),
-            _ => None,
-        });
-        let Some(dysymtab) = dysymtab else {
-            return cache;
+        let imports = match macho.imports() {
+            Ok(imports) => imports,
+            Err(_) => return cache,
         };
 
-        // Read the indirect symbol table (array of u32 symbol indices)
-        let indirect_offset = dysymtab.indirectsymoff as usize;
-        let indirect_count = dysymtab.nindirectsyms as usize;
-        if indirect_offset + indirect_count * 4 > buffer.len() {
-            return cache;
-        }
-
-        // Process sections that use the indirect symbol table
-        for segment in macho.segments.iter() {
-            let sections = match segment.sections() {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            for (section, _data) in sections {
-                let section_type = section.flags & 0xff;
-                if section_type != S_LAZY_SYMBOL_POINTERS
-                    && section_type != S_NON_LAZY_SYMBOL_POINTERS
-                {
-                    continue;
-                }
-
-                // reserved1 = starting index into the indirect symbol table
-                let indirect_start = section.reserved1 as usize;
-                // Each pointer entry is 8 bytes on 64-bit
-                let entry_size = 8usize;
-                let num_entries = section.size as usize / entry_size;
-
-                for i in 0..num_entries {
-                    let indirect_idx = indirect_start + i;
-                    if indirect_idx >= indirect_count {
-                        break;
-                    }
-
-                    // Read the symbol index from the indirect symbol table
-                    let sym_idx_offset = indirect_offset + indirect_idx * 4;
-                    if sym_idx_offset + 4 > buffer.len() {
-                        break;
-                    }
-                    let sym_idx = u32::from_le_bytes(
-                        buffer[sym_idx_offset..sym_idx_offset + 4]
-                            .try_into()
-                            .unwrap(),
-                    );
-
-                    // Skip INDIRECT_SYMBOL_LOCAL (0x80000000) and
-                    // INDIRECT_SYMBOL_ABS (0x40000000) sentinel values
-                    if sym_idx & 0xc0000000 != 0 {
-                        continue;
-                    }
-
-                    // Look up the symbol to get its address
-                    if let Some(ref symbols) = macho.symbols {
-                        if let Ok((name, nlist)) = symbols.get(sym_idx as usize) {
-                            let target_addr = nlist.n_value;
-                            // For imported symbols n_value is 0 — use the symbol
-                            // name to find it in the full symbol table instead
-                            let resolved = if target_addr != 0 {
-                                target_addr
-                            } else {
-                                find_symbol_addr_by_name(macho, name)
-                            };
-                            if resolved != 0 {
-                                // Map the pointer entry address to the target
-                                let ptr_addr = section.addr + (i as u64) * entry_size as u64;
-                                cache.insert(ptr_addr, resolved);
-                            }
-                        }
-                    }
-                }
+        for import in &imports {
+            // import.address = where the pointer lives (in __la_symbol_ptr / __got)
+            // import.name = the symbol name to resolve
+            // Find the symbol's actual address in the binary's symbol table
+            let target = find_symbol_addr_by_name(macho, import.name);
+            if target != 0 {
+                cache.insert(import.address, target);
             }
         }
 
@@ -360,11 +292,13 @@ pub mod got {
     }
 
     /// Find a symbol's address by name in the full symbol table.
-    /// Used for imported symbols whose nlist n_value is 0.
     fn find_symbol_addr_by_name(macho: &MachO, target_name: &str) -> u64 {
+        // MachO symbols have a leading underscore; try both variants
         for sym in macho.symbols() {
             if let Ok((name, nlist)) = sym {
-                if nlist.n_value != 0 && name == target_name {
+                if nlist.n_value != 0
+                    && (name == target_name || name.strip_prefix('_') == Some(target_name))
+                {
                     return nlist.n_value;
                 }
             }
