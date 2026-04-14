@@ -176,18 +176,17 @@ fn scan_call_instructions(
 
 /// Scan for x86_64 CALL instructions in parallel by dividing into chunks.
 /// Uses Capstone disassembler to handle variable-length instructions.
-/// Requires ELF and buffer for GOT resolution of indirect calls.
+/// Builds an indirect call cache from ELF GOT or MachO stubs.
 pub(crate) fn parallel_disassemble(
     text_data: &[u8],
     text_addr: u64,
-    elf: Option<&goblin::elf::Elf>,
+    binary: &crate::binary_format::BinaryRef,
     buffer: &[u8],
 ) -> Vec<InsnData> {
-    // Build GOT cache for resolving indirect calls (using AHashMap for speed)
-    let got_cache = if let Some(elf) = elf {
-        got::build_cache(elf, buffer)
-    } else {
-        ahash::AHashMap::new()
+    // Build indirect call cache: GOT for ELF, stub resolution for MachO
+    let got_cache = match binary {
+        crate::binary_format::BinaryRef::Elf(elf) => got::build_cache(elf, buffer),
+        crate::binary_format::BinaryRef::MachO(macho) => got::build_macho_stub_cache(macho, buffer),
     };
 
     // Create Capstone disassembler once (major optimization - was being created per chunk!)
@@ -226,17 +225,19 @@ pub(crate) fn is_call_relocation(r_type: u32) -> bool {
     r_type == ELF_RELOC_PLT32 || r_type == ELF_RELOC_GOTPCREL
 }
 
-/// GOT (Global Offset Table) resolution for x86_64 indirect calls.
+/// Indirect call resolution for x86_64 binaries.
 ///
-/// On x86_64 Linux, external function calls often go through the GOT:
-/// ```asm
-/// call *0x1234(%rip)  ; Indirect call through GOT entry
-/// ```
+/// On x86_64, external function calls use indirect addressing:
+/// - **ELF**: calls go through the GOT (Global Offset Table), resolved via
+///   `.rela.plt` and `.rela.dyn` relocations
+/// - **MachO**: calls go through `__stubs` which jump via `__la_symbol_ptr`,
+///   resolved via the indirect symbol table
 ///
-/// The GOT is populated at load time, but we can resolve it statically
-/// using ELF relocations.
+/// Both are resolved statically into the same `AHashMap<u64, u64>` format
+/// mapping pointer/GOT addresses to target function addresses.
 pub mod got {
     use goblin::elf::Elf;
+    use goblin::mach::MachO;
 
     /// Build a mapping from GOT entry addresses to target function addresses.
     ///
@@ -256,6 +257,119 @@ pub mod got {
         }
 
         got_cache
+    }
+
+    /// Build a cache mapping `__la_symbol_ptr` and `__got` addresses to symbol
+    /// addresses for MachO x86_64 binaries.
+    ///
+    /// MachO indirect calls go through stubs that jump via lazy/non-lazy symbol
+    /// pointers. The `CALL *offset(%rip)` targets these pointer sections. We map
+    /// each pointer entry to the corresponding symbol's address using the indirect
+    /// symbol table from `LC_DYSYMTAB`.
+    pub(crate) fn build_macho_stub_cache(
+        macho: &MachO,
+        buffer: &[u8],
+    ) -> ahash::AHashMap<u64, u64> {
+        use goblin::mach::constants::{S_LAZY_SYMBOL_POINTERS, S_NON_LAZY_SYMBOL_POINTERS};
+        use goblin::mach::load_command::CommandVariant;
+
+        let mut cache = ahash::AHashMap::new();
+
+        // Find the LC_DYSYMTAB command for the indirect symbol table
+        let dysymtab = macho.load_commands.iter().find_map(|lc| match lc.command {
+            CommandVariant::Dysymtab(ref cmd) => Some(cmd),
+            _ => None,
+        });
+        let Some(dysymtab) = dysymtab else {
+            return cache;
+        };
+
+        // Read the indirect symbol table (array of u32 symbol indices)
+        let indirect_offset = dysymtab.indirectsymoff as usize;
+        let indirect_count = dysymtab.nindirectsyms as usize;
+        if indirect_offset + indirect_count * 4 > buffer.len() {
+            return cache;
+        }
+
+        // Process sections that use the indirect symbol table
+        for segment in macho.segments.iter() {
+            let sections = match segment.sections() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            for (section, _data) in sections {
+                let section_type = section.flags & 0xff;
+                if section_type != S_LAZY_SYMBOL_POINTERS
+                    && section_type != S_NON_LAZY_SYMBOL_POINTERS
+                {
+                    continue;
+                }
+
+                // reserved1 = starting index into the indirect symbol table
+                let indirect_start = section.reserved1 as usize;
+                // Each pointer entry is 8 bytes on 64-bit
+                let entry_size = 8usize;
+                let num_entries = section.size as usize / entry_size;
+
+                for i in 0..num_entries {
+                    let indirect_idx = indirect_start + i;
+                    if indirect_idx >= indirect_count {
+                        break;
+                    }
+
+                    // Read the symbol index from the indirect symbol table
+                    let sym_idx_offset = indirect_offset + indirect_idx * 4;
+                    if sym_idx_offset + 4 > buffer.len() {
+                        break;
+                    }
+                    let sym_idx = u32::from_le_bytes(
+                        buffer[sym_idx_offset..sym_idx_offset + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+
+                    // Skip INDIRECT_SYMBOL_LOCAL (0x80000000) and
+                    // INDIRECT_SYMBOL_ABS (0x40000000) sentinel values
+                    if sym_idx & 0xc0000000 != 0 {
+                        continue;
+                    }
+
+                    // Look up the symbol to get its address
+                    if let Some(ref symbols) = macho.symbols {
+                        if let Ok((name, nlist)) = symbols.get(sym_idx as usize) {
+                            let target_addr = nlist.n_value;
+                            // For imported symbols n_value is 0 — use the symbol
+                            // name to find it in the full symbol table instead
+                            let resolved = if target_addr != 0 {
+                                target_addr
+                            } else {
+                                find_symbol_addr_by_name(macho, name)
+                            };
+                            if resolved != 0 {
+                                // Map the pointer entry address to the target
+                                let ptr_addr = section.addr + (i as u64) * entry_size as u64;
+                                cache.insert(ptr_addr, resolved);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        cache
+    }
+
+    /// Find a symbol's address by name in the full symbol table.
+    /// Used for imported symbols whose nlist n_value is 0.
+    fn find_symbol_addr_by_name(macho: &MachO, target_name: &str) -> u64 {
+        for sym in macho.symbols() {
+            if let Ok((name, nlist)) = sym {
+                if nlist.n_value != 0 && name == target_name {
+                    return nlist.n_value;
+                }
+            }
+        }
+        0
     }
 
     /// Find a section by name
