@@ -263,90 +263,108 @@ pub mod got {
         got_cache
     }
 
-    /// Build a cache mapping stub and pointer addresses to actual function
-    /// addresses for MachO x86_64 binaries.
+    /// Build a cache mapping stub addresses to actual function addresses
+    /// for MachO x86_64 binaries.
     ///
-    /// On x86_64 MachO, even internal function calls go through `__stubs`:
-    ///   CALL stub_addr → JMP *ptr_addr(%rip) → actual_function
-    ///
-    /// We parse each stub's JMP instruction to find the `__la_symbol_ptr`
-    /// entry it targets, then read the pointer value from the binary to get
-    /// the actual function address.
+    /// On x86_64 MachO, even internal function calls go through `__stubs`.
+    /// Each stub/pointer section entry corresponds to an entry in the indirect
+    /// symbol table (LC_DYSYMTAB). The `reserved1` field of the section header
+    /// gives the starting index. We read `reserved1` from the raw load command
+    /// data since goblin's parsed `Section` struct does not expose it.
     pub(crate) fn build_macho_stub_cache(
         macho: &MachO,
-        _buffer: &[u8],
+        buffer: &[u8],
     ) -> ahash::AHashMap<u64, u64> {
+        use goblin::mach::constants::{
+            S_LAZY_SYMBOL_POINTERS, S_NON_LAZY_SYMBOL_POINTERS, S_SYMBOL_STUBS,
+        };
+        use goblin::mach::load_command::CommandVariant;
+
         let mut cache = ahash::AHashMap::new();
 
-        // Collect __la_symbol_ptr and __nl_symbol_ptr section data for pointer lookups
-        let mut ptr_sections: Vec<(u64, Vec<u8>)> = Vec::new();
-        for segment in macho.segments.iter() {
-            if let Ok(sections) = segment.sections() {
-                for (section, data) in sections {
-                    let name = section.name().unwrap_or("");
-                    if name == "__la_symbol_ptr" || name == "__nl_symbol_ptr" || name == "__got" {
-                        ptr_sections.push((section.addr, data.to_vec()));
-                    }
-                }
-            }
-        }
-
-        // Helper: read an 8-byte pointer from any pointer section given a virtual address
-        let read_ptr = |vaddr: u64| -> Option<u64> {
-            for (sec_addr, data) in &ptr_sections {
-                if vaddr >= *sec_addr {
-                    let offset = (vaddr - sec_addr) as usize;
-                    if offset + 8 <= data.len() {
-                        return Some(u64::from_le_bytes(
-                            data[offset..offset + 8].try_into().unwrap(),
-                        ));
-                    }
-                }
-            }
-            None
+        // Find the LC_DYSYMTAB command for the indirect symbol table
+        let dysymtab = macho.load_commands.iter().find_map(|lc| match lc.command {
+            CommandVariant::Dysymtab(ref cmd) => Some(cmd),
+            _ => None,
+        });
+        let Some(dysymtab) = dysymtab else {
+            return cache;
         };
 
-        // Parse __stubs: each is a 6-byte JMP *offset(%rip) instruction
-        for segment in macho.segments.iter() {
-            if let Ok(sections) = segment.sections() {
-                for (section, data) in sections {
-                    if section.name().unwrap_or("") != "__stubs" {
-                        continue;
-                    }
-                    let stub_size = 6usize;
-                    let num_stubs = data.len() / stub_size;
-                    for i in 0..num_stubs {
-                        let off = i * stub_size;
-                        let stub_addr = section.addr + off as u64;
-                        if off + 6 <= data.len() && data[off] == 0xFF && data[off + 1] == 0x25 {
-                            let rip_offset =
-                                i32::from_le_bytes(data[off + 2..off + 6].try_into().unwrap());
-                            let ptr_addr =
-                                (stub_addr + stub_size as u64).wrapping_add(rip_offset as u64);
-                            if let Some(target) = read_ptr(ptr_addr) {
-                                if target != 0 {
-                                    cache.insert(stub_addr, target);
-                                    // Also map the pointer address for CALL *offset(%rip)
-                                    cache.insert(ptr_addr, target);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let indirect_offset = dysymtab.indirectsymoff as usize;
+        let indirect_count = dysymtab.nindirectsyms as usize;
+        if indirect_offset + indirect_count * 4 > buffer.len() {
+            return cache;
         }
 
-        // Also map __got pointer values for CALL *offset(%rip) through __got
-        for (sec_addr, data) in &ptr_sections {
-            let entry_size = 8usize;
-            let num_entries = data.len() / entry_size;
-            for i in 0..num_entries {
-                let off = i * entry_size;
-                let addr = sec_addr + off as u64;
-                if !cache.contains_key(&addr) && off + 8 <= data.len() {
-                    let value = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
-                    if value != 0 {
-                        cache.insert(addr, value);
+        // LC_SEGMENT_64 header: 72 bytes; Section64: 80 bytes each
+        // Section64 field offsets: addr=32, size=40, flags=64, reserved1=68, reserved2=72
+        const SECTION64_SIZE: usize = 80;
+        const SEGMENT64_HDR: usize = 72;
+
+        for lc in &macho.load_commands {
+            let (nsects, lc_off) = match lc.command {
+                CommandVariant::Segment64(ref seg) => (seg.nsects as usize, lc.offset),
+                _ => continue,
+            };
+
+            for i in 0..nsects {
+                let s = lc_off + SEGMENT64_HDR + i * SECTION64_SIZE;
+                if s + SECTION64_SIZE > buffer.len() {
+                    break;
+                }
+
+                let flags = u32::from_le_bytes(buffer[s + 64..s + 68].try_into().unwrap());
+                let section_type = flags & 0xff;
+                if section_type != S_SYMBOL_STUBS
+                    && section_type != S_LAZY_SYMBOL_POINTERS
+                    && section_type != S_NON_LAZY_SYMBOL_POINTERS
+                {
+                    continue;
+                }
+
+                let sec_addr = u64::from_le_bytes(buffer[s + 32..s + 40].try_into().unwrap());
+                let sec_size = u64::from_le_bytes(buffer[s + 40..s + 48].try_into().unwrap());
+                let reserved1 = u32::from_le_bytes(buffer[s + 68..s + 72].try_into().unwrap());
+                let reserved2 = u32::from_le_bytes(buffer[s + 72..s + 76].try_into().unwrap());
+
+                // Entry size: reserved2 for stubs (6 on x86_64), 8 for pointers
+                let entry_size = if section_type == S_SYMBOL_STUBS {
+                    reserved2 as u64
+                } else {
+                    8u64
+                };
+                if entry_size == 0 {
+                    continue;
+                }
+
+                let num_entries = sec_size / entry_size;
+                let indirect_start = reserved1 as usize;
+
+                for j in 0..num_entries as usize {
+                    let idx = indirect_start + j;
+                    if idx >= indirect_count {
+                        break;
+                    }
+                    let sym_off = indirect_offset + idx * 4;
+                    if sym_off + 4 > buffer.len() {
+                        break;
+                    }
+                    let sym_idx =
+                        u32::from_le_bytes(buffer[sym_off..sym_off + 4].try_into().unwrap());
+
+                    // Skip INDIRECT_SYMBOL_LOCAL / INDIRECT_SYMBOL_ABS sentinels
+                    if sym_idx & 0xc0000000 != 0 {
+                        continue;
+                    }
+
+                    if let Some(ref symbols) = macho.symbols {
+                        if let Ok((_name, nlist)) = symbols.get(sym_idx as usize) {
+                            if nlist.n_value != 0 {
+                                let entry_addr = sec_addr + (j as u64) * entry_size;
+                                cache.insert(entry_addr, nlist.n_value);
+                            }
+                        }
                     }
                 }
             }
