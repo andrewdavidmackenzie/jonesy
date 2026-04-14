@@ -180,6 +180,16 @@ impl<'a> CallGraph<'a> {
 
         #[cfg(target_arch = "x86_64")]
         let insn_data = arch::parallel_disassemble(text_data, text_addr, binary, binary_buffer);
+        {
+            let with_target = insn_data.iter().filter(|d| d.call_target.is_some()).count();
+            let without_target = insn_data.len() - with_target;
+            eprintln!(
+                "  DEBUG: {} CALL instructions found ({} with target, {} unresolved)",
+                insn_data.len(),
+                with_target,
+                without_target
+            );
+        }
         if show_timings {
             // insn_data contains only BL/B branch instructions (not all instructions)
             eprintln!(
