@@ -106,7 +106,8 @@ print(f'{elapsed:.3f}')
 
   # Count panic points (for verification)
   COUNT=$((cd jonesy && ../target/release/jonesy --bin "$abs_binary" 2>/dev/null) | \
-    grep -E "Panic points: [0-9]+" | grep -oE "[0-9]+" || echo "0")
+    sed -nE 's/.*Panic points: ([0-9]+).*/\1/p' | head -n1)
+  COUNT="${COUNT:-0}"
   echo "  Panic points detected: $COUNT" | tee -a "$RESULTS"
 
   echo "" >> "$RESULTS"

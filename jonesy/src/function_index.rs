@@ -179,9 +179,9 @@ impl FunctionIndex {
     }
 
     /// Find a crate-source inlined function containing the given address.
-    /// Skips stdlib/dependency inlined functions (e.g., Option::unwrap) and
-    /// returns the innermost crate function. Uses DW_AT_call_file to determine
-    /// if the inlined function was called from crate source.
+    /// Skips stdlib inlined functions (`core::`, `std::`, `alloc::`) and
+    /// returns the innermost crate function. Note: third-party dependency
+    /// inlines are not currently filtered and will be treated as crate code.
     fn find_crate_inlined(&self, addr: u64) -> Option<&FunctionInfo> {
         let bucket = Self::bucket_id(addr);
         let indices = self.inlined_buckets.get(&bucket)?;
@@ -213,30 +213,34 @@ impl FunctionIndex {
         best
     }
 
-    /// Get the call site for an inlined non-crate function containing the address.
+    /// Get the call site for an inlined stdlib function containing the address.
     ///
     /// Uses DWARF DW_AT_call_file and DW_AT_call_line from DW_TAG_inlined_subroutine
     /// entries, the same mechanism debuggers use for correct line numbers in
     /// inlined code (e.g., `Option::unwrap`, `Result::expect`).
     ///
-    /// Only returns results for stdlib/dependency inlined functions — for inlined
-    /// crate functions, the crate line table already gives the correct location
-    /// within the function body.
+    /// Only returns results for stdlib inlined functions (`core::`, `std::`,
+    /// `alloc::`) — third-party dependency inlines are not currently handled.
+    /// For inlined crate functions, the crate line table already gives the
+    /// correct location within the function body.
+    ///
+    /// Selects the outermost (largest) stdlib inline, since its DW_AT_call_file
+    /// and DW_AT_call_line point back to the crate code that called it.
     ///
     /// Returns `(call_file, call_line, inlined_function_name)`.
     pub fn get_inlined_call_site(&self, addr: u64) -> Option<(&str, u32, &str)> {
         let bucket = Self::bucket_id(addr);
         let indices = self.inlined_buckets.get(&bucket)?;
 
-        // Find the smallest non-crate inlined function containing addr
+        // Find the outermost stdlib inlined function containing addr.
+        // The outermost inline's call_file/call_line points to crate code.
         let mut best: Option<&FunctionInfo> = None;
-        let mut best_size: u64 = u64::MAX;
+        let mut best_size: u64 = 0;
 
         for &idx in indices {
             let func = &self.inlined[idx];
             if addr >= func.start_address && addr < func.end_address {
                 let name = self.strings.get_name(func.name_idx);
-                // Only consider stdlib/dependency functions
                 let is_stdlib = name.starts_with("core::")
                     || name.starts_with("std::")
                     || name.starts_with("alloc::");
@@ -244,7 +248,7 @@ impl FunctionIndex {
                     continue;
                 }
                 let size = func.end_address - func.start_address;
-                if size < best_size {
+                if size > best_size {
                     best = Some(func);
                     best_size = size;
                 }
