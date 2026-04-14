@@ -5,11 +5,11 @@
 
 use crate::args::OutputFormat;
 use crate::binary_format::BinaryRef;
+use crate::call_tree::filter_allowed_causes;
 use crate::call_tree::{
     AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
-    collect_crate_code_points, filter_allowed_causes,
+    collect_crate_code_points,
 };
-use crate::cargo::find_project_root;
 use crate::config::Config;
 use crate::heuristics::{find_entry_points, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
@@ -131,8 +131,6 @@ pub fn analyze_binary_target(
 
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
-
-    let project_root = find_project_root(binary_path)?;
 
     // Find all entry points: panic symbols + abort symbols
     if show_progress {
@@ -257,8 +255,7 @@ pub fn analyze_binary_target(
             build_call_tree_parallel_filtered(&call_graph, *target_addr, &visited, project_context);
 
         // Collect code points from this tree
-        let (code_points, _summary) =
-            collect_crate_code_points(&root, config, project_context, Some(project_root.as_path()));
+        let (code_points, _summary) = collect_crate_code_points(&root, config, project_context);
         let entry_result = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points,
@@ -286,7 +283,7 @@ pub fn analyze_binary_target(
     Ok(final_result)
 }
 
-/// Analyse an archive (rlib/staticlib) for panic points using relocation-based call graph.
+/// Analyse an archive (rlib/staticlib) for panic points using a relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
@@ -296,7 +293,6 @@ pub fn analyze_archive(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
-    workspace_root: &Path,
 ) -> Result<BinaryAnalysisResult, String> {
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
@@ -312,7 +308,7 @@ pub fn analyze_archive(
 
     // Get the library name to filter out stdlib/dependency .o files
     // For performance: only process .o files from the user's library
-    // Extract library name from binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
+    // Extract library name from the binary path (e.g., "libstaticlib_example.a" -> "staticlib_example")
     // Note: .o files are named using the library name (from [lib] name in Cargo.toml),
     // not the package name, so we use lib_name directly for filtering
     let lib_name = binary_path
@@ -597,7 +593,7 @@ pub fn analyze_archive(
 
     // Filter out allowed causes using the same logic as binary analysis,
     // including inline allow comments (e.g., `// jonesy:allow(overflow)`)
-    filter_allowed_causes(&mut code_points, config, Some(workspace_root));
+    filter_allowed_causes(&mut code_points, config, project_context);
 
     // Deduplicate by (file, line)
     let mut seen: std::collections::HashMap<(String, u32), usize> =
