@@ -239,6 +239,26 @@ pub fn analyze_binary_target(
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
+    // Dump the most-called targets with their symbol names
+    {
+        let symbol_index = crate::sym::SymbolIndex::from_binary(&binary_ref);
+        let mut targets: Vec<(u64, usize)> = call_graph
+            .all_targets()
+            .iter()
+            .map(|t| (*t, call_graph.get_callers(*t).len()))
+            .collect();
+        targets.sort_by(|a, b| b.1.cmp(&a.1));
+        eprintln!("  DEBUG: Top call targets:");
+        for (addr, count) in targets.iter().take(10) {
+            let name = symbol_index
+                .as_ref()
+                .and_then(|idx| idx.find_containing(*addr))
+                .map(|(_, n)| n.to_string())
+                .unwrap_or_else(|| "???".to_string());
+            eprintln!("  DEBUG:   {:#x} ({} callers) = {}", addr, count, name);
+        }
+    }
+
     // Build call trees for all entry points and merge results
     let mut final_result = BinaryAnalysisResult::new();
 
