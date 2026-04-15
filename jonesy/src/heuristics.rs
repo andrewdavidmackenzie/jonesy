@@ -57,13 +57,14 @@ const ABORT_SYMBOL: &str = "std::process::abort";
 /// Panic entry point symbols, matched by regex on demangled names.
 const PANIC_SYMBOLS: &[&str] = &[PANIC_SYMBOL, UNWIND_SYMBOL];
 
-/// Module prefixes for panic entry points in **binary** analysis.
+/// Module prefix for panic entry points in **binary** analysis.
 ///
 /// On x86_64, user code calls `core::panicking::panic_fmt` and related
 /// functions directly rather than going through `rust_panic` or
-/// `rust_begin_unwind`. These functions serve as the entry points for
-/// tracing the panic call chain back to user code.
-const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::", "std::panicking::"];
+/// `rust_begin_unwind`. Only `core::panicking::` is used here — the
+/// `std::panicking::` functions are internal panic runtime plumbing
+/// and cause false positives if used as entry points.
+const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::"];
 
 /// Find panic and abort entry point addresses in the binary's symbol table.
 /// Returns `(mangled_name, demangled_name, address)` for each entry point.
