@@ -702,10 +702,7 @@ fn test_workspace_test_example() {
     );
 }
 
-/// On x86_64, the broader core::panicking:: entry points may cause
-/// config-filtered results to not be a strict subset of baseline.
 #[test]
-#[cfg_attr(target_arch = "x86_64", ignore)]
 fn test_config_allow_panic() {
     setup();
     let workspace_root = find_workspace_root();
@@ -1168,10 +1165,7 @@ fn test_indirect_panic_shows_called_function() {
 
 /// Test that OOM (out of memory) panics are detected via abort() path (issue #176).
 /// This verifies that jonesy traces from both rust_panic AND std::process::abort.
-/// On x86_64, OOM detection requires tracing through alloc_error_handler which
-/// uses a different call chain that isn't fully supported yet.
 #[test]
-#[cfg_attr(target_arch = "x86_64", ignore)]
 fn test_oom_detection_via_abort() {
     setup();
     let workspace_root = find_workspace_root();
@@ -1198,10 +1192,7 @@ fn test_oom_detection_via_abort() {
 /// Test that functions with DW_AT_specification are correctly included in analysis (issue #181).
 /// This verifies that method definitions that reference separate declarations are parsed.
 /// Without DW_AT_specification handling, TimeStamp::now would be missing from the tree.
-/// On x86_64, the call tree structure differs due to different entry points and
-/// TimeStamp::now may not appear in the tree via the same path.
 #[test]
-#[cfg_attr(target_arch = "x86_64", ignore)]
 fn test_dwarf_specification_handling() {
     setup();
     let workspace_root = find_workspace_root();
@@ -1594,10 +1585,7 @@ fn test_problem_matcher_regex() {
 ///
 /// Uses `panic::module::cause_expect_none` (allowed by config) and
 /// `panic::module2::cause_expect_none` (NOT allowed, still reported).
-/// On x86_64, cause-specific detection (expect vs unwrap) is less precise
-/// because all panic paths converge on core::panicking::panic_fmt.
 #[test]
-#[cfg_attr(target_arch = "x86_64", ignore)]
 fn test_called_function_allow_distinguishes_modules() {
     setup();
     let workspace_root = find_workspace_root();

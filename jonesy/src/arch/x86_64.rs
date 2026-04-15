@@ -119,7 +119,11 @@ fn scan_call_instructions(
             }
         }
 
-        if mnemonic == "call" {
+        // Track both CALL and JMP instructions.
+        // JMP with an immediate target is a tail call (like aarch64 B instruction).
+        // Without tracking JMPs, the call chain breaks at tail calls like
+        // rust_begin_unwind → rust_panic.
+        if mnemonic == "call" || mnemonic == "jmp" {
             let detail = match cs.insn_detail(insn) {
                 Ok(detail) => detail,
                 Err(_) => continue,
@@ -131,7 +135,7 @@ fn scan_call_instructions(
             let call_target = if operands.len() == 1 {
                 match &operands[0] {
                     arch::ArchOperand::X86Operand(op) => match op.op_type {
-                        // Direct call with immediate target — resolve through
+                        // Direct call/jmp with immediate target — resolve through
                         // stub cache if the target is a stub address
                         arch::x86::X86OperandType::Imm(imm_val) => {
                             let addr = imm_val as u64;
