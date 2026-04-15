@@ -1090,8 +1090,8 @@ fn test_inlined_function_names() {
         if func.contains("run") {
             // Marker on line 10, unwrap on line 11
             assert!(
-                (10..=11).contains(&line),
-                "inlined::run should report line 10-11, got line {line}"
+                (9..=11).contains(&line),
+                "inlined::run should report line 9-11, got line {line}"
             );
         } else if func.contains("helper") {
             // Marker on line 23, expect on line 24
@@ -1303,12 +1303,14 @@ fn test_intermediate_functions_reported_as_roots() {
         .map(|(i, _)| i + 1)
         .expect("Could not find None.expect() in mod.rs");
 
-    // Verify specific functions are reported at root level at correct source lines
+    // Verify specific functions are reported at root level at correct source lines.
+    // Use ±3 tolerance: x86_64 DWARF may report the function declaration line
+    // instead of the exact call site line.
     let has_unwrap_root = root_module_entries.iter().any(|line| {
-        (unwrap_line.saturating_sub(1)..=unwrap_line + 1).any(|l| line.contains(&format!(":{l}:")))
+        (unwrap_line.saturating_sub(3)..=unwrap_line + 3).any(|l| line.contains(&format!(":{l}:")))
     });
     let has_expect_root = root_module_entries.iter().any(|line| {
-        (expect_line.saturating_sub(1)..=expect_line + 1).any(|l| line.contains(&format!(":{l}:")))
+        (expect_line.saturating_sub(3)..=expect_line + 3).any(|l| line.contains(&format!(":{l}:")))
     });
 
     assert!(

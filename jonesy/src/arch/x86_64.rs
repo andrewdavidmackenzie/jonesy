@@ -119,7 +119,11 @@ fn scan_call_instructions(
             }
         }
 
-        if mnemonic == "call" {
+        // Track both CALL and JMP instructions.
+        // JMP with an immediate target is a tail call (like aarch64 B instruction).
+        // Without tracking JMPs, the call chain breaks at tail calls like
+        // rust_begin_unwind → rust_panic.
+        if mnemonic == "call" || mnemonic == "jmp" {
             let detail = match cs.insn_detail(insn) {
                 Ok(detail) => detail,
                 Err(_) => continue,
@@ -131,8 +135,12 @@ fn scan_call_instructions(
             let call_target = if operands.len() == 1 {
                 match &operands[0] {
                     arch::ArchOperand::X86Operand(op) => match op.op_type {
-                        // Direct call with immediate target
-                        arch::x86::X86OperandType::Imm(imm_val) => Some(imm_val as u64),
+                        // Direct call/jmp with immediate target — resolve through
+                        // stub cache if the target is a stub address
+                        arch::x86::X86OperandType::Imm(imm_val) => {
+                            let addr = imm_val as u64;
+                            Some(got_cache.get(&addr).copied().unwrap_or(addr))
+                        }
                         // Indirect call through memory (likely GOT)
                         arch::x86::X86OperandType::Mem(mem_op) => {
                             // Check for RIP-relative addressing
@@ -176,18 +184,17 @@ fn scan_call_instructions(
 
 /// Scan for x86_64 CALL instructions in parallel by dividing into chunks.
 /// Uses Capstone disassembler to handle variable-length instructions.
-/// Requires ELF and buffer for GOT resolution of indirect calls.
+/// Builds an indirect call cache from ELF GOT or MachO stubs.
 pub(crate) fn parallel_disassemble(
     text_data: &[u8],
     text_addr: u64,
-    elf: Option<&goblin::elf::Elf>,
+    binary: &crate::binary_format::BinaryRef,
     buffer: &[u8],
 ) -> Vec<InsnData> {
-    // Build GOT cache for resolving indirect calls (using AHashMap for speed)
-    let got_cache = if let Some(elf) = elf {
-        got::build_cache(elf, buffer)
-    } else {
-        ahash::AHashMap::new()
+    // Build indirect call cache: GOT for ELF, stub resolution for MachO
+    let got_cache = match binary {
+        crate::binary_format::BinaryRef::Elf(elf) => got::build_cache(elf, buffer),
+        crate::binary_format::BinaryRef::MachO(macho) => got::build_macho_stub_cache(macho, buffer),
     };
 
     // Create Capstone disassembler once (major optimization - was being created per chunk!)
@@ -226,17 +233,19 @@ pub(crate) fn is_call_relocation(r_type: u32) -> bool {
     r_type == ELF_RELOC_PLT32 || r_type == ELF_RELOC_GOTPCREL
 }
 
-/// GOT (Global Offset Table) resolution for x86_64 indirect calls.
+/// Indirect call resolution for x86_64 binaries.
 ///
-/// On x86_64 Linux, external function calls often go through the GOT:
-/// ```asm
-/// call *0x1234(%rip)  ; Indirect call through GOT entry
-/// ```
+/// On x86_64, external function calls use indirect addressing:
+/// - **ELF**: calls go through the GOT (Global Offset Table), resolved via
+///   `.rela.plt` and `.rela.dyn` relocations
+/// - **MachO**: calls go through `__stubs` which jump via `__la_symbol_ptr`,
+///   resolved via the indirect symbol table
 ///
-/// The GOT is populated at load time, but we can resolve it statically
-/// using ELF relocations.
+/// Both are resolved statically into the same `AHashMap<u64, u64>` format
+/// mapping pointer/GOT addresses to target function addresses.
 pub mod got {
     use goblin::elf::Elf;
+    use goblin::mach::MachO;
 
     /// Build a mapping from GOT entry addresses to target function addresses.
     ///
@@ -256,6 +265,116 @@ pub mod got {
         }
 
         got_cache
+    }
+
+    /// Build a cache mapping stub addresses to actual function addresses
+    /// for MachO x86_64 binaries.
+    ///
+    /// On x86_64 MachO, even internal function calls go through `__stubs`.
+    /// Each stub/pointer section entry corresponds to an entry in the indirect
+    /// symbol table (LC_DYSYMTAB). The `reserved1` field of the section header
+    /// gives the starting index. We read `reserved1` from the raw load command
+    /// data since goblin's parsed `Section` struct does not expose it.
+    pub(crate) fn build_macho_stub_cache(
+        macho: &MachO,
+        buffer: &[u8],
+    ) -> ahash::AHashMap<u64, u64> {
+        use goblin::mach::constants::{
+            S_LAZY_SYMBOL_POINTERS, S_NON_LAZY_SYMBOL_POINTERS, S_SYMBOL_STUBS,
+        };
+        use goblin::mach::load_command::CommandVariant;
+
+        let mut cache = ahash::AHashMap::new();
+
+        // Find the LC_DYSYMTAB command for the indirect symbol table
+        let dysymtab = macho.load_commands.iter().find_map(|lc| match lc.command {
+            CommandVariant::Dysymtab(ref cmd) => Some(cmd),
+            _ => None,
+        });
+        let Some(dysymtab) = dysymtab else {
+            return cache;
+        };
+
+        let indirect_offset = dysymtab.indirectsymoff as usize;
+        let indirect_count = dysymtab.nindirectsyms as usize;
+        if indirect_offset + indirect_count * 4 > buffer.len() {
+            return cache;
+        }
+
+        // LC_SEGMENT_64 header: 72 bytes; Section64: 80 bytes each
+        // Section64 field offsets: addr=32, size=40, flags=64, reserved1=68, reserved2=72
+        const SECTION64_SIZE: usize = 80;
+        const SEGMENT64_HDR: usize = 72;
+
+        for lc in &macho.load_commands {
+            let (nsects, lc_off) = match lc.command {
+                CommandVariant::Segment64(ref seg) => (seg.nsects as usize, lc.offset),
+                _ => continue,
+            };
+
+            for i in 0..nsects {
+                let s = lc_off + SEGMENT64_HDR + i * SECTION64_SIZE;
+                if s + SECTION64_SIZE > buffer.len() {
+                    break;
+                }
+
+                let flags = u32::from_le_bytes(buffer[s + 64..s + 68].try_into().unwrap());
+                let section_type = flags & 0xff;
+                if section_type != S_SYMBOL_STUBS
+                    && section_type != S_LAZY_SYMBOL_POINTERS
+                    && section_type != S_NON_LAZY_SYMBOL_POINTERS
+                {
+                    continue;
+                }
+
+                let sec_addr = u64::from_le_bytes(buffer[s + 32..s + 40].try_into().unwrap());
+                let sec_size = u64::from_le_bytes(buffer[s + 40..s + 48].try_into().unwrap());
+                let reserved1 = u32::from_le_bytes(buffer[s + 68..s + 72].try_into().unwrap());
+                let reserved2 = u32::from_le_bytes(buffer[s + 72..s + 76].try_into().unwrap());
+
+                // Entry size: reserved2 for stubs (6 on x86_64), 8 for pointers
+                let entry_size = if section_type == S_SYMBOL_STUBS {
+                    reserved2 as u64
+                } else {
+                    8u64
+                };
+                if entry_size == 0 {
+                    continue;
+                }
+
+                let num_entries = sec_size / entry_size;
+                let indirect_start = reserved1 as usize;
+
+                for j in 0..num_entries as usize {
+                    let idx = indirect_start + j;
+                    if idx >= indirect_count {
+                        break;
+                    }
+                    let sym_off = indirect_offset + idx * 4;
+                    if sym_off + 4 > buffer.len() {
+                        break;
+                    }
+                    let sym_idx =
+                        u32::from_le_bytes(buffer[sym_off..sym_off + 4].try_into().unwrap());
+
+                    // Skip INDIRECT_SYMBOL_LOCAL / INDIRECT_SYMBOL_ABS sentinels
+                    if sym_idx & 0xc0000000 != 0 {
+                        continue;
+                    }
+
+                    if let Some(ref symbols) = macho.symbols {
+                        if let Ok((_name, nlist)) = symbols.get(sym_idx as usize) {
+                            if nlist.n_value != 0 {
+                                let entry_addr = sec_addr + (j as u64) * entry_size;
+                                cache.insert(entry_addr, nlist.n_value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        cache
     }
 
     /// Find a section by name
