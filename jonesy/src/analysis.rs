@@ -256,6 +256,20 @@ pub fn analyze_binary_target(
             demangled,
             callers.len()
         );
+        if callers.is_empty() {
+            // Find nearest target addresses to help diagnose address mismatch
+            let all_targets: Vec<u64> = call_graph.all_targets();
+            let nearest: Vec<String> = all_targets
+                .iter()
+                .map(|t| (*t, (*t as i64 - *target_addr as i64).unsigned_abs()))
+                .filter(|(_, d)| *d < 0x1000)
+                .take(5)
+                .map(|(t, d)| format!("{:#x} (delta={})", t, d))
+                .collect();
+            if !nearest.is_empty() {
+                eprintln!("  DEBUG:   nearest targets: {}", nearest.join(", "));
+            }
+        }
 
         // Skip if we've already visited this address from another entry point
         if !visited.insert(*target_addr) {

@@ -272,6 +272,11 @@ impl<'a> CallGraph<'a> {
         Ok(Self { edges })
     }
 
+    /// Get all target addresses in the call graph.
+    pub fn all_targets(&self) -> Vec<u64> {
+        self.edges.keys().copied().collect()
+    }
+
     /// Get all callers of a target address.
     /// Returns a slice reference to avoid cloning CallerInfo instances.
     pub fn get_callers(&self, target_addr: u64) -> &[CallerInfo<'a>] {
