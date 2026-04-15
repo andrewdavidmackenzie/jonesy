@@ -180,16 +180,6 @@ impl<'a> CallGraph<'a> {
 
         #[cfg(target_arch = "x86_64")]
         let insn_data = arch::parallel_disassemble(text_data, text_addr, binary, binary_buffer);
-        {
-            let with_target = insn_data.iter().filter(|d| d.call_target.is_some()).count();
-            let without_target = insn_data.len() - with_target;
-            eprintln!(
-                "  DEBUG: {} CALL instructions found ({} with target, {} unresolved)",
-                insn_data.len(),
-                with_target,
-                without_target
-            );
-        }
         if show_timings {
             // insn_data contains only BL/B branch instructions (not all instructions)
             eprintln!(
@@ -236,45 +226,12 @@ impl<'a> CallGraph<'a> {
             eprintln!("    [cg timing] process instructions: {:?}", step.elapsed(),);
         }
 
-        {
-            let total_edges: usize = edges.iter().map(|e| e.value().len()).sum();
-            eprintln!(
-                "  DEBUG: Call graph has {} unique target addresses, {} total edges",
-                edges.len(),
-                total_edges
-            );
-            // Show a sample of target addresses to identify address ranges
-            let mut targets: Vec<u64> = edges.iter().map(|e| *e.key()).collect();
-            targets.sort();
-            let sample: Vec<String> = targets
-                .iter()
-                .take(5)
-                .map(|a| format!("{:#x}", a))
-                .collect();
-            let sample_end: Vec<String> = targets
-                .iter()
-                .rev()
-                .take(3)
-                .map(|a| format!("{:#x}", a))
-                .collect();
-            eprintln!(
-                "  DEBUG: Target address range: first=[{}] last=[{}]",
-                sample.join(", "),
-                sample_end.join(", ")
-            );
-        }
-
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
         let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = edges.into_iter().collect();
         for callers in edges.values_mut() {
             callers.sort_by_key(|c| c.call_site_addr);
         }
         Ok(Self { edges })
-    }
-
-    /// Get all target addresses in the call graph.
-    pub fn all_targets(&self) -> Vec<u64> {
-        self.edges.keys().copied().collect()
     }
 
     /// Get all callers of a target address.

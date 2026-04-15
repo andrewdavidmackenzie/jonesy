@@ -345,18 +345,6 @@ pub mod got {
                 let num_entries = sec_size / entry_size;
                 let indirect_start = reserved1 as usize;
 
-                // Show first section of each type for debugging
-                if cache.is_empty() {
-                    let sec_name_bytes = &buffer[s..s + 16];
-                    let sec_name = std::str::from_utf8(sec_name_bytes)
-                        .unwrap_or("?")
-                        .trim_end_matches('\0');
-                    eprintln!(
-                        "  DEBUG: stub section '{}' type={} addr={:#x} entries={} reserved1={} reserved2={}",
-                        sec_name, section_type, sec_addr, num_entries, reserved1, reserved2
-                    );
-                }
-
                 for j in 0..num_entries as usize {
                     let idx = indirect_start + j;
                     if idx >= indirect_count {
@@ -375,16 +363,9 @@ pub mod got {
                     }
 
                     if let Some(ref symbols) = macho.symbols {
-                        if let Ok((name, nlist)) = symbols.get(sym_idx as usize) {
-                            let entry_addr = sec_addr + (j as u64) * entry_size;
-                            // Show first few entries for debugging
-                            if j < 3 && cache.len() < 10 {
-                                eprintln!(
-                                    "  DEBUG:   stub[{}] sym_idx={} name={} n_value={:#x} entry_addr={:#x}",
-                                    j, sym_idx, name, nlist.n_value, entry_addr
-                                );
-                            }
+                        if let Ok((_name, nlist)) = symbols.get(sym_idx as usize) {
                             if nlist.n_value != 0 {
+                                let entry_addr = sec_addr + (j as u64) * entry_size;
                                 cache.insert(entry_addr, nlist.n_value);
                             }
                         }

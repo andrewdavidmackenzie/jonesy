@@ -140,13 +140,6 @@ pub fn analyze_binary_target(
 
     let entry_points = find_entry_points(symbols);
 
-    for (mangled, demangled, addr) in &entry_points {
-        eprintln!(
-            "  DEBUG: entry point: {:#x} {} ({})",
-            addr, demangled, mangled
-        );
-    }
-
     if let Some(step_start) = step_start {
         eprintln!("  [timing] Find entry points: {:?}", step_start.elapsed());
     }
@@ -239,26 +232,6 @@ pub fn analyze_binary_target(
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
-    // Dump the most-called targets with their symbol names
-    {
-        let symbol_index = crate::sym::SymbolIndex::from_binary(&binary_ref);
-        let mut targets: Vec<(u64, usize)> = call_graph
-            .all_targets()
-            .iter()
-            .map(|t| (*t, call_graph.get_callers(*t).len()))
-            .collect();
-        targets.sort_by(|a, b| b.1.cmp(&a.1));
-        eprintln!("  DEBUG: Top call targets:");
-        for (addr, count) in targets.iter().take(10) {
-            let name = symbol_index
-                .as_ref()
-                .and_then(|idx| idx.find_containing(*addr))
-                .map(|(_, n)| n.to_string())
-                .unwrap_or_else(|| "???".to_string());
-            eprintln!("  DEBUG:   {:#x} ({} callers) = {}", addr, count, name);
-        }
-    }
-
     // Build call trees for all entry points and merge results
     let mut final_result = BinaryAnalysisResult::new();
 
@@ -269,28 +242,6 @@ pub fn analyze_binary_target(
     let step_start = show_timings.then(Instant::now);
 
     for (_mangled, demangled, target_addr) in &entry_points {
-        let callers = call_graph.get_callers(*target_addr);
-        eprintln!(
-            "  DEBUG: entry {:#x} ({}) has {} direct callers in call graph",
-            target_addr,
-            demangled,
-            callers.len()
-        );
-        if callers.is_empty() {
-            // Find nearest target addresses to help diagnose address mismatch
-            let all_targets: Vec<u64> = call_graph.all_targets();
-            let nearest: Vec<String> = all_targets
-                .iter()
-                .map(|t| (*t, (*t as i64 - *target_addr as i64).unsigned_abs()))
-                .filter(|(_, d)| *d < 0x1000)
-                .take(5)
-                .map(|(t, d)| format!("{:#x} (delta={})", t, d))
-                .collect();
-            if !nearest.is_empty() {
-                eprintln!("  DEBUG:   nearest targets: {}", nearest.join(", "));
-            }
-        }
-
         // Skip if we've already visited this address from another entry point
         if !visited.insert(*target_addr) {
             continue;
