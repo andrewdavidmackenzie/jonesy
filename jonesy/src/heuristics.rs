@@ -57,18 +57,39 @@ const ABORT_SYMBOL: &str = "std::process::abort";
 /// Panic entry point symbols, matched by regex on demangled names.
 const PANIC_SYMBOLS: &[&str] = &[PANIC_SYMBOL, UNWIND_SYMBOL];
 
+/// Module prefixes for panic entry points in **binary** analysis.
+///
+/// On x86_64, user code calls `core::panicking::panic_fmt` and related
+/// functions directly rather than going through `rust_panic` or
+/// `rust_begin_unwind`. These functions serve as the entry points for
+/// tracing the panic call chain back to user code.
+const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::", "std::panicking::"];
+
 /// Find panic and abort entry point addresses in the binary's symbol table.
 /// Returns `(mangled_name, demangled_name, address)` for each entry point.
 pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
     let mut entry_points = Vec::new();
+    let mut seen_addrs = std::collections::HashSet::new();
 
     // Find panic entry points (rust_panic and rust_begin_unwind)
     for pattern in PANIC_SYMBOLS {
         if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
             && let Some(addr) = symbols.find_symbol_address(&sym)
-            && !entry_points.iter().any(|(_, _, a)| *a == addr)
+            && seen_addrs.insert(addr)
         {
             entry_points.push((sym, dem, addr));
+        }
+    }
+
+    // Find core::panicking:: and std::panicking:: functions as entry points.
+    // On x86_64, these are the actual CALL targets from user code.
+    if let Ok(panic_symbols) = symbols.find_all_symbols_matching(BINARY_PANIC_PREFIXES) {
+        for (sym, dem) in panic_symbols {
+            if let Some(addr) = symbols.find_symbol_address(&sym) {
+                if seen_addrs.insert(addr) {
+                    entry_points.push((sym, dem, addr));
+                }
+            }
         }
     }
 
@@ -76,7 +97,7 @@ pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
     if let Ok(abort_symbols) = symbols.find_all_symbols_matching(&[ABORT_SYMBOL]) {
         for (sym, dem) in abort_symbols {
             if let Some(addr) = symbols.find_symbol_address(&sym) {
-                if !entry_points.iter().any(|(_, _, a)| *a == addr) {
+                if seen_addrs.insert(addr) {
                     entry_points.push((sym, dem, addr));
                 }
             }
