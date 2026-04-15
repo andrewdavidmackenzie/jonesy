@@ -82,25 +82,23 @@ pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
         }
     }
 
-    // Find core::panicking:: and std::panicking:: functions as entry points.
+    // Find core::panicking:: functions as entry points.
     // On x86_64, these are the actual CALL targets from user code.
-    if let Ok(panic_symbols) = symbols.find_all_symbols_matching(BINARY_PANIC_PREFIXES) {
-        for (sym, dem) in panic_symbols {
-            if let Some(addr) = symbols.find_symbol_address(&sym) {
-                if seen_addrs.insert(addr) {
-                    entry_points.push((sym, dem, addr));
-                }
+    // Use find_all_symbols_with_addresses to capture ALL monomorphised instances
+    // (e.g., multiple panic_fmt at different addresses).
+    if let Ok(panic_symbols) = symbols.find_all_symbols_with_addresses(BINARY_PANIC_PREFIXES) {
+        for (sym, dem, addr) in panic_symbols {
+            if seen_addrs.insert(addr) {
+                entry_points.push((sym, dem, addr));
             }
         }
     }
 
     // Find abort entry points
-    if let Ok(abort_symbols) = symbols.find_all_symbols_matching(&[ABORT_SYMBOL]) {
-        for (sym, dem) in abort_symbols {
-            if let Some(addr) = symbols.find_symbol_address(&sym) {
-                if seen_addrs.insert(addr) {
-                    entry_points.push((sym, dem, addr));
-                }
+    if let Ok(abort_symbols) = symbols.find_all_symbols_with_addresses(&[ABORT_SYMBOL]) {
+        for (sym, dem, addr) in abort_symbols {
+            if seen_addrs.insert(addr) {
+                entry_points.push((sym, dem, addr));
             }
         }
     }

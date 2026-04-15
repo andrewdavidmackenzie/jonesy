@@ -151,6 +151,65 @@ impl<'a> SymbolTable<'a> {
         Ok(results)
     }
 
+    /// Returns all defined symbols with addresses whose demangled names match any pattern.
+    /// Unlike `find_all_symbols_matching` + `find_symbol_address`, this returns all
+    /// instances including multiple monomorphisations at different addresses.
+    pub fn find_all_symbols_with_addresses(
+        &self,
+        patterns: &[&str],
+    ) -> Result<Vec<(String, String, u64)>, regex::Error> {
+        let regexes: Vec<Regex> = patterns
+            .iter()
+            .map(|p| Regex::new(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut results = Vec::new();
+        match self {
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
+                if let Some(symbols) = macho.symbols.as_ref() {
+                    for (sym_name, nlist) in symbols.iter().flatten() {
+                        if nlist.is_undefined() || nlist.n_value == 0 {
+                            continue;
+                        }
+                        let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+                        let demangled = format!("{:#}", demangle(stripped));
+                        for regex in &regexes {
+                            if regex.is_match(&demangled) {
+                                results.push((
+                                    sym_name.to_string(),
+                                    demangled.clone(),
+                                    nlist.n_value,
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            SymbolTable::Elf(elf) => {
+                for sym in elf.syms.iter() {
+                    if sym.st_value == 0 || sym.st_shndx == 0 {
+                        continue;
+                    }
+                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let demangled = format!("{:#}", demangle(name));
+                        for regex in &regexes {
+                            if regex.is_match(&demangled) {
+                                results.push((name.to_string(), demangled.clone(), sym.st_value));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(results)
+    }
+
     /// Returns the address of the first defined symbol found whose name matches `name` exactly.
     pub fn find_symbol_address(&self, name: &str) -> Option<u64> {
         match self {
