@@ -24,14 +24,14 @@ jobs:
       - name: Install grcov
         run: cargo install grcov
 
-      - name: Build example binaries without coverage
-        run: make build-examples
+      - name: Run tests
+        run: make test
 
       - name: Run tests with coverage
         env:
           RUSTFLAGS: '-Cinstrument-coverage'
           LLVM_PROFILE_FILE: 'cargo-test-%p-%m.profraw'
-        run: cargo test -p jonesy
+        run: cargo test -p jonesy --lib
 
       - name: Generate coverage report
         run: |

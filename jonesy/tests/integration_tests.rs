@@ -384,21 +384,9 @@ fn setup() {
     SETUP.call_once(|| {
         let workspace_root = find_workspace_root();
 
-        // Build jonesy (strip coverage flags so the workspace target
-        // directory fingerprints stay consistent for the example build
-        // that follows — otherwise Cargo may invalidate example artefacts).
-        let status = Command::new("cargo")
-            .args(["build", "-p", "jonesy"])
-            .current_dir(&workspace_root)
-            .env_remove("RUSTFLAGS")
-            .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .status()
-            .expect("Failed to build jonesy");
-        assert!(status.success(), "Failed to build jonesy");
-
         // Build all example binaries without coverage instrumentation.
-        // Coverage flags (via RUSTFLAGS) would alter DWARF output and cause
-        // detection differences. We only need coverage on jonesy itself.
+        // Strip RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS so that coverage flags
+        // (if present in the environment) do not alter DWARF output.
         let status = Command::new("cargo")
             .args(["build", "--workspace", "--exclude", "jonesy"])
             .current_dir(&workspace_root)
