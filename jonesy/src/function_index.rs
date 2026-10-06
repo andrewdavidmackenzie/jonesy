@@ -196,10 +196,7 @@ impl FunctionIndex {
                 // and whose name looks like a crate function (not stdlib).
                 // Crate inlined functions have call_file in the crate source.
                 let name = self.strings.get_name(func.name_idx);
-                let is_stdlib = name.starts_with("core::")
-                    || name.starts_with("std::")
-                    || name.starts_with("alloc::");
-                if is_stdlib {
+                if is_stdlib_name(name) {
                     continue;
                 }
                 let size = func.end_address - func.start_address;
@@ -241,10 +238,7 @@ impl FunctionIndex {
             let func = &self.inlined[idx];
             if addr >= func.start_address && addr < func.end_address {
                 let name = self.strings.get_name(func.name_idx);
-                let is_stdlib = name.starts_with("core::")
-                    || name.starts_with("std::")
-                    || name.starts_with("alloc::");
-                if !is_stdlib {
+                if !is_stdlib_name(name) {
                     continue;
                 }
                 let size = func.end_address - func.start_address;
@@ -268,6 +262,17 @@ impl FunctionIndex {
     pub fn functions(&self) -> &[FunctionInfo] {
         &self.functions
     }
+}
+
+/// Check whether a demangled function name belongs to the standard library
+/// (`core::`, `std::`, or `alloc::`). Handles the angle-bracket form that
+/// rustc emits for trait impls, e.g. `<core::option::Option<i32>>::unwrap`,
+/// by stripping a leading `<` before comparing prefixes.
+fn is_stdlib_name(name: &str) -> bool {
+    // Strip a leading `<` so that `<core::option::Option<T>>::unwrap`
+    // is correctly recognised as a stdlib symbol.
+    let trimmed = name.strip_prefix('<').unwrap_or(name);
+    trimmed.starts_with("core::") || trimmed.starts_with("std::") || trimmed.starts_with("alloc::")
 }
 
 /// Intermediate struct for parsing - uses owned strings before interning
@@ -874,4 +879,59 @@ fn resolve_specification<R: Reader>(
     }
 
     Ok((name, file, line))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_stdlib_name_plain_core() {
+        assert!(is_stdlib_name("core::option::Option<i32>::unwrap"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_angle_bracket_core() {
+        assert!(is_stdlib_name("<core::option::Option<i32>>::unwrap"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_plain_std() {
+        assert!(is_stdlib_name("std::io::Read::read"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_angle_bracket_std() {
+        assert!(is_stdlib_name("<std::io::Cursor<&[u8]>>::read"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_plain_alloc() {
+        assert!(is_stdlib_name("alloc::vec::Vec<T>::push"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_angle_bracket_alloc() {
+        assert!(is_stdlib_name("<alloc::vec::Vec<T>>::push"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_crate_function() {
+        assert!(!is_stdlib_name("my_crate::module::my_function"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_angle_bracket_crate() {
+        assert!(!is_stdlib_name("<my_crate::MyType>::method"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_simple_name() {
+        assert!(!is_stdlib_name("main"));
+    }
+
+    #[test]
+    fn test_is_stdlib_name_inlined_helper() {
+        assert!(!is_stdlib_name("inlined::helper"));
+    }
 }
