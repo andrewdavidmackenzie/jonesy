@@ -3,6 +3,8 @@ pub fn cause_a_panic() {
     panic!("panic");
 }
 
+// Known limitation: unwrap detection in rlib analysis is platform-specific
+// (not detected on Linux with rustc 1.99+, detected on macOS)
 pub fn cause_an_unwrap() {
     // Use runtime check that won't be optimized away
     let opt: Option<i32> = if std::env::args().len() > 1000 {
@@ -10,7 +12,6 @@ pub fn cause_an_unwrap() {
     } else {
         None
     };
-    // jonesy: expect panic unwrap on None
     opt.unwrap();
 }
 
@@ -124,8 +125,10 @@ pub fn cause_allowed_overflow() {
     let _ = x + 1; // jonesy:allow(overflow)
 }
 
-/// Calls cause_allowed_overflow() — should NOT be flagged for overflow
+/// Calls cause_allowed_overflow() -- should NOT be flagged for overflow
 /// because the callee has an inline allow that stops propagation.
+/// (Called indirectly via rlib analysis in test_rlib_inline_allow_propagates_to_caller.)
+#[allow(dead_code)]
 pub fn caller_of_allowed_overflow() {
     cause_allowed_overflow();
 }
