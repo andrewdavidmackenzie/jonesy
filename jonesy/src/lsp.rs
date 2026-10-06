@@ -2349,6 +2349,8 @@ mod tests {
         let status = std::process::Command::new("cargo")
             .arg("build")
             .current_dir(workspace_test_dir)
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status()
             .expect("Failed to build workspace_test");
         assert!(status.success(), "Failed to build workspace_test");
@@ -3065,10 +3067,12 @@ mod tests {
         let workspace_root = find_workspace_root();
         let panic_example = workspace_root.join("examples/panic");
 
-        // Build the example first
+        // Build the example first (strip coverage flags to avoid altering DWARF)
         let status = std::process::Command::new("cargo")
             .arg("build")
             .current_dir(&panic_example)
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status();
 
         if status.is_err() || !status.unwrap().success() {

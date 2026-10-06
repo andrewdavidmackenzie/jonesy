@@ -28,11 +28,14 @@ fn find_workspace_root() -> PathBuf {
     }
 }
 
-/// Ensure jonesy is built
+/// Ensure jonesy is built (strip coverage flags so the workspace target
+/// directory fingerprints stay consistent for example builds).
 fn ensure_jonesy_built(workspace_root: &PathBuf) {
     let status = Command::new("cargo")
         .args(["build", "--package", "jonesy"])
         .current_dir(workspace_root)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -775,9 +778,12 @@ fn test_lsp_execute_command_analyze() {
     let panic_example = workspace_root.join("examples/panic");
 
     // Build the panic example with local target directory
+    // (strip coverage flags to avoid altering DWARF output)
     let status = Command::new("cargo")
         .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -843,9 +849,12 @@ fn test_lsp_diagnostics_published() {
     let panic_example = workspace_root.join("examples/panic");
 
     // Build the panic example with local target directory
+    // (strip coverage flags to avoid altering DWARF output)
     let status = Command::new("cargo")
         .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -994,9 +1003,12 @@ fn test_lsp_diagnostics_contain_error_codes() {
     let panic_example = workspace_root.join("examples/panic");
 
     // Build the panic example with local target directory
+    // (strip coverage flags to avoid altering DWARF output)
     let status = Command::new("cargo")
         .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1097,9 +1109,12 @@ fn test_lsp_binary_change_triggers_reanalysis() {
     let panic_example = workspace_root.join("examples/panic");
 
     // Build the panic example with local target directory
+    // (strip coverage flags to avoid altering DWARF output)
     let status = Command::new("cargo")
         .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1180,9 +1195,12 @@ fn test_lsp_progress_notifications() {
     let panic_example = workspace_root.join("examples/panic");
 
     // Build the panic example with local target directory
+    // (strip coverage flags to avoid altering DWARF output)
     let status = Command::new("cargo")
         .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1289,9 +1307,12 @@ fn test_lsp_file_change_watching() {
     let panic_example = workspace_root.join("examples/panic");
 
     // Build the panic example with local target directory
+    // (strip coverage flags to avoid altering DWARF output)
     let status = Command::new("cargo")
         .args(["build", "--target-dir", "./target"])
         .current_dir(&panic_example)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

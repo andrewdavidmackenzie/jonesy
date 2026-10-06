@@ -194,16 +194,23 @@ pub fn load_debug_info(binary: &BinaryRef, binary_path: &Path, quiet: bool) -> D
                     println!("  dSYM is stale, will regenerate");
                 }
             } else {
-                if !quiet {
-                    println!("  Using .dSYM bundle for debug info");
+                if let Ok(debug_buffer) = fs::read(dsym_path) {
+                    // Validate the dSYM is parseable before committing
+                    // to using it (the file may be truncated or stale).
+                    if Mach::parse(&debug_buffer).is_ok() {
+                        if !quiet {
+                            println!("  Using .dSYM bundle for debug info");
+                        }
+                        let dsym_info = DSymInfoBuilder {
+                            debug_buffer,
+                            debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+                        }
+                        .build();
+                        return DebugInfo::DSym(Box::new(dsym_info));
+                    } else if !quiet {
+                        println!("  dSYM bundle is malformed, skipping");
+                    }
                 }
-                let debug_buffer = fs::read(dsym_path).unwrap();
-                let dsym_info = DSymInfoBuilder {
-                    debug_buffer,
-                    debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
-                }
-                .build();
-                return DebugInfo::DSym(Box::new(dsym_info));
             }
         }
     }
@@ -269,16 +276,22 @@ fn auto_generate_dsym(binary_path: &Path, quiet: bool) -> Option<DSymInfo> {
 
     for dwarf_path in &dwarf_paths {
         if dwarf_path.exists() {
-            if !quiet {
-                println!("  Generated .dSYM bundle for debug info");
+            if let Ok(debug_buffer) = fs::read(dwarf_path) {
+                // Validate the dSYM is parseable before committing
+                if Mach::parse(&debug_buffer).is_ok() {
+                    if !quiet {
+                        println!("  Generated .dSYM bundle for debug info");
+                    }
+                    let dsym_info = DSymInfoBuilder {
+                        debug_buffer,
+                        debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
+                    }
+                    .build();
+                    return Some(dsym_info);
+                } else if !quiet {
+                    println!("  Generated dSYM is malformed, skipping");
+                }
             }
-            let debug_buffer = fs::read(dwarf_path).ok()?;
-            let dsym_info = DSymInfoBuilder {
-                debug_buffer,
-                debug_macho_builder: |buf: &Vec<u8>| Mach::parse(buf).unwrap(),
-            }
-            .build();
-            return Some(dsym_info);
         }
     }
 
