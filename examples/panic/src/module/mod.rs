@@ -249,7 +249,7 @@ pub fn cause_slice_index_oob() {
 
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
-    // jonesy: expect panic(str_slice)
+    // jonesy: expect panic
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 
     // Panic-free alternative: use .get() which returns Option

@@ -489,7 +489,7 @@ fn setup_config() {
 }
 ```
 
-The comment applies to the line it's on. Due to DWARF debug info sometimes being slightly off, jonesy checks a small range around the reported line number (±2 lines).
+The comment applies to the line it's on, or to the line immediately below it (so you can place the comment on the line above the code). No wider range is checked.
 
 **Available cause IDs:** `panic`, `bounds`, `overflow`, `div_overflow`, `rem_overflow`, `shift_overflow`, `div_zero`, `unwrap`, `expect`, `assert`, `debug_assert`, `unreachable`, `unimplemented`, `todo`, `format`, `capacity`, `oom`, `str_slice`, `invalid_enum`, `misaligned_ptr`, `async_resumed`, `drop`, `unwind`, `unknown`
 

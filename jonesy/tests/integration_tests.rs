@@ -384,17 +384,9 @@ fn setup() {
     SETUP.call_once(|| {
         let workspace_root = find_workspace_root();
 
-        // Build jonesy
-        let status = Command::new("cargo")
-            .args(["build", "-p", "jonesy"])
-            .current_dir(&workspace_root)
-            .status()
-            .expect("Failed to build jonesy");
-        assert!(status.success(), "Failed to build jonesy");
-
         // Build all example binaries without coverage instrumentation.
-        // Coverage flags (via RUSTFLAGS) would alter DWARF output and cause
-        // detection differences. We only need coverage on jonesy itself.
+        // Strip RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS so that coverage flags
+        // (if present in the environment) do not alter DWARF output.
         let status = Command::new("cargo")
             .args(["build", "--workspace", "--exclude", "jonesy"])
             .current_dir(&workspace_root)
@@ -1666,10 +1658,10 @@ fn test_rlib_inline_allow() {
 
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
-    // cause_allowed_overflow (line 124) has `// jonesy:allow(overflow)` — should NOT appear
+    // cause_allowed_overflow (line 125) has `// jonesy:allow(overflow)` -- should NOT appear
     let has_allowed_detection = stdout
         .lines()
-        .any(|line| line.contains("mod.rs:124") && line.contains("overflow"));
+        .any(|line| line.contains("mod.rs:125") && line.contains("overflow"));
 
     assert!(
         !has_allowed_detection,
@@ -1677,10 +1669,10 @@ fn test_rlib_inline_allow() {
         stdout
     );
 
-    // cause_arithmetic_overflow (line 111) does NOT have an inline allow — should still appear
+    // cause_arithmetic_overflow (line 112) does NOT have an inline allow -- should still appear
     let has_denied_detection = stdout
         .lines()
-        .any(|line| line.contains("mod.rs:111") && line.contains("overflow"));
+        .any(|line| line.contains("mod.rs:112") && line.contains("overflow"));
 
     assert!(
         has_denied_detection,
