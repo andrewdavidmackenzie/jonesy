@@ -555,15 +555,30 @@ pub fn filter_allowed_causes(
                 return false;
             }
 
-            // Suppress arithmetic/shift overflow for const-only expressions that
-            // are provably safe (issue #266). Read the source file, resolve
-            // constant values, and evaluate whether the arithmetic overflows.
-            if cause.is_debug_only()
-                && crate::inline_allows::read_source_file(&point.file, workspace_root)
-                    .and_then(|src| crate::heuristics::evaluate_const_arithmetic(&src, point.line))
-                    == Some(crate::heuristics::ConstArithmeticResult::Safe)
-            {
-                return false;
+            // Suppress arithmetic/shift overflow for safe arithmetic patterns:
+            // - Safe arithmetic methods like checked_add, saturating_mul (issue #267)
+            // - Const-only expressions that are provably safe (issue #266)
+            if cause.is_debug_only() {
+                if let Some(source_content) =
+                    crate::inline_allows::read_source_file(&point.file, workspace_root)
+                {
+                    // Check if the source line uses a safe arithmetic method
+                    if let Some(source_line) = source_content
+                        .lines()
+                        .nth((point.line as usize).saturating_sub(1))
+                    {
+                        if crate::heuristics::is_safe_arithmetic_method(source_line) {
+                            return false;
+                        }
+                    }
+
+                    // Check if the expression is const-only and provably safe
+                    if crate::heuristics::evaluate_const_arithmetic(&source_content, point.line)
+                        == Some(crate::heuristics::ConstArithmeticResult::Safe)
+                    {
+                        return false;
+                    }
+                }
             }
 
             if !config.is_denied_at(cause, Some(&point.file), Some(&point.name)) {
