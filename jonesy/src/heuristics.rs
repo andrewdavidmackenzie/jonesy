@@ -437,19 +437,12 @@ pub(crate) fn evaluate_const_arithmetic(
     let lines: Vec<&str> = source.lines().collect();
     let target_line = lines.get((line_number as usize).saturating_sub(1))?;
 
-    if !is_const_arithmetic(target_line) {
+    // Extract expression and check it has const-looking operands
+    let expr = extract_expression(target_line)?;
+    let tokens = split_arithmetic_operands(expr)?;
+    if !tokens.iter().all(|t| is_const_token(t)) {
         return None;
     }
-
-    // Parse the expression from the target line
-    let trimmed = target_line.trim();
-    let expr = if let Some(rest) = trimmed.strip_prefix("let ") {
-        rest.split_once('=').map(|(_, rhs)| rhs.trim())?
-    } else {
-        trimmed
-    };
-    let expr = expr.split("//").next().unwrap_or(expr).trim();
-    let expr = expr.trim_end_matches(';').trim();
 
     // Find the operator and operands
     let (lhs, op, rhs) = parse_binary_arithmetic(expr)?;
@@ -591,46 +584,50 @@ fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
     None
 }
 
-/// Parse a numeric literal (e.g., `7`, `0xFF`, `200u8`) into a value and type.
+/// Parse a numeric literal (e.g., `7`, `0xFF`, `200u8`, `1_000i32`) into a value and type.
+///
+/// Handles decimal, hex (`0x`), octal (`0o`), and binary (`0b`) literals with optional
+/// underscore separators and type suffixes (`u8`, `i32`, `usize`, etc.).
 fn parse_numeric_literal(token: &str) -> Option<(i128, IntType)> {
     let token = token.trim();
+    if token.is_empty() || !token.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
 
-    // Check for a type suffix
-    let (num_str, int_type) = if let Some(pos) = token.find(|c: char| {
-        c.is_ascii_alphabetic()
-            && c != 'x'
-            && c != 'X'
-            && c != 'o'
-            && c != 'O'
-            && c != 'b'
-            && c != 'B'
-            && c != 'a'
-            && c != 'A'
-            && c != 'c'
-            && c != 'C'
-            && c != 'd'
-            && c != 'D'
-            && c != 'e'
-            && c != 'E'
-            && c != 'f'
-            && c != 'F'
-    }) {
-        let num_part = &token[..pos];
-        let type_suffix = &token[pos..];
-        let int_type = IntType::from_str(type_suffix).unwrap_or(IntType::I32Default);
-        (num_part, int_type)
-    } else {
-        (token, IntType::I32Default)
-    };
+    // Try to find a type suffix by checking known suffix strings at the end
+    let type_suffixes = [
+        "usize", "isize", "u128", "i128", "u64", "i64", "u32", "i32", "u16", "i16", "u8", "i8",
+    ];
+
+    let (num_str, int_type) = type_suffixes
+        .iter()
+        .find_map(|suffix| {
+            token.strip_suffix(suffix).map(|num_part| {
+                (
+                    num_part,
+                    IntType::from_str(suffix).unwrap_or(IntType::I32Default),
+                )
+            })
+        })
+        .unwrap_or((token, IntType::I32Default));
 
     let num_str = num_str.replace('_', "");
 
-    let value = if num_str.starts_with("0x") || num_str.starts_with("0X") {
-        i128::from_str_radix(&num_str[2..], 16).ok()?
-    } else if num_str.starts_with("0o") || num_str.starts_with("0O") {
-        i128::from_str_radix(&num_str[2..], 8).ok()?
-    } else if num_str.starts_with("0b") || num_str.starts_with("0B") {
-        i128::from_str_radix(&num_str[2..], 2).ok()?
+    let value = if let Some(hex) = num_str
+        .strip_prefix("0x")
+        .or_else(|| num_str.strip_prefix("0X"))
+    {
+        i128::from_str_radix(hex, 16).ok()?
+    } else if let Some(oct) = num_str
+        .strip_prefix("0o")
+        .or_else(|| num_str.strip_prefix("0O"))
+    {
+        i128::from_str_radix(oct, 8).ok()?
+    } else if let Some(bin) = num_str
+        .strip_prefix("0b")
+        .or_else(|| num_str.strip_prefix("0B"))
+    {
+        i128::from_str_radix(bin, 2).ok()?
     } else {
         num_str.parse::<i128>().ok()?
     };
@@ -667,26 +664,14 @@ fn check_overflow(lhs: i128, op: char, rhs: i128, int_type: IntType) -> bool {
     }
 }
 
-/// Check whether a source line contains arithmetic where all operands are
-/// compile-time constants.
-///
-/// Returns `true` if the line has an arithmetic operator (`+`, `-`, `*`, `/`, `%`)
-/// and every operand is either a numeric literal or a `SCREAMING_CASE` identifier
-/// (the Rust convention for constants). Such arithmetic cannot overflow at runtime
-/// because the compiler evaluates and validates it at compile time — if the result
-/// overflowed, the code would not compile.
-///
-/// This is used to suppress `ArithmeticOverflow` and `ShiftOverflow` detections
-/// for const-only expressions (see issue #266).
-pub(crate) fn is_const_arithmetic(line: &str) -> bool {
+/// Extract the arithmetic expression from a source line, stripping `let` bindings,
+/// trailing semicolons, and comments. Returns `None` if the line has no expression.
+fn extract_expression(line: &str) -> Option<&str> {
     let trimmed = line.trim();
 
     // Strip common prefixes: `let _ = ...;`, `let name = ...;`, `let name: Type = ...;`
     let expr = if let Some(rest) = trimmed.strip_prefix("let ") {
-        // Skip past the binding pattern and `=`
-        rest.split_once('=')
-            .map(|(_, rhs)| rhs.trim())
-            .unwrap_or("")
+        rest.split_once('=').map(|(_, rhs)| rhs.trim())?
     } else {
         trimmed
     };
@@ -696,26 +681,64 @@ pub(crate) fn is_const_arithmetic(line: &str) -> bool {
     let expr = expr.trim_end_matches(';').trim();
 
     if expr.is_empty() {
-        return false;
+        return None;
     }
 
-    // Find an arithmetic operator in the expression
-    let arithmetic_ops = [" + ", " - ", " * ", " / ", " % ", " << ", " >> "];
-    let has_arithmetic = arithmetic_ops.iter().any(|op| expr.contains(op));
-    if !has_arithmetic {
-        return false;
+    Some(expr)
+}
+
+/// Split an expression on arithmetic operators, returning the operand tokens.
+/// Handles `<<`, `>>` as well as `+`, `-`, `*`, `/`, `%`, with or without spaces.
+fn split_arithmetic_operands(expr: &str) -> Option<Vec<&str>> {
+    // Check for shift operators first (must check before single-char operators)
+    if expr.contains("<<") || expr.contains(">>") {
+        let parts: Vec<&str> = if expr.contains("<<") {
+            expr.split("<<").map(str::trim).collect()
+        } else {
+            expr.split(">>").map(str::trim).collect()
+        };
+        if parts.len() >= 2 && parts.iter().all(|p| !p.is_empty()) {
+            return Some(parts);
+        }
     }
 
-    // Split on arithmetic operators and check every token is a constant
-    let tokens: Vec<&str> = expr
-        .split(['+', '-', '*', '/', '%'])
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .collect();
-
-    if tokens.len() < 2 {
-        return false;
+    // Try single-character arithmetic operators
+    for op in ['+', '-', '*', '/', '%'] {
+        if expr.contains(op) {
+            let parts: Vec<&str> = expr
+                .split(op)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect();
+            if parts.len() >= 2 {
+                return Some(parts);
+            }
+        }
     }
+
+    None
+}
+
+/// Check whether a source line contains arithmetic where all operands are
+/// compile-time constants (numeric literals or `SCREAMING_SNAKE_CASE` identifiers).
+///
+/// **Note**: This is a syntactic check only. It does not verify that SCREAMING_CASE
+/// identifiers are actually declared as `const`. The caller should use
+/// [`evaluate_const_arithmetic`] for a full semantic check that resolves values.
+///
+/// This is used as a fast pre-filter before the more expensive source-file scan
+/// in `evaluate_const_arithmetic` (see issue #266).
+#[cfg(test)]
+fn is_const_arithmetic(line: &str) -> bool {
+    let expr = match extract_expression(line) {
+        Some(e) => e,
+        None => return false,
+    };
+
+    let tokens = match split_arithmetic_operands(expr) {
+        Some(t) => t,
+        None => return false,
+    };
 
     tokens.iter().all(|token| is_const_token(token))
 }
@@ -725,7 +748,9 @@ pub(crate) fn is_const_arithmetic(line: &str) -> bool {
 /// A token is considered a constant if it is:
 /// - A numeric literal (decimal, hex `0x`, octal `0o`, binary `0b`, with optional `_` separators
 ///   and optional type suffix like `usize`, `i32`)
-/// - A `SCREAMING_SNAKE_CASE` identifier (the Rust convention for `const` and `static` values)
+/// - A `SCREAMING_SNAKE_CASE` identifier (the Rust convention for `const` and `static` values).
+///   **Note**: this is a naming convention heuristic — `evaluate_const_arithmetic` verifies
+///   that a matching `const` declaration exists in the source file.
 fn is_const_token(token: &str) -> bool {
     let token = token.trim();
     if token.is_empty() {
@@ -734,26 +759,12 @@ fn is_const_token(token: &str) -> bool {
 
     // Numeric literal: starts with a digit
     if token.starts_with(|c: char| c.is_ascii_digit()) {
-        // Strip type suffix (e.g., `1usize`, `0xFFi32`)
-        let num_part = token.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '_');
-        if num_part.is_empty() {
-            return false;
-        }
-        // Validate the remaining part looks like a number
-        let num_part = num_part.replace('_', "");
-        return if num_part.starts_with("0x") || num_part.starts_with("0X") {
-            num_part[2..].chars().all(|c| c.is_ascii_hexdigit())
-        } else if num_part.starts_with("0o") || num_part.starts_with("0O") {
-            num_part[2..].chars().all(|c| ('0'..='7').contains(&c))
-        } else if num_part.starts_with("0b") || num_part.starts_with("0B") {
-            num_part[2..].chars().all(|c| c == '0' || c == '1')
-        } else {
-            num_part.chars().all(|c| c.is_ascii_digit())
-        };
+        return parse_numeric_literal(token).is_some();
     }
 
     // SCREAMING_SNAKE_CASE identifier: all uppercase letters, digits, and underscores,
-    // must contain at least one uppercase letter, must not start with a digit
+    // must contain at least one uppercase letter, must not start with a digit.
+    // This is a heuristic — the caller must verify against actual const declarations.
     if token.starts_with(|c: char| c.is_ascii_uppercase()) {
         return token
             .chars()
@@ -1266,6 +1277,55 @@ mod tests {
                           let _ = x + 1;\n\
                       }";
         // `x` is a runtime variable, not const arithmetic
+        assert_eq!(evaluate_const_arithmetic(source, 3), None);
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_typed_literals() {
+        // Literals with type suffixes: 1u8 + 2u8 = 3, no overflow
+        let source = "fn example() {\n\
+                          let _ = 1u8 + 2;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 2),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_typed_literal_overflow() {
+        // 250u8 + 10u8 = 260, overflows u8
+        let source = "fn example() {\n\
+                          let _ = 250u8 + 10;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 2),
+            Some(ConstArithmeticResult::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_is_const_arithmetic_no_spaces() {
+        // Operators without spaces should also be detected
+        assert!(is_const_arithmetic("    let _ = OFFSET+1;"));
+        assert!(is_const_arithmetic("    let _ = SIZE*2;"));
+    }
+
+    #[test]
+    fn test_is_const_arithmetic_shift() {
+        // Shift operators
+        assert!(is_const_arithmetic("    let _ = SIZE << 2;"));
+        assert!(is_const_arithmetic("    let _ = VALUE >> 3;"));
+    }
+
+    #[test]
+    fn test_evaluate_uppercase_let_binding_not_const() {
+        // An uppercase let binding is NOT a const — should not be treated as const arithmetic
+        let source = "fn example(input: usize) {\n\
+                          let OFFSET = input;\n\
+                          let _ = OFFSET + 1;\n\
+                      }";
+        // OFFSET is a let binding, not a const declaration — resolve_const_value should fail
         assert_eq!(evaluate_const_arithmetic(source, 3), None);
     }
 }
