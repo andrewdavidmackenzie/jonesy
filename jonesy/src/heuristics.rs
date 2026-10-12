@@ -437,17 +437,23 @@ pub(crate) fn evaluate_const_arithmetic(
     let lines: Vec<&str> = source.lines().collect();
     let target_line = lines.get((line_number as usize).saturating_sub(1))?;
 
-    // Extract expression and check it has const-looking operands
+    // Extract expression, split into operands, and verify they look like constants
     let expr = extract_expression(target_line)?;
     let tokens = split_arithmetic_operands(expr)?;
     if !tokens.iter().all(|t| is_const_token(t)) {
         return None;
     }
 
-    // Find the operator and operands
+    // Parse the operator and operands from the expression.
+    // split_arithmetic_operands already confirmed an operator exists, so
+    // parse_binary_arithmetic will always find one — but we propagate None
+    // for safety.
     let (lhs, op, rhs) = parse_binary_arithmetic(expr)?;
 
-    // Resolve operand values and types from const declarations in the source
+    // Resolve operand values and types from const declarations in the source.
+    // is_const_token already verified the tokens look like constants, but
+    // resolve_const_value additionally requires a matching `const` declaration
+    // for SCREAMING_CASE identifiers (rejecting `let` bindings).
     let (lhs_val, lhs_type) = resolve_const_value(lhs, source)?;
     let (rhs_val, rhs_type) = resolve_const_value(rhs, source)?;
 
@@ -545,6 +551,9 @@ fn parse_binary_arithmetic(expr: &str) -> Option<(&str, char, &str)> {
 
 /// Resolve a token to its numeric value and type by searching for `const` declarations
 /// in the source file.
+///
+/// The caller must have already verified the token passes `is_const_token` (either a
+/// numeric literal or a SCREAMING_CASE identifier).
 fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
     let token = token.trim();
 
@@ -553,20 +562,16 @@ fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
         return parse_numeric_literal(token);
     }
 
-    // Look for a const declaration: `const NAME: TYPE = VALUE;`
-    if !is_const_token(token) {
-        return None;
-    }
-
+    // Search for a matching `const NAME: TYPE = VALUE;` declaration.
+    // This rejects `let` bindings with SCREAMING_CASE names — only
+    // actual `const` declarations are trusted.
     for line in source.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("const ") {
-            // Parse `NAME: TYPE = VALUE;`
             if let Some((name_type, value_part)) = rest.split_once('=') {
                 let name_type = name_type.trim();
                 let value_str = value_part.trim().trim_end_matches(';').trim();
 
-                // Split name and type
                 if let Some((name, type_str)) = name_type.split_once(':') {
                     let name = name.trim();
                     let type_str = type_str.trim();
@@ -1431,6 +1436,8 @@ mod tests {
         assert!(check_overflow(1, '<', 8, IntType::U8));
         // left shift: 1 << 4 = 16, safe for u8
         assert!(!check_overflow(1, '<', 4, IntType::U8));
+        // left shift by >= 128: checked_shl returns None (i128 overflow)
+        assert!(check_overflow(1, '<', 200, IntType::I32Default));
     }
 
     #[test]
