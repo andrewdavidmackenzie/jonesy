@@ -708,6 +708,53 @@ fn check_overflow(lhs: i128, op: char, rhs: i128, int_type: IntType) -> bool {
     }
 }
 
+/// Safe arithmetic method prefixes that cannot panic on overflow.
+/// These methods explicitly handle overflow by returning `Option`, `(T, bool)`,
+/// or a clamped/wrapped result instead of panicking.
+const SAFE_ARITHMETIC_PREFIXES: &[&str] =
+    &[".checked_", ".saturating_", ".wrapping_", ".overflowing_"];
+
+/// Check whether a source line contains ONLY safe arithmetic methods
+/// (`checked_*`, `saturating_*`, `wrapping_*`, or `overflowing_*`)
+/// and no plain arithmetic operators that could independently overflow.
+///
+/// These methods are the explicit safe alternatives to unchecked arithmetic.
+/// They cannot panic on overflow and should not be flagged as overflow panic points.
+///
+/// Returns `false` if the line also contains plain arithmetic operators (`+`, `-`,
+/// `*`, `/`, `%`, `<<`, `>>`), since the overflow detection might be from those
+/// operators rather than the safe method.
+///
+/// See issue #267.
+pub(crate) fn is_safe_arithmetic_method(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    // Must contain at least one safe arithmetic method call
+    if !SAFE_ARITHMETIC_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.contains(prefix))
+    {
+        return false;
+    }
+
+    // Strip the line down to just the expression (remove `let x = ...;` wrapper)
+    let expr = if let Some(rest) = trimmed.strip_prefix("let ") {
+        rest.split_once('=')
+            .map(|(_, rhs)| rhs.trim())
+            .unwrap_or(trimmed)
+    } else {
+        trimmed
+    };
+    let expr = expr.split("//").next().unwrap_or(expr).trim();
+    let expr = expr.trim_end_matches(';').trim();
+
+    // Check that the expression does NOT also contain plain arithmetic operators
+    // that could independently overflow. We look for operators surrounded by
+    // non-operator characters (to avoid matching inside method names or strings).
+    let plain_operators = [" + ", " - ", " * ", " / ", " % ", " << ", " >> "];
+    !plain_operators.iter().any(|op| expr.contains(op))
+}
+
 /// Extract the arithmetic expression from a source line, stripping `let` bindings,
 /// trailing semicolons, and comments. Returns `None` if the line has no expression.
 fn extract_expression(line: &str) -> Option<&str> {
@@ -1710,5 +1757,65 @@ mod tests {
         assert_eq!(IntType::from_str("isize"), Some(IntType::Isize));
         assert_eq!(IntType::from_str("f64"), None);
         assert_eq!(IntType::from_str("string"), None);
+    }
+
+    /// Issue #267: `checked_add`, `saturating_mul`, `wrapping_sub`, and similar
+    /// safe arithmetic methods should not be flagged as overflow panic points.
+    #[test]
+    fn test_is_safe_arithmetic_method() {
+        // checked_* methods return Option — cannot panic
+        assert!(is_safe_arithmetic_method(
+            "    let result = x.checked_add(y).ok_or(Error::Overflow)?;"
+        ));
+        assert!(is_safe_arithmetic_method(
+            "    out_path_start.checked_add(out_path_bytes)"
+        ));
+        assert!(is_safe_arithmetic_method("    x.checked_mul(2)"));
+        assert!(is_safe_arithmetic_method("    a.checked_sub(b)"));
+        assert!(is_safe_arithmetic_method("    a.checked_div(b)"));
+        assert!(is_safe_arithmetic_method("    a.checked_rem(b)"));
+        assert!(is_safe_arithmetic_method("    a.checked_shl(4)"));
+        assert!(is_safe_arithmetic_method("    a.checked_shr(4)"));
+        assert!(is_safe_arithmetic_method("    a.checked_neg()"));
+        assert!(is_safe_arithmetic_method("    a.checked_pow(3)"));
+        assert!(is_safe_arithmetic_method("    a.checked_abs()"));
+
+        // saturating_* methods clamp on overflow — cannot panic
+        assert!(is_safe_arithmetic_method("    x.saturating_add(1)"));
+        assert!(is_safe_arithmetic_method("    x.saturating_mul(2)"));
+        assert!(is_safe_arithmetic_method("    x.saturating_sub(1)"));
+
+        // wrapping_* methods wrap on overflow — cannot panic
+        assert!(is_safe_arithmetic_method("    x.wrapping_add(1)"));
+        assert!(is_safe_arithmetic_method("    x.wrapping_mul(2)"));
+
+        // overflowing_* methods return (result, bool) — cannot panic
+        assert!(is_safe_arithmetic_method("    x.overflowing_add(1)"));
+        assert!(is_safe_arithmetic_method("    x.overflowing_mul(2)"));
+
+        // Plain arithmetic operators — NOT safe
+        assert!(!is_safe_arithmetic_method("    let _ = x + 1;"));
+        assert!(!is_safe_arithmetic_method("    let _ = a * b;"));
+        assert!(!is_safe_arithmetic_method("    let _ = x << 4;"));
+
+        // Unrelated method calls — NOT safe arithmetic
+        assert!(!is_safe_arithmetic_method("    x.unwrap()"));
+        assert!(!is_safe_arithmetic_method("    v.push(1)"));
+
+        // Mixed: safe method AND a plain operator — NOT safe (the + could overflow)
+        assert!(!is_safe_arithmetic_method(
+            "    let result = x.checked_add(1).unwrap_or(0) + y;"
+        ));
+        assert!(!is_safe_arithmetic_method(
+            "    let _ = x.saturating_add(1) * z;"
+        ));
+
+        // Safe method chained with non-arithmetic methods — still safe
+        assert!(is_safe_arithmetic_method(
+            "    x.checked_add(y).ok_or_else(|| Error::Overflow)?;"
+        ));
+        assert!(is_safe_arithmetic_method(
+            "    x.checked_mul(2).unwrap_or(0)"
+        ));
     }
 }
