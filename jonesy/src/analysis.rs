@@ -523,20 +523,24 @@ pub fn analyze_archive(
         for caller_info in merged_graph.get_callers(target_sym) {
             // Get file from DWARF info, filtering out non-crate code paths
             let dwarf_file = caller_info
-                .caller_file
-                .as_ref()
+                .file
+                .as_deref()
                 .filter(|f| project_context.is_crate_source(f));
 
             // Only include entries with proper DWARF file/line info from user code
             // Skip entries without valid line numbers (would show confusing ":0" in output)
             if let Some(file) = dwarf_file
-                && let Some(line) = caller_info.line
+                && caller_info.line > 0
             {
                 panic_callers.insert(PanicCaller {
-                    file: file.clone(),
+                    file: file.to_string(),
                     name: caller_info.caller_name.to_string(),
-                    line,
-                    column: caller_info.column,
+                    line: caller_info.line as u32,
+                    column: if caller_info.column == 0 {
+                        None
+                    } else {
+                        Some(caller_info.column as u32)
+                    },
                     target: target_sym.to_string(),
                 });
             }
