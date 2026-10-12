@@ -12,25 +12,31 @@ use rustc_demangle::demangle;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-/// Information about a call site
-/// Uses Cow<'a, str> for caller_name to support both borrowed (from SymbolIndex)
-/// and owned (from DWARF) strings without allocation in the hot path.
+/// Compact information about a call site (64 bytes, 64-byte aligned).
+///
+/// Uses `Cow<str>` for the function name (24 bytes), `Option<Box<str>>` for the
+/// file path (16 bytes), and `u16` for line/column numbers.
+///
+/// The `file` field merges what was previously `caller_file` and `file`:
+/// at construction time, the more specific call-site file is preferred,
+/// falling back to the function declaration file.
+///
+/// A value of 0 in `line` or `column` means the field is absent.
 #[derive(Debug, Clone)]
+#[repr(C, align(64))]
 pub struct CallerInfo<'a> {
     /// Demangled name of the calling function
     pub caller_name: Cow<'a, str>,
+    /// Source file (merged: prefers call-site file, falls back to function declaration file)
+    pub file: Option<Box<str>>,
     /// Start address of the calling function
     pub caller_start_address: u64,
-    /// File of the calling function (from DWARF, if available)
-    pub caller_file: Option<String>,
     /// Address of the calling instruction
     pub call_site_addr: u64,
-    /// Source location of the calling instruction
-    pub file: Option<String>,
-    /// Line number of the calling instruction
-    pub line: Option<u32>,
-    /// Column number of the calling instruction
-    pub column: Option<u32>,
+    /// Line number of the calling instruction (0 = unknown)
+    pub line: u16,
+    /// Column number of the calling instruction (0 = unknown)
+    pub column: u16,
 }
 
 /// Get a named section's address and data from a binary.
@@ -96,13 +102,12 @@ impl<'a> CallGraph<'a> {
                 let resolved_target = arch::plt::resolve_stub(call_target, &plt_map);
 
                 edges.entry(resolved_target).or_default().push(CallerInfo {
-                    caller_name: Cow::Borrowed(func_name), // No allocation - borrows from SymbolIndex
-                    caller_start_address: func_addr,
-                    caller_file: None,
-                    call_site_addr: data.address,
+                    caller_name: Cow::Borrowed(func_name),
                     file: None,
-                    line: None,
-                    column: None,
+                    caller_start_address: func_addr,
+                    call_site_addr: data.address,
+                    line: 0,
+                    column: 0,
                 });
             }
         });
@@ -273,8 +278,8 @@ fn process_instruction_data_with_crate_table<'a>(
         // Get source location using O(log n) binary search on pre-built table
         let func_file = function_index.get_file(func).map(|s| s.to_string());
         let func_line = function_index.get_line(func);
-        // Clone once for caller_file, then move func_file into match
-        let caller_file = func_file.clone();
+        // Keep a copy for fallback file resolution
+        let decl_file = func_file.clone();
         let (mut file, mut line, mut column) = match (func_file, func_line) {
             (Some(f), Some(l)) => {
                 // Fast path: use DWARF function info directly
@@ -382,35 +387,33 @@ fn process_instruction_data_with_crate_table<'a>(
         // containing function's address range (start/end) for call graph building.
         // The caller.file/line fields are the function *definition* location,
         // while CallerInfo.file/line/column below are the actual *call site*.
+        // Merge file fields: prefer call-site file, fall back to declaration file
+        let merged_file = decl_file.or(file).map(|s| s.into_boxed_str());
+
         Some((
             call_target,
             CallerInfo {
                 caller_name: display_name,
+                file: merged_file,
                 caller_start_address: func.start_address,
-                caller_file,
                 call_site_addr: data.address,
-                file,
-                line,
-                column,
+                line: line.unwrap_or(0) as u16,
+                column: column.unwrap_or(0) as u16,
             },
         ))
     } else if let Some((func_addr, func_name)) =
         symbol_index.and_then(|idx| idx.find_containing(data.address))
     {
         // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
-        // Don't use line table for source location - addresses outside DWARF functions
-        // would incorrectly get source info from adjacent functions.
-        // These are typically stdlib internals that we don't need source info for anyway.
         Some((
             call_target,
             CallerInfo {
-                caller_name: Cow::Borrowed(func_name), // No allocation - borrows from SymbolIndex
-                caller_start_address: func_addr,
-                caller_file: None,
-                call_site_addr: data.address,
+                caller_name: Cow::Borrowed(func_name),
                 file: None,
-                line: None,
-                column: None,
+                caller_start_address: func_addr,
+                call_site_addr: data.address,
+                line: 0,
+                column: 0,
             },
         ))
     } else {
@@ -501,16 +504,15 @@ mod tests {
     fn test_caller_info_construction() {
         let info = CallerInfo {
             caller_name: Cow::Owned("my_function".to_string()),
+            file: Some("src/main.rs".into()),
             caller_start_address: 0x1000,
-            caller_file: Some("src/main.rs".to_string()),
             call_site_addr: 0x1010,
-            file: Some("src/main.rs".to_string()),
-            line: Some(42),
-            column: Some(5),
+            line: 42,
+            column: 5,
         };
         assert_eq!(info.caller_start_address, 0x1000);
         assert_eq!(info.call_site_addr, 0x1010);
-        assert_eq!(info.line, Some(42));
+        assert_eq!(info.line, 42);
     }
 
     #[test]
@@ -518,15 +520,14 @@ mod tests {
         let name = "borrowed_function".to_string();
         let info = CallerInfo {
             caller_name: Cow::Borrowed(&name),
-            caller_start_address: 0x2000,
-            caller_file: None,
-            call_site_addr: 0x2020,
             file: None,
-            line: None,
-            column: None,
+            caller_start_address: 0x2000,
+            call_site_addr: 0x2020,
+            line: 0,
+            column: 0,
         };
         assert_eq!(&*info.caller_name, "borrowed_function");
-        assert!(info.caller_file.is_none());
-        assert!(info.line.is_none());
+        assert!(info.file.is_none());
+        assert_eq!(info.line, 0);
     }
 }

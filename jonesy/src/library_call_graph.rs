@@ -180,12 +180,11 @@ impl LibraryCallGraph {
                         // Record the call: target_symbol -> caller
                         edges.entry(target_demangled).or_default().push(CallerInfo {
                             caller_name: Cow::Owned(func_name),
+                            file: file.map(|s| s.into_boxed_str()),
                             caller_start_address: func_addr,
-                            caller_file: file.clone(),
                             call_site_addr,
-                            file,
-                            line,
-                            column,
+                            line: line.unwrap_or(0) as u16,
+                            column: column.unwrap_or(0) as u16,
                         });
                     }
                 }
@@ -414,12 +413,11 @@ impl LibraryCallGraph {
                 // Record the call: target_symbol -> caller
                 edges.entry(target_demangled).or_default().push(CallerInfo {
                     caller_name: Cow::Owned(func_name),
+                    file: file.map(|s| s.into_boxed_str()),
                     caller_start_address: func_addr,
-                    caller_file: file.clone(),
                     call_site_addr,
-                    file,
-                    line,
-                    column,
+                    line: line.unwrap_or(0) as u16,
+                    column: column.unwrap_or(0) as u16,
                 });
             }
         }

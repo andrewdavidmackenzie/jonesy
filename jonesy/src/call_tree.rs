@@ -79,7 +79,7 @@ pub fn build_call_tree_parallel_filtered(
             let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
 
-            let file = caller_info.caller_file.clone().or(caller_info.file.clone());
+            let file = caller_info.file.as_deref().map(String::from);
             let child_callers = if should_recurse {
                 build_call_tree_sequential_filtered(
                     call_graph,
@@ -103,8 +103,16 @@ pub fn build_call_tree_parallel_filtered(
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
-                line: caller_info.line,
-                column: caller_info.column,
+                line: if caller_info.line == 0 {
+                    None
+                } else {
+                    Some(caller_info.line as u32)
+                },
+                column: if caller_info.column == 0 {
+                    None
+                } else {
+                    Some(caller_info.column as u32)
+                },
                 callers: child_callers,
             })
         })
@@ -126,7 +134,7 @@ pub fn build_call_tree_sequential_filtered(
             let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
 
-            let file = caller_info.caller_file.clone().or(caller_info.file.clone());
+            let file = caller_info.file.as_deref().map(String::from);
             let child_callers = if should_recurse {
                 build_call_tree_sequential_filtered(
                     call_graph,
@@ -150,8 +158,16 @@ pub fn build_call_tree_sequential_filtered(
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
-                line: caller_info.line,
-                column: caller_info.column,
+                line: if caller_info.line == 0 {
+                    None
+                } else {
+                    Some(caller_info.line as u32)
+                },
+                column: if caller_info.column == 0 {
+                    None
+                } else {
+                    Some(caller_info.column as u32)
+                },
                 callers: child_callers,
             })
         })
@@ -169,7 +185,7 @@ pub fn build_shallow_callers_filtered(
         .get_callers(target_addr)
         .iter()
         .filter_map(|caller_info| {
-            let file = caller_info.caller_file.clone().or(caller_info.file.clone());
+            let file = caller_info.file.as_deref().map(String::from);
 
             // Shallow callers are leaves — only keep if in crate source
             if !file
@@ -182,8 +198,16 @@ pub fn build_shallow_callers_filtered(
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
-                line: caller_info.line,
-                column: caller_info.column,
+                line: if caller_info.line == 0 {
+                    None
+                } else {
+                    Some(caller_info.line as u32)
+                },
+                column: if caller_info.column == 0 {
+                    None
+                } else {
+                    Some(caller_info.column as u32)
+                },
                 callers: vec![], // No deeper recursion to prevent infinite loops
             })
         })
