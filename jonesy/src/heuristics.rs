@@ -412,6 +412,261 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     None
 }
 
+/// Result of evaluating const arithmetic at a source line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConstArithmeticResult {
+    /// The arithmetic is safe — the result does not overflow the type.
+    Safe,
+    /// The arithmetic overflows the type and will panic in debug mode.
+    Overflow,
+}
+
+/// Evaluate whether a const arithmetic expression at a given source line overflows.
+///
+/// Reads the source file content, finds `const` declarations to resolve operand
+/// values and types, then evaluates the arithmetic to determine if it overflows.
+///
+/// Returns:
+/// - `Some(Safe)` if the line has const-only arithmetic that does not overflow
+/// - `Some(Overflow)` if the line has const-only arithmetic that overflows
+/// - `None` if the line is not const arithmetic or the values cannot be resolved
+pub(crate) fn evaluate_const_arithmetic(
+    source: &str,
+    line_number: u32,
+) -> Option<ConstArithmeticResult> {
+    let lines: Vec<&str> = source.lines().collect();
+    let target_line = lines.get((line_number as usize).saturating_sub(1))?;
+
+    if !is_const_arithmetic(target_line) {
+        return None;
+    }
+
+    // Parse the expression from the target line
+    let trimmed = target_line.trim();
+    let expr = if let Some(rest) = trimmed.strip_prefix("let ") {
+        rest.split_once('=').map(|(_, rhs)| rhs.trim())?
+    } else {
+        trimmed
+    };
+    let expr = expr.split("//").next().unwrap_or(expr).trim();
+    let expr = expr.trim_end_matches(';').trim();
+
+    // Find the operator and operands
+    let (lhs, op, rhs) = parse_binary_arithmetic(expr)?;
+
+    // Resolve operand values and types from const declarations in the source
+    let (lhs_val, lhs_type) = resolve_const_value(lhs, source)?;
+    let (rhs_val, rhs_type) = resolve_const_value(rhs, source)?;
+
+    // Determine the result type (use the more specific type, or default to i32)
+    let result_type = if lhs_type != IntType::I32Default {
+        lhs_type
+    } else {
+        rhs_type
+    };
+
+    // Evaluate whether the arithmetic overflows
+    if check_overflow(lhs_val, op, rhs_val, result_type) {
+        Some(ConstArithmeticResult::Overflow)
+    } else {
+        Some(ConstArithmeticResult::Safe)
+    }
+}
+
+/// Supported integer types for overflow checking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntType {
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    /// Default type when no explicit type annotation is given (Rust defaults to i32)
+    I32Default,
+}
+
+impl IntType {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "u8" => Some(Self::U8),
+            "u16" => Some(Self::U16),
+            "u32" => Some(Self::U32),
+            "u64" => Some(Self::U64),
+            "u128" => Some(Self::U128),
+            "usize" => Some(Self::Usize),
+            "i8" => Some(Self::I8),
+            "i16" => Some(Self::I16),
+            "i32" => Some(Self::I32),
+            "i64" => Some(Self::I64),
+            "i128" => Some(Self::I128),
+            "isize" => Some(Self::Isize),
+            _ => None,
+        }
+    }
+
+    /// Check if a value overflows the type's range.
+    fn overflows(self, value: i128) -> bool {
+        match self {
+            Self::U8 => value < 0 || value > u8::MAX as i128,
+            Self::U16 => value < 0 || value > u16::MAX as i128,
+            Self::U32 => value < 0 || value > u32::MAX as i128,
+            Self::U64 => value < 0 || value > u64::MAX as i128,
+            Self::U128 => value < 0, // can't overflow u128 max with i128
+            Self::Usize => value < 0 || value > u64::MAX as i128, // conservative: 64-bit
+            Self::I8 => value < i8::MIN as i128 || value > i8::MAX as i128,
+            Self::I16 => value < i16::MIN as i128 || value > i16::MAX as i128,
+            Self::I32 | Self::I32Default => value < i32::MIN as i128 || value > i32::MAX as i128,
+            Self::I64 => value < i64::MIN as i128 || value > i64::MAX as i128,
+            Self::I128 => false, // i128 is our evaluation type, can't overflow itself
+            Self::Isize => value < i64::MIN as i128 || value > i64::MAX as i128, // conservative
+        }
+    }
+}
+
+/// Parse a binary arithmetic expression into (left_operand, operator, right_operand).
+fn parse_binary_arithmetic(expr: &str) -> Option<(&str, char, &str)> {
+    // Try each operator, preferring longer ones first (<<, >>)
+    for op_str in ["<<", ">>"] {
+        if let Some((lhs, rhs)) = expr.split_once(op_str) {
+            return Some((lhs.trim(), op_str.chars().next().unwrap(), rhs.trim()));
+        }
+    }
+    for op in ['+', '-', '*', '/', '%'] {
+        if let Some((lhs, rhs)) = expr.split_once(op) {
+            let lhs = lhs.trim();
+            let rhs = rhs.trim();
+            if !lhs.is_empty() && !rhs.is_empty() {
+                return Some((lhs, op, rhs));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a token to its numeric value and type by searching for `const` declarations
+/// in the source file.
+fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
+    let token = token.trim();
+
+    // Try to parse as a numeric literal first
+    if token.starts_with(|c: char| c.is_ascii_digit()) {
+        return parse_numeric_literal(token);
+    }
+
+    // Look for a const declaration: `const NAME: TYPE = VALUE;`
+    if !is_const_token(token) {
+        return None;
+    }
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("const ") {
+            // Parse `NAME: TYPE = VALUE;`
+            if let Some((name_type, value_part)) = rest.split_once('=') {
+                let name_type = name_type.trim();
+                let value_str = value_part.trim().trim_end_matches(';').trim();
+
+                // Split name and type
+                if let Some((name, type_str)) = name_type.split_once(':') {
+                    let name = name.trim();
+                    let type_str = type_str.trim();
+
+                    if name == token {
+                        let int_type = IntType::from_str(type_str).unwrap_or(IntType::I32Default);
+                        let (value, _) = parse_numeric_literal(value_str)?;
+                        return Some((value, int_type));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse a numeric literal (e.g., `7`, `0xFF`, `200u8`) into a value and type.
+fn parse_numeric_literal(token: &str) -> Option<(i128, IntType)> {
+    let token = token.trim();
+
+    // Check for a type suffix
+    let (num_str, int_type) = if let Some(pos) = token.find(|c: char| {
+        c.is_ascii_alphabetic()
+            && c != 'x'
+            && c != 'X'
+            && c != 'o'
+            && c != 'O'
+            && c != 'b'
+            && c != 'B'
+            && c != 'a'
+            && c != 'A'
+            && c != 'c'
+            && c != 'C'
+            && c != 'd'
+            && c != 'D'
+            && c != 'e'
+            && c != 'E'
+            && c != 'f'
+            && c != 'F'
+    }) {
+        let num_part = &token[..pos];
+        let type_suffix = &token[pos..];
+        let int_type = IntType::from_str(type_suffix).unwrap_or(IntType::I32Default);
+        (num_part, int_type)
+    } else {
+        (token, IntType::I32Default)
+    };
+
+    let num_str = num_str.replace('_', "");
+
+    let value = if num_str.starts_with("0x") || num_str.starts_with("0X") {
+        i128::from_str_radix(&num_str[2..], 16).ok()?
+    } else if num_str.starts_with("0o") || num_str.starts_with("0O") {
+        i128::from_str_radix(&num_str[2..], 8).ok()?
+    } else if num_str.starts_with("0b") || num_str.starts_with("0B") {
+        i128::from_str_radix(&num_str[2..], 2).ok()?
+    } else {
+        num_str.parse::<i128>().ok()?
+    };
+
+    Some((value, int_type))
+}
+
+/// Check if an arithmetic operation overflows for the given type.
+fn check_overflow(lhs: i128, op: char, rhs: i128, int_type: IntType) -> bool {
+    let result = match op {
+        '+' => lhs.checked_add(rhs),
+        '-' => lhs.checked_sub(rhs),
+        '*' => lhs.checked_mul(rhs),
+        '/' => {
+            if rhs == 0 {
+                return true; // Division by zero
+            }
+            lhs.checked_div(rhs)
+        }
+        '%' => {
+            if rhs == 0 {
+                return true; // Remainder by zero
+            }
+            lhs.checked_rem(rhs)
+        }
+        '<' => lhs.checked_shl(rhs as u32), // << operator
+        '>' => lhs.checked_shr(rhs as u32), // >> operator (logical)
+        _ => return false,
+    };
+
+    match result {
+        Some(value) => int_type.overflows(value),
+        None => true, // The operation itself overflowed i128
+    }
+}
+
 /// Check whether a source line contains arithmetic where all operands are
 /// compile-time constants.
 ///
@@ -937,11 +1192,10 @@ mod tests {
         ));
     }
 
-    /// Issue #266: const arithmetic (e.g., `CONST + 1`) cannot overflow at runtime
-    /// because the compiler would reject it at compile time. Jonesy should suppress
-    /// arithmetic overflow detections when the source line only involves constants.
+    /// Issue #266: `is_const_arithmetic` should detect lines where all operands
+    /// are compile-time constants.
     #[test]
-    fn test_const_arithmetic_not_reported_as_overflow() {
+    fn test_is_const_arithmetic() {
         // Lines where both operands are compile-time constants
         assert!(is_const_arithmetic("    let _result = OFFSET + 1;"));
         assert!(is_const_arithmetic(
@@ -958,5 +1212,60 @@ mod tests {
         assert!(!is_const_arithmetic("    let _ = vec.len() + offset;"));
         assert!(!is_const_arithmetic("    opt.unwrap();"));
         assert!(!is_const_arithmetic("    let _ = a.checked_add(b);"));
+    }
+
+    /// Issue #266: `evaluate_const_arithmetic` should resolve constant values from
+    /// the source file and evaluate whether the arithmetic overflows.
+    #[test]
+    fn test_evaluate_const_arithmetic_safe() {
+        // Source file with a const declaration and safe arithmetic
+        let source = "const OFFSET: usize = 7;\n\
+                      \n\
+                      fn example() {\n\
+                          let _result = OFFSET + 1;\n\
+                      }";
+        // Line 4 has `let _result = OFFSET + 1;` — OFFSET=7, 7+1=8, no overflow
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_overflow() {
+        // Source file with a const declaration and overflowing arithmetic
+        let source = "const A: u8 = 200;\n\
+                      const B: u8 = 200;\n\
+                      \n\
+                      fn example() {\n\
+                          let _ = A + B;\n\
+                      }";
+        // Line 5 has `let _ = A + B;` — A=200, B=200, 200+200=400 overflows u8
+        assert_eq!(
+            evaluate_const_arithmetic(source, 5),
+            Some(ConstArithmeticResult::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_literals_safe() {
+        let source = "fn example() {\n\
+                          let _ = 7 + 1;\n\
+                      }";
+        // Pure literals: 7+1=8, no overflow (default integer type is i32)
+        assert_eq!(
+            evaluate_const_arithmetic(source, 2),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_not_const() {
+        let source = "fn example() {\n\
+                          let x: i32 = 42;\n\
+                          let _ = x + 1;\n\
+                      }";
+        // `x` is a runtime variable, not const arithmetic
+        assert_eq!(evaluate_const_arithmetic(source, 3), None);
     }
 }

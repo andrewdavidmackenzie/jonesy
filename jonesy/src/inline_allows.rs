@@ -118,22 +118,11 @@ pub fn check_inline_allow(
     false
 }
 
-/// Read a single source line at a given file path and 1-indexed line number.
+/// Read the full contents of a source file, handling both absolute and relative paths.
 ///
-/// Returns `None` if the file cannot be read or the line number is out of range.
-pub fn read_source_line(
-    file_path: &str,
-    line: u32,
-    workspace_root: Option<&Path>,
-) -> Option<String> {
-    if line == 0 {
-        return None;
-    }
-    let content = read_source_file_with_root(file_path, workspace_root)?;
-    content
-        .lines()
-        .nth((line as usize).saturating_sub(1))
-        .map(|s| s.to_string())
+/// Returns `None` if the file cannot be found or read.
+pub fn read_source_file(file_path: &str, workspace_root: Option<&Path>) -> Option<String> {
+    read_source_file_with_root(file_path, workspace_root)
 }
 
 /// Try to read a source file, handling both absolute and relative paths.

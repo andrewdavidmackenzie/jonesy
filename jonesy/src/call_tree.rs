@@ -555,14 +555,16 @@ pub fn filter_allowed_causes(
                 return false;
             }
 
-            // Suppress arithmetic/shift overflow for const-only expressions (issue #266).
-            // If both operands are compile-time constants, the arithmetic cannot overflow
-            // at runtime — the compiler would reject the code at compile time.
+            // Suppress arithmetic/shift overflow for const-only expressions that
+            // are provably safe (issue #266). Read the source file, resolve
+            // constant values, and evaluate whether the arithmetic overflows.
             if cause.is_debug_only() {
-                if let Some(source_line) =
-                    crate::inline_allows::read_source_line(&point.file, point.line, workspace_root)
+                if let Some(source_content) =
+                    crate::inline_allows::read_source_file(&point.file, workspace_root)
                 {
-                    if crate::heuristics::is_const_arithmetic(&source_line) {
+                    if let Some(crate::heuristics::ConstArithmeticResult::Safe) =
+                        crate::heuristics::evaluate_const_arithmetic(&source_content, point.line)
+                    {
                         return false;
                     }
                 }
