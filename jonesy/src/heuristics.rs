@@ -510,6 +510,18 @@ impl IntType {
         }
     }
 
+    /// Return the bit width of the type (used for shift overflow checks).
+    fn bit_width(self) -> u32 {
+        match self {
+            Self::U8 | Self::I8 => 8,
+            Self::U16 | Self::I16 => 16,
+            Self::U32 | Self::I32 | Self::I32Default => 32,
+            Self::U64 | Self::I64 => 64,
+            Self::U128 | Self::I128 => 128,
+            Self::Usize | Self::Isize => 64, // conservative: 64-bit platforms
+        }
+    }
+
     /// Check if a value overflows the type's range.
     fn overflows(self, value: i128) -> bool {
         match self {
@@ -562,9 +574,19 @@ fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
         return parse_numeric_literal(token);
     }
 
+    // Bail out if any `let` binding in the source uses the same name.
+    // A `let OFFSET = input;` would shadow a file-level `const OFFSET`,
+    // making it unsafe to assume the expression uses the const value.
+    let let_pattern = format!("let {token}");
+    if source.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with(&let_pattern)
+            && t[let_pattern.len()..].starts_with([' ', ':', '='])
+    }) {
+        return None;
+    }
+
     // Search for a matching `const NAME: TYPE = VALUE;` declaration.
-    // This rejects `let` bindings with SCREAMING_CASE names — only
-    // actual `const` declarations are trusted.
     for line in source.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("const ") {
@@ -642,6 +664,25 @@ fn parse_numeric_literal(token: &str) -> Option<(i128, IntType)> {
 
 /// Check if an arithmetic operation overflows for the given type.
 fn check_overflow(lhs: i128, op: char, rhs: i128, int_type: IntType) -> bool {
+    // For shift operations, check the shift amount against the type's bit width.
+    // Rust panics when the shift amount >= the bit width, regardless of the operand values.
+    if op == '<' || op == '>' {
+        let bit_width = int_type.bit_width();
+        if rhs < 0 || rhs >= bit_width as i128 {
+            return true; // Shift amount out of range
+        }
+        // Shift is within range — evaluate the result for overflow
+        let result = if op == '<' {
+            lhs.checked_shl(rhs as u32)
+        } else {
+            lhs.checked_shr(rhs as u32)
+        };
+        return match result {
+            Some(value) => int_type.overflows(value),
+            None => true,
+        };
+    }
+
     let result = match op {
         '+' => lhs.checked_add(rhs),
         '-' => lhs.checked_sub(rhs),
@@ -658,8 +699,6 @@ fn check_overflow(lhs: i128, op: char, rhs: i128, int_type: IntType) -> bool {
             }
             lhs.checked_rem(rhs)
         }
-        '<' => lhs.checked_shl(rhs as u32), // << operator
-        '>' => lhs.checked_shr(rhs as u32), // >> operator (logical)
         _ => return false,
     };
 
@@ -1334,6 +1373,51 @@ mod tests {
         assert_eq!(evaluate_const_arithmetic(source, 3), None);
     }
 
+    #[test]
+    fn test_evaluate_const_shadowed_by_let_binding() {
+        // A file-level const is shadowed by a let binding in a function.
+        // We should NOT trust the const value because the let binding may hold
+        // a different runtime value.
+        let source = "const OFFSET: u8 = 1;\n\
+                      \n\
+                      fn example(input: u8) {\n\
+                          let OFFSET = input;\n\
+                          let _ = OFFSET + 1;\n\
+                      }";
+        // Even though const OFFSET = 1 and 1 + 1 = 2 (safe), the let binding
+        // shadows it, so we can't be sure — should return None
+        assert_eq!(evaluate_const_arithmetic(source, 5), None);
+    }
+
+    #[test]
+    fn test_evaluate_shift_overflow_bit_width() {
+        // Shift by exactly the bit width of the type should overflow
+        let source = "const A: u8 = 0;\n\
+                      const N: u8 = 8;\n\
+                      fn f() {\n\
+                          let _ = A << N;\n\
+                      }";
+        // u8 has 8 bits, so shifting by 8 overflows regardless of the value
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_shift_safe_within_bit_width() {
+        let source = "const A: u8 = 1;\n\
+                      const N: u8 = 7;\n\
+                      fn f() {\n\
+                          let _ = A << N;\n\
+                      }";
+        // 1 << 7 = 128, fits in u8 (0..=255)
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
     // -- parse_numeric_literal coverage --
 
     #[test]
@@ -1432,10 +1516,22 @@ mod tests {
 
     #[test]
     fn test_check_overflow_shift() {
-        // left shift: 1 << 8 = 256, overflows u8
-        assert!(check_overflow(1, '<', 8, IntType::U8));
         // left shift: 1 << 4 = 16, safe for u8
         assert!(!check_overflow(1, '<', 4, IntType::U8));
+        // left shift: 1 << 8 overflows u8 — shift amount >= bit width (8)
+        assert!(check_overflow(1, '<', 8, IntType::U8));
+        // 0 << 8 also overflows u8 — shift amount >= bit width regardless of value
+        assert!(check_overflow(0, '<', 8, IntType::U8));
+        // right shift: 255 >> 4 = 15, safe for u8
+        assert!(!check_overflow(255, '>', 4, IntType::U8));
+        // right shift: shift amount >= bit width overflows
+        assert!(check_overflow(255, '>', 8, IntType::U8));
+        // negative shift amount is invalid
+        assert!(check_overflow(1, '<', -1, IntType::U8));
+        // 2u8 << 7 = 256, overflows u8 range (but shift amount is valid)
+        assert!(check_overflow(2, '<', 7, IntType::U8));
+        // 1u8 << 7 = 128, safe for u8
+        assert!(!check_overflow(1, '<', 7, IntType::U8));
         // left shift by >= 128: checked_shl returns None (i128 overflow)
         assert!(check_overflow(1, '<', 200, IntType::I32Default));
     }
