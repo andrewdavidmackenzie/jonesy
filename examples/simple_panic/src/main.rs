@@ -114,30 +114,51 @@ pub fn cause_shift_overflow() {
 
 #[allow(clippy::useless_vec)]
 pub fn cause_slice_index_oob() {
+    // jonesy: expect panic
     let v = vec![1, 2, 3];
     // jonesy: expect panic index out of bounds
     let _ = v[10];
 }
 
 fn main() {
+    // jonesy: expect panic(unknown)
     cause_a_panic();
+    // jonesy: expect panic(unwrap)
     cause_an_unwrap();
+    // jonesy: expect panic(unwrap)
     cause_unwrap_err();
+    // jonesy: expect panic(expect)
     cause_expect_none();
+    // jonesy: expect panic(expect)
     cause_expect_err();
+    // jonesy: expect panic(unwrap)
     cause_unwrap_err_on_ok();
+    // jonesy: expect panic(expect)
     cause_expect_err_on_ok();
+    // jonesy: expect panic(unknown)
     cause_assert();
+    // jonesy: expect panic(assert)
     cause_assert_eq();
+    // jonesy: expect panic(assert)
     cause_assert_ne();
+    // jonesy: expect panic(unknown)
     cause_debug_assert();
+    // jonesy: expect panic(assert)
     cause_debug_assert_eq();
+    // jonesy: expect panic(assert)
     cause_debug_assert_ne();
+    // jonesy: expect panic(unreachable)
     cause_unreachable();
+    // jonesy: expect panic(unknown)
     cause_unimplemented();
+    // jonesy: expect panic(unknown)
     cause_todo();
+    // jonesy: expect panic(div_zero)
     cause_divide_by_zero();
+    // jonesy: expect panic(overflow)
     cause_arithmetic_overflow();
+    // jonesy: expect panic(shift_overflow)
     cause_shift_overflow();
+    // jonesy: expect panic
     cause_slice_index_oob();
 }

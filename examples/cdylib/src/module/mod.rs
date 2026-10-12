@@ -125,5 +125,6 @@ pub fn cause_slice_index_oob() {
 
 pub fn cause_string_index_panic() {
     let s = "hello 世界";
+    // jonesy: expect panic(bounds)
     let _ = &s[0..7]; // panics - cuts through UTF-8 char
 }

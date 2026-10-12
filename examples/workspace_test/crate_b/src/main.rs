@@ -3,6 +3,7 @@
 
 fn main() {
     // Dispatch based on argument to ensure all functions are linked
+    // jonesy: expect panic
     match std::env::args().nth(1).as_deref() {
         // Call crate_c library functions (jonesy reports panic at call site)
         // jonesy: expect panic crate_c explicit panic
@@ -73,25 +74,45 @@ fn main() {
         Some("b_lib_string") => crate_b_lib::lib_string_index_panic(),
 
         // Binary's own panic functions
+        // jonesy: expect panic(unwrap)
         Some("unwrap") => bin_unwrap_none(),
+        // jonesy: expect panic(unwrap)
         Some("unwrap_err") => bin_unwrap_err(),
+        // jonesy: expect panic(expect)
         Some("expect_none") => bin_expect_none(),
+        // jonesy: expect panic(expect)
         Some("expect_err") => bin_expect_err(),
+        // jonesy: expect panic(unwrap)
         Some("unwrap_err_ok") => bin_unwrap_err_on_ok(),
+        // jonesy: expect panic(expect)
         Some("expect_err_ok") => bin_expect_err_on_ok(),
+        // jonesy: expect panic(unknown)
         Some("assert") => bin_assert_false(),
+        // jonesy: expect panic(assert)
         Some("assert_eq") => bin_assert_eq_fail(),
+        // jonesy: expect panic(assert)
         Some("assert_ne") => bin_assert_ne_fail(),
+        // jonesy: expect panic(unknown)
         Some("debug_assert") => bin_debug_assert_false(),
+        // jonesy: expect panic(assert)
         Some("debug_assert_eq") => bin_debug_assert_eq_fail(),
+        // jonesy: expect panic(assert)
         Some("debug_assert_ne") => bin_debug_assert_ne_fail(),
+        // jonesy: expect panic(unknown)
         Some("unreachable") => bin_unreachable_code(),
+        // jonesy: expect panic(unknown)
         Some("unimplemented") => bin_unimplemented_code(),
+        // jonesy: expect panic(unknown)
         Some("todo") => bin_todo_code(),
+        // jonesy: expect panic(div_zero)
         Some("div_zero") => bin_divide_by_zero(),
+        // jonesy: expect panic(overflow)
         Some("overflow") => bin_arithmetic_overflow(),
+        // jonesy: expect panic(shift_overflow)
         Some("shift") => bin_shift_overflow(),
+        // jonesy: expect panic
         Some("slice") => bin_slice_index_oob(),
+        // jonesy: expect panic(bounds)
         Some("string") => bin_string_index_panic(),
         _ => {
             // jonesy: expect panic explicit panic call
@@ -213,9 +234,10 @@ fn bin_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// Known limitation: slice index detection is platform-specific (see issue #59)
 fn bin_slice_index_oob() {
+    // jonesy: expect panic
     let v = vec![1, 2, 3];
+    // jonesy: expect panic(bounds)
     let _ = v[10];
 }
 

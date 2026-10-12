@@ -6,6 +6,7 @@ mod module;
 /// NOTE: For library-only analysis, jonesy detects panics at their source location
 /// (in module/mod.rs), not at call sites here. This is a limitation of static
 /// analysis without binary entry points - we can only detect direct panic calls.
+// jonesy: expect panic [macos]
 pub fn library_function() {
     if std::env::args().len() > 1 {
         // jonesy: expect panic explicit panic call

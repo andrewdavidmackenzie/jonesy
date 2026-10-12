@@ -3,8 +3,6 @@ pub fn cause_a_panic() {
     panic!("panic");
 }
 
-// Known limitation: unwrap detection in rlib analysis is platform-specific
-// (not detected on Linux with rustc 1.99+, detected on macOS)
 pub fn cause_an_unwrap() {
     // Use runtime check that won't be optimized away
     let opt: Option<i32> = if std::env::args().len() > 1000 {
@@ -12,6 +10,7 @@ pub fn cause_an_unwrap() {
     } else {
         None
     };
+    // jonesy: expect panic(unwrap) [macos]
     opt.unwrap();
 }
 
@@ -134,8 +133,8 @@ pub fn caller_of_allowed_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// Known limitation: slice index detection is platform-specific (see issue #59)
 pub fn cause_slice_index_oob() {
+    // jonesy: expect panic
     let v = vec![1, 2, 3];
     let _ = v[10];
 }

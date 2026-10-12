@@ -647,10 +647,7 @@ pub fn print_causes_table() {
         PanicCause::AsyncFnResumed,
     ];
 
-    println!(
-        "{:<8} {:<20} {:<40} {}",
-        "Code", "ID", "Description", "Docs"
-    );
+    println!("{:<8} {:<20} {:<40} Docs", "Code", "ID", "Description");
     println!("{}", "-".repeat(100));
     for cause in &causes {
         println!(

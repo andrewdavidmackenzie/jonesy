@@ -5,6 +5,7 @@ mod module;
 mod module2;
 
 fn main() {
+    // jonesy: expect panic(capacity)
     if std::env::args().len() > 1 {
         // jonesy: expect panic This is a potential panic at runtime, depending on args
         panic!("{}", PANIC_STR);
@@ -97,5 +98,6 @@ fn main() {
     // jonesy: expect panic expect on None
     module2::cause_expect_none();
 
+    // jonesy: expect panic(async_resumed)
     module::poll_async_fn();
 }

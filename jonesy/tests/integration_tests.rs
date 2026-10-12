@@ -43,7 +43,7 @@ fn find_workspace_root() -> PathBuf {
     }
 }
 
-/// Expected panic marker with file, line, and optional cause
+/// Expected panic marker with file, line, optional cause, and optional platform filter
 #[derive(Debug, Clone)]
 struct ExpectedMarker {
     file: String,
@@ -51,6 +51,25 @@ struct ExpectedMarker {
     /// Expected cause identifier (e.g., "unwrap", "overflow")
     /// None means any cause is acceptable
     cause: Option<String>,
+    /// Optional platform filter (e.g., ["macos"], ["linux", "linux-x86_64"])
+    /// None means the marker applies on all platforms
+    platforms: Option<Vec<String>>,
+}
+
+/// Check whether a marker's platform filter matches the current platform.
+/// Returns true if the marker has no platform filter or if the current platform
+/// matches one of the specified platforms.
+fn marker_matches_current_platform(marker: &ExpectedMarker) -> bool {
+    let platforms = match &marker.platforms {
+        Some(p) => p,
+        None => return true,
+    };
+
+    let current_os = std::env::consts::OS; // "macos" or "linux"
+    let current_arch = std::env::consts::ARCH; // "aarch64" or "x86_64"
+    let os_arch = format!("{current_os}-{current_arch}");
+
+    platforms.iter().any(|p| p == current_os || p == &os_arch)
 }
 
 /// Check if any detected cause matches the expected cause, including parent IDs.
@@ -86,34 +105,67 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<ExpectedMarker> {
                     .to_string_lossy()
                     .to_string();
 
-                // Parse optional cause: "// jonesy: expect panic(cause)"
-                let cause = if let Some(rest) = trimmed.strip_prefix(PANIC_MARKER) {
+                // Parse optional cause and platform filter:
+                // "// jonesy: expect panic(cause) [platform,platform]"
+                let (cause, platforms) = if let Some(rest) = trimmed.strip_prefix(PANIC_MARKER) {
                     let rest = rest.trim();
-                    if rest.starts_with('(') && rest.contains(')') {
+
+                    // Parse optional cause in parentheses
+                    let (cause, after_cause) = if rest.starts_with('(') && rest.contains(')') {
                         let cause_str = rest
                             .trim_start_matches('(')
                             .split(')')
                             .next()
                             .unwrap_or("")
                             .trim();
-                        if !cause_str.is_empty() {
-                            Some(cause_str.to_string())
-                        } else {
+                        let after = rest.split(')').nth(1).unwrap_or("").trim();
+                        let c = if cause_str.is_empty() {
                             None
+                        } else {
+                            Some(cause_str.to_string())
+                        };
+                        (c, after)
+                    } else {
+                        (None, rest)
+                    };
+
+                    // Parse optional platform filter in square brackets
+                    let platforms = if after_cause.starts_with('[') && after_cause.contains(']') {
+                        let filter_str = after_cause
+                            .trim_start_matches('[')
+                            .split(']')
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        if filter_str.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                filter_str
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .collect(),
+                            )
                         }
                     } else {
                         None
-                    }
+                    };
+
+                    (cause, platforms)
                 } else {
-                    None
+                    (None, None)
                 };
 
-                // Store the line where the comment is (1-indexed)
-                markers.push(ExpectedMarker {
+                // Only include markers that match the current platform
+                let marker = ExpectedMarker {
                     file: rel_path,
                     line: (i + 1) as u32,
                     cause,
-                });
+                    platforms,
+                };
+                if marker_matches_current_platform(&marker) {
+                    markers.push(marker);
+                }
             }
         }
     });
@@ -387,15 +439,30 @@ fn setup() {
         // Build all example binaries without coverage instrumentation.
         // Strip RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS so that coverage flags
         // (if present in the environment) do not alter DWARF output.
+        // Disable incremental compilation to ensure consistent DWARF output
+        // across local and CI environments.
         let status = Command::new("cargo")
             .args(["build", "--workspace", "--exclude", "jonesy"])
             .current_dir(&workspace_root)
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("CARGO_INCREMENTAL")
+            .env("CARGO_INCREMENTAL", "0")
             .status()
             .expect("Failed to build examples");
         assert!(status.success(), "Failed to build examples");
+
+        // Remove stale dSYM bundles (macOS) so jonesy regenerates them
+        // from the freshly built binaries. Without this, a dSYM generated
+        // from a previous build can contain stale debug info.
+        let target_debug = workspace_root.join("target").join("debug");
+        if let Ok(entries) = fs::read_dir(&target_debug) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "dSYM") && path.is_dir() {
+                    let _ = fs::remove_dir_all(&path);
+                }
+            }
+        }
     });
 }
 
@@ -446,17 +513,19 @@ fn test_example(example_name: &str) {
         }
     }
 
-    // Fail only on missing panics - unexpected panics may be due to
-    // platform/Rust version differences in what jonesy detects
+    // Fail on missing panics (markers without detections) AND unexpected panics
+    // (detections without markers). Every detection must have a nearby marker,
+    // and every marker must have a nearby detection. For platform-specific
+    // detections, add conditional markers rather than tolerating unexpected ones.
     assert!(
-        missing.is_empty(),
-        "Missing panic points for example '{}': {} missing (exit_code={}, markers={}). \
-         Also had {} unexpected (may be platform-specific).",
+        missing.is_empty() && unexpected.is_empty(),
+        "Panic point mismatch for example '{}': {} missing, {} unexpected \
+         (exit_code={}, markers={}).",
         example_name,
         missing.len(),
+        unexpected.len(),
         exit_code,
-        markers.len(),
-        unexpected.len()
+        markers.len()
     );
 }
 
@@ -641,16 +710,18 @@ fn test_workspace_test_example() {
         }
     }
 
-    // Fail only on missing panics - unexpected panics may be due to
-    // call sites being reported in addition to actual panic locations
+    // Fail on missing panics (markers without detections) AND unexpected panics
+    // (detections without markers). Every detection must have a nearby marker,
+    // and every marker must have a nearby detection. For platform-specific
+    // detections, add conditional markers rather than tolerating unexpected ones.
     assert!(
-        missing.is_empty(),
-        "Missing panic points for 'workspace_test': {} missing (exit_code={}, markers={}). \
-         Also had {} unexpected (may be call sites or platform-specific).",
+        missing.is_empty() && unexpected.is_empty(),
+        "Panic point mismatch for 'workspace_test': {} missing, {} unexpected \
+         (exit_code={}, markers={}).",
         missing.len(),
+        unexpected.len(),
         exit_code,
-        all_markers.len(),
-        unexpected.len()
+        all_markers.len()
     );
 }
 
@@ -770,7 +841,7 @@ fn test_multi_bin_lib_only() {
 
 /// Test scoped rules: allow explicit panic! in main.rs
 /// The config allows "panic" cause in **/main.rs, so the direct panic!() call
-/// at main.rs:9 should be filtered, reducing the total count.
+/// should be filtered, reducing the total count.
 #[test]
 fn test_scoped_rules() {
     setup();
@@ -781,22 +852,32 @@ fn test_scoped_rules() {
         .join("tests")
         .join("test_scoped_rules.toml");
 
+    // Dynamically find the panic!() line in main.rs
+    let main_rs = example_dir.join("src").join("main.rs");
+    let main_content = fs::read_to_string(&main_rs).unwrap();
+    let panic_src_line = main_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.trim().starts_with("panic!("))
+        .map(|(i, _)| (i + 1) as u32)
+        .expect("Should find panic!() call in main.rs");
+
     // Run without config to get baseline
     let (baseline_exit_code, baseline_detected) = run_jones_on_example(&example_dir);
 
-    // Verify baseline actually detects the explicit panic near main.rs:10
-    // DWARF may report line 8, 9, or 10 depending on platform
+    // Verify baseline actually detects the explicit panic near the panic!() line
+    // DWARF may report the line +/-1 depending on platform
     let panic_line = baseline_detected
         .iter()
         .find(|p| {
             p.file.contains("main.rs")
-                && (8..=10).contains(&p.line)
+                && (panic_src_line.saturating_sub(1)..=panic_src_line + 1).contains(&p.line)
                 && p.causes.iter().any(|c| c == "panic")
         })
         .map(|p| p.line);
     assert!(
         panic_line.is_some(),
-        "Baseline should include explicit panic!() near main.rs:10"
+        "Baseline should include explicit panic!() near main.rs:{panic_src_line}"
     );
     let panic_line = panic_line.unwrap();
 
@@ -829,7 +910,7 @@ fn test_scoped_rules() {
     // Other panic types in main.rs should still be reported
     let other_main_panics: Vec<_> = scoped_detected
         .iter()
-        .filter(|p| p.file.contains("main.rs") && p.line != 9)
+        .filter(|p| p.file.contains("main.rs") && p.line != panic_line)
         .collect();
     assert!(
         !other_main_panics.is_empty(),
@@ -849,9 +930,9 @@ fn test_rlib_line_precision() {
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
     // Check that expect() calls have column precision (column > 1)
-    // The expect_none function has `.expect(` starting at column 17 on line 21
-    // The expect_err function has `.expect(` starting at column 25 on line 27
-    // We verify that at least one panic point has a non-trivial column number
+    // The expect_none and expect_err functions have `.expect(` calls with
+    // non-trivial column offsets. We verify that at least one panic point
+    // has a column number > 1.
 
     let has_column_precision = stdout.lines().any(|line| {
         // Look for lines like "mod.rs:21:22" or "mod.rs:27:30"
@@ -881,7 +962,7 @@ fn test_rlib_line_precision() {
     assert!(
         has_column_precision,
         "Library analysis should provide column precision for some panic points.\n\
-         Expected lines like 'mod.rs:21:22' with column > 1.\n\
+         Expected lines like 'mod.rs:NN:CC' with column > 1.\n\
          Output:\n{}",
         stdout
     );
@@ -919,7 +1000,7 @@ fn test_rlib_todo_detection() {
     assert!(
         todo_detected,
         "Library analysis should detect todo!() macro panic (issue #58).\n\
-         Expected a panic point at mod.rs:88 (±1 line).\n\
+         Expected a panic point at mod.rs:{todo_line} (±1 line).\n\
          Output:\n{}",
         stdout
     );
@@ -1547,57 +1628,84 @@ fn test_called_function_allow_distinguishes_modules() {
         .join("tests")
         .join("test_called_function_allow.toml");
 
+    // Dynamically find the call lines in main.rs
+    let main_rs = example_dir.join("src").join("main.rs");
+    let main_content = fs::read_to_string(&main_rs).unwrap();
+    let module1_call_line = main_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("module::cause_expect_none()"))
+        .map(|(i, _)| (i + 1) as u32)
+        .expect("Should find module::cause_expect_none() call in main.rs");
+    let module2_call_line = main_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("module2::cause_expect_none()"))
+        .map(|(i, _)| (i + 1) as u32)
+        .expect("Should find module2::cause_expect_none() call in main.rs");
+
     // Run without config to get baseline
     let (_, baseline_detected) = run_jones_on_example(&example_dir);
 
     // Both module::cause_expect_none and module2::cause_expect_none should have "expect"
-    // cause in the baseline. main.rs:23 calls module::cause_expect_none,
-    // main.rs:98 calls module2::cause_expect_none.
+    // cause in the baseline.
     let module1_has_expect = baseline_detected
         .iter()
-        .find(|p| p.file.contains("main.rs") && p.line == 23)
+        .find(|p| {
+            p.file.contains("main.rs")
+                && (module1_call_line.saturating_sub(1)..=module1_call_line).contains(&p.line)
+        })
         .map(|p| p.causes.iter().any(|c| c == "expect"))
         .unwrap_or(false);
     let module2_has_expect = baseline_detected
         .iter()
-        .find(|p| p.file.contains("main.rs") && p.line == 98)
+        .find(|p| {
+            p.file.contains("main.rs")
+                && (module2_call_line.saturating_sub(1)..=module2_call_line).contains(&p.line)
+        })
         .map(|p| p.causes.iter().any(|c| c == "expect"))
         .unwrap_or(false);
 
     assert!(
         module1_has_expect,
-        "Baseline should include 'expect' cause at main.rs:23 (module::cause_expect_none)"
+        "Baseline should include 'expect' cause near main.rs:{module1_call_line} (module::cause_expect_none)"
     );
     assert!(
         module2_has_expect,
-        "Baseline should include 'expect' cause at main.rs:98 (module2::cause_expect_none)"
+        "Baseline should include 'expect' cause near main.rs:{module2_call_line} (module2::cause_expect_none)"
     );
 
     // Run with config that allows "expect" on panic::module::cause_expect_none
     let (_, scoped_detected) = run_jonesy_with_config(&example_dir, &config_path);
 
-    // module::cause_expect_none (main.rs:23): "expect" cause should be removed,
+    // module::cause_expect_none: "expect" cause should be removed,
     // but other causes like "format" may still keep the point present
     let module1_expect_cause = scoped_detected
         .iter()
-        .find(|p| p.file.contains("main.rs") && p.line == 23)
+        .find(|p| {
+            p.file.contains("main.rs")
+                && (module1_call_line.saturating_sub(1)..=module1_call_line).contains(&p.line)
+        })
         .map(|p| p.causes.contains(&"expect".to_string()))
         .unwrap_or(false);
 
-    // module2::cause_expect_none (main.rs:98): "expect" cause should still be there
+    // module2::cause_expect_none: "expect" cause should still be there
     let module2_expect_cause = scoped_detected
         .iter()
-        .find(|p| p.file.contains("main.rs") && p.line == 98)
+        .find(|p| {
+            p.file.contains("main.rs")
+                && (module2_call_line.saturating_sub(1)..=module2_call_line).contains(&p.line)
+        })
         .map(|p| p.causes.contains(&"expect".to_string()))
         .unwrap_or(false);
 
     assert!(
         !module1_expect_cause,
-        "Config rule for panic::module::cause_expect_none should remove 'expect' cause from main.rs:23"
+        "Config rule for panic::module::cause_expect_none should remove 'expect' cause from main.rs:{module1_call_line}"
     );
     assert!(
         module2_expect_cause,
-        "Config rule should NOT remove 'expect' from main.rs:98 (module2::cause_expect_none)"
+        "Config rule should NOT remove 'expect' from main.rs:{module2_call_line} (module2::cause_expect_none)"
     );
 }
 
@@ -1634,11 +1742,21 @@ fn test_async_fn_resumed_detection() {
     );
 
     // The allowed async function `cause_async_fn_resumed_allowed` should NOT be detected
-    // It has `// jonesy:allow(*)` which suppresses all causes
+    // It has `// jonesy:allow(*)` which suppresses all causes.
+    // Dynamically find the line number of the allowed function.
+    let mod_rs = example_dir.join("src").join("module").join("mod.rs");
+    let mod_content = fs::read_to_string(&mod_rs).unwrap();
+    let allowed_fn_line = mod_content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("async fn cause_async_fn_resumed_allowed"))
+        .map(|(i, _)| (i + 1) as u32)
+        .expect("Should find cause_async_fn_resumed_allowed in mod.rs");
+
     let has_allowed_detection = stdout.lines().any(|line| {
         line.contains("cause_async_fn_resumed_allowed")
-            || line.contains("module/mod.rs:355")
-            || line.contains("module/mod.rs:356")
+            || line.contains(&format!("module/mod.rs:{allowed_fn_line}"))
+            || line.contains(&format!("module/mod.rs:{}", allowed_fn_line + 1))
     });
 
     assert!(
@@ -1656,12 +1774,44 @@ fn test_rlib_inline_allow() {
     let workspace_root = find_workspace_root();
     let example_dir = workspace_root.join("examples").join("rlib");
 
+    // Dynamically find the lines for cause_allowed_overflow and cause_arithmetic_overflow
+    let mod_rs = example_dir.join("src").join("module").join("mod.rs");
+    let mod_content = fs::read_to_string(&mod_rs).unwrap();
+
+    // Find `let _ = x + 1;` inside cause_allowed_overflow (has jonesy:allow)
+    let allowed_fn_start = mod_content
+        .lines()
+        .enumerate()
+        .position(|(_, l)| l.contains("fn cause_allowed_overflow"))
+        .expect("Should find cause_allowed_overflow");
+    let allowed_overflow_line = mod_content
+        .lines()
+        .enumerate()
+        .skip(allowed_fn_start)
+        .find(|(_, l)| l.contains("let _ = x + 1"))
+        .map(|(i, _)| (i + 1) as u32)
+        .expect("Should find overflow operation in cause_allowed_overflow");
+
+    // Find `let _ = x + 1;` inside cause_arithmetic_overflow (no allow)
+    let denied_fn_start = mod_content
+        .lines()
+        .enumerate()
+        .position(|(_, l)| l.contains("fn cause_arithmetic_overflow"))
+        .expect("Should find cause_arithmetic_overflow");
+    let denied_overflow_line = mod_content
+        .lines()
+        .enumerate()
+        .skip(denied_fn_start)
+        .find(|(_, l)| l.contains("let _ = x + 1"))
+        .map(|(i, _)| (i + 1) as u32)
+        .expect("Should find overflow operation in cause_arithmetic_overflow");
+
     let stdout = run_jonesy_raw_output(&example_dir, &["--no-hyperlinks", "--lib"]);
 
-    // cause_allowed_overflow (line 125) has `// jonesy:allow(overflow)` -- should NOT appear
-    let has_allowed_detection = stdout
-        .lines()
-        .any(|line| line.contains("mod.rs:125") && line.contains("overflow"));
+    // cause_allowed_overflow has `// jonesy:allow(overflow)` -- should NOT appear
+    let has_allowed_detection = stdout.lines().any(|line| {
+        line.contains(&format!("mod.rs:{allowed_overflow_line}")) && line.contains("overflow")
+    });
 
     assert!(
         !has_allowed_detection,
@@ -1669,10 +1819,10 @@ fn test_rlib_inline_allow() {
         stdout
     );
 
-    // cause_arithmetic_overflow (line 112) does NOT have an inline allow -- should still appear
-    let has_denied_detection = stdout
-        .lines()
-        .any(|line| line.contains("mod.rs:112") && line.contains("overflow"));
+    // cause_arithmetic_overflow does NOT have an inline allow -- should still appear
+    let has_denied_detection = stdout.lines().any(|line| {
+        line.contains(&format!("mod.rs:{denied_overflow_line}")) && line.contains("overflow")
+    });
 
     assert!(
         has_denied_detection,

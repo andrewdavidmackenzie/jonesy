@@ -232,4 +232,4 @@ When adding a new feature:
 
 When a test fails:
 - **Missing panic** — Expected marker has no corresponding detection (likely a bug)
-- **Unexpected panic** — Detection without marker (maybe platform-specific, generally OK)
+- **Unexpected panic** — Detection without marker (now causes test failure; add a marker for the detection)
