@@ -412,6 +412,102 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
     None
 }
 
+/// Check whether a source line contains arithmetic where all operands are
+/// compile-time constants.
+///
+/// Returns `true` if the line has an arithmetic operator (`+`, `-`, `*`, `/`, `%`)
+/// and every operand is either a numeric literal or a `SCREAMING_CASE` identifier
+/// (the Rust convention for constants). Such arithmetic cannot overflow at runtime
+/// because the compiler evaluates and validates it at compile time — if the result
+/// overflowed, the code would not compile.
+///
+/// This is used to suppress `ArithmeticOverflow` and `ShiftOverflow` detections
+/// for const-only expressions (see issue #266).
+pub(crate) fn is_const_arithmetic(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    // Strip common prefixes: `let _ = ...;`, `let name = ...;`, `let name: Type = ...;`
+    let expr = if let Some(rest) = trimmed.strip_prefix("let ") {
+        // Skip past the binding pattern and `=`
+        rest.split_once('=')
+            .map(|(_, rhs)| rhs.trim())
+            .unwrap_or("")
+    } else {
+        trimmed
+    };
+
+    // Strip trailing semicolons and comments
+    let expr = expr.split("//").next().unwrap_or(expr).trim();
+    let expr = expr.trim_end_matches(';').trim();
+
+    if expr.is_empty() {
+        return false;
+    }
+
+    // Find an arithmetic operator in the expression
+    let arithmetic_ops = [" + ", " - ", " * ", " / ", " % ", " << ", " >> "];
+    let has_arithmetic = arithmetic_ops.iter().any(|op| expr.contains(op));
+    if !has_arithmetic {
+        return false;
+    }
+
+    // Split on arithmetic operators and check every token is a constant
+    let tokens: Vec<&str> = expr
+        .split(['+', '-', '*', '/', '%'])
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    if tokens.len() < 2 {
+        return false;
+    }
+
+    tokens.iter().all(|token| is_const_token(token))
+}
+
+/// Check whether a token looks like a compile-time constant.
+///
+/// A token is considered a constant if it is:
+/// - A numeric literal (decimal, hex `0x`, octal `0o`, binary `0b`, with optional `_` separators
+///   and optional type suffix like `usize`, `i32`)
+/// - A `SCREAMING_SNAKE_CASE` identifier (the Rust convention for `const` and `static` values)
+fn is_const_token(token: &str) -> bool {
+    let token = token.trim();
+    if token.is_empty() {
+        return false;
+    }
+
+    // Numeric literal: starts with a digit
+    if token.starts_with(|c: char| c.is_ascii_digit()) {
+        // Strip type suffix (e.g., `1usize`, `0xFFi32`)
+        let num_part = token.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '_');
+        if num_part.is_empty() {
+            return false;
+        }
+        // Validate the remaining part looks like a number
+        let num_part = num_part.replace('_', "");
+        return if num_part.starts_with("0x") || num_part.starts_with("0X") {
+            num_part[2..].chars().all(|c| c.is_ascii_hexdigit())
+        } else if num_part.starts_with("0o") || num_part.starts_with("0O") {
+            num_part[2..].chars().all(|c| ('0'..='7').contains(&c))
+        } else if num_part.starts_with("0b") || num_part.starts_with("0B") {
+            num_part[2..].chars().all(|c| c == '0' || c == '1')
+        } else {
+            num_part.chars().all(|c| c.is_ascii_digit())
+        };
+    }
+
+    // SCREAMING_SNAKE_CASE identifier: all uppercase letters, digits, and underscores,
+    // must contain at least one uppercase letter, must not start with a digit
+    if token.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return token
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    }
+
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -848,7 +944,9 @@ mod tests {
     fn test_const_arithmetic_not_reported_as_overflow() {
         // Lines where both operands are compile-time constants
         assert!(is_const_arithmetic("    let _result = OFFSET + 1;"));
-        assert!(is_const_arithmetic("    let x = PATH_OFFSET + HEADER_SIZE;"));
+        assert!(is_const_arithmetic(
+            "    let x = PATH_OFFSET + HEADER_SIZE;"
+        ));
         assert!(is_const_arithmetic("    let _ = 7 + 1;"));
         assert!(is_const_arithmetic("    let _ = CONST_A - CONST_B;"));
         assert!(is_const_arithmetic("    let _ = SIZE * 2;"));
