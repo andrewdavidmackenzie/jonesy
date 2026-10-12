@@ -10,7 +10,7 @@ clippy:
 	cargo clippy --tests --no-deps --all-features --all-targets -- -D warnings
 
 build:
-	cargo build
+	CARGO_INCREMENTAL=0 cargo build
 
 # Build the nested workspace_test example separately since it has its own workspace
 build-examples: build

@@ -439,12 +439,14 @@ fn setup() {
         // Build all example binaries without coverage instrumentation.
         // Strip RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS so that coverage flags
         // (if present in the environment) do not alter DWARF output.
+        // Disable incremental compilation to ensure consistent DWARF output
+        // across local and CI environments.
         let status = Command::new("cargo")
             .args(["build", "--workspace", "--exclude", "jonesy"])
             .current_dir(&workspace_root)
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("CARGO_INCREMENTAL")
+            .env("CARGO_INCREMENTAL", "0")
             .status()
             .expect("Failed to build examples");
         assert!(status.success(), "Failed to build examples");
