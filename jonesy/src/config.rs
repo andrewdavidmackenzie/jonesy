@@ -39,32 +39,26 @@ impl ScopedRule {
 
         // Check path pattern
         if let Some(ref pattern) = self.path {
-            if let Some(path) = file_path {
-                // Normalize path separators for matching
-                let normalized = path.replace('\\', "/");
-                if !pattern.matches(&normalized) {
-                    return None;
-                }
-                // More specific path patterns get higher scores
-                // Count non-wildcard characters as specificity
-                specificity += pattern.as_str().chars().filter(|c| *c != '*').count() as u32;
-            } else {
+            let path = file_path?;
+            // Normalize path separators for matching
+            let normalized = path.replace('\\', "/");
+            if !pattern.matches(&normalized) {
                 return None;
             }
+            // More specific path patterns get higher scores
+            // Count non-wildcard characters as specificity
+            specificity += pattern.as_str().chars().filter(|c| *c != '*').count() as u32;
         }
 
         // Check function pattern
         if let Some(ref pattern) = self.function {
-            if let Some(func) = function_name {
-                if !pattern.matches(func) {
-                    return None;
-                }
-                // Function patterns are more specific than path patterns
-                specificity += 1000;
-                specificity += pattern.as_str().chars().filter(|c| *c != '*').count() as u32;
-            } else {
+            let func = function_name?;
+            if !pattern.matches(func) {
                 return None;
             }
+            // Function patterns are more specific than path patterns
+            specificity += 1000;
+            specificity += pattern.as_str().chars().filter(|c| *c != '*').count() as u32;
         }
 
         // If no patterns specified, rule doesn't match anything

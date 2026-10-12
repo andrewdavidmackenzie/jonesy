@@ -1128,53 +1128,49 @@ impl JonesyLspServer {
             let char_offset = (start_idx - line_start) as u32;
 
             // Find the end of the allow array
-            if let Some(end_bracket) = existing_content[start_idx..].find(']') {
-                let end_pos = start_idx + end_bracket + 1;
-                let old_allow = &existing_content[start_idx..end_pos];
+            let end_bracket = existing_content[start_idx..].find(']')?;
+            let end_pos = start_idx + end_bracket + 1;
+            let old_allow = &existing_content[start_idx..end_pos];
 
-                // Parse existing causes and add new one if not present
-                let mut causes: Vec<String> = old_allow
-                    .trim_start_matches("allow = [")
-                    .trim_end_matches(']')
-                    .split(',')
-                    .map(|s| s.trim().trim_matches('"').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+            // Parse existing causes and add new one if not present
+            let mut causes: Vec<String> = old_allow
+                .trim_start_matches("allow = [")
+                .trim_end_matches(']')
+                .split(',')
+                .map(|s| s.trim().trim_matches('"').to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
 
-                if causes.contains(&cause.to_string()) {
-                    return None; // Already allowed
-                }
-                causes.push(cause.to_string());
-
-                let new_allow_line = format!(
-                    "allow = [{}]",
-                    causes
-                        .iter()
-                        .map(|c| format!("\"{}\"", c))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-
-                let end_line = existing_content[..end_pos].lines().count() as u32 - 1;
-                let end_char =
-                    (end_pos - existing_content[..end_pos].rfind('\n').unwrap_or(0)) as u32;
-
-                (
-                    Range {
-                        start: Position {
-                            line: line_num.saturating_sub(1),
-                            character: char_offset,
-                        },
-                        end: Position {
-                            line: end_line,
-                            character: end_char,
-                        },
-                    },
-                    new_allow_line,
-                )
-            } else {
-                return None;
+            if causes.contains(&cause.to_string()) {
+                return None; // Already allowed
             }
+            causes.push(cause.to_string());
+
+            let new_allow_line = format!(
+                "allow = [{}]",
+                causes
+                    .iter()
+                    .map(|c| format!("\"{}\"", c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+
+            let end_line = existing_content[..end_pos].lines().count() as u32 - 1;
+            let end_char = (end_pos - existing_content[..end_pos].rfind('\n').unwrap_or(0)) as u32;
+
+            (
+                Range {
+                    start: Position {
+                        line: line_num.saturating_sub(1),
+                        character: char_offset,
+                    },
+                    end: Position {
+                        line: end_line,
+                        character: end_char,
+                    },
+                },
+                new_allow_line,
+            )
         } else {
             // Add new allow line at the beginning of the file
             (

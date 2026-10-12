@@ -16,6 +16,7 @@ pub fn lib_unwrap_none() {
 
     // Panic-free alternative: use if let, match, or unwrap_or
     if let Some(value) = opt {
+        // jonesy: expect panic(format)
         println!("Got value: {value}");
     }
     let _value = opt.unwrap_or(0);
@@ -35,6 +36,7 @@ pub fn lib_unwrap_err() {
 
     // Panic-free alternative: use match or the ? operator
     if let Ok(value) = result {
+        // jonesy: expect panic(format)
         println!("Got value: {value}");
     }
     let _value = result.unwrap_or(0);
@@ -48,7 +50,9 @@ pub fn lib_expect_none() {
     // Panic-free alternative: use match
     let opt: Option<i32> = None;
     match opt {
+        // jonesy: expect panic(format)
         Some(value) => println!("Got value: {value}"),
+        // jonesy: expect panic(format)
         None => println!("No value present"),
     }
 }
@@ -61,7 +65,9 @@ pub fn lib_expect_err() {
     // Panic-free alternative: use match
     let result: Result<i32, &str> = Err("error");
     match result {
+        // jonesy: expect panic(format)
         Ok(value) => println!("Got value: {value}"),
+        // jonesy: expect panic(format)
         Err(e) => println!("Error: {e}"),
     }
 }
@@ -74,7 +80,9 @@ pub fn lib_unwrap_err_on_ok() {
     // Panic-free alternative: use match
     let result: Result<i32, &str> = Ok(42);
     match result {
+        // jonesy: expect panic(format)
         Ok(value) => println!("Got Ok: {value}"),
+        // jonesy: expect panic(format)
         Err(e) => println!("Got error: {e}"),
     }
 }
@@ -87,8 +95,10 @@ pub fn lib_expect_err_on_ok() {
     // Panic-free alternative: use if let
     let result: Result<i32, &str> = Ok(42);
     if let Err(e) = result {
+        // jonesy: expect panic(format)
         println!("Got expected error: {e}");
     } else {
+        // jonesy: expect panic(format)
         println!("Got Ok, but expected Err");
     }
 }
@@ -201,6 +211,7 @@ pub fn lib_divide_by_zero() {
     if divisor != 0 {
         let _result = dividend / divisor;
     } else {
+        // jonesy: expect panic(format)
         println!("Cannot divide by zero");
     }
     let _result = dividend.checked_div(divisor); // Returns None
@@ -233,8 +244,8 @@ pub fn lib_shift_overflow() {
 }
 
 #[allow(clippy::useless_vec)]
-// Known limitation: slice index detection is platform-specific (see issue #59)
 pub fn lib_slice_index_oob() {
+    // jonesy: expect panic
     let v = vec![1, 2, 3];
     let _ = v[10];
 
@@ -253,12 +264,15 @@ pub fn lib_string_index_panic() {
 
     // Panic-free alternative: use .get() which returns Option
     if let Some(slice) = s.get(0..7) {
+        // jonesy: expect panic(format)
         println!("Got slice: {slice}");
     } else {
+        // jonesy: expect panic(format)
         println!("Invalid string slice boundary");
     }
     // Or use char_indices to find valid boundaries
     for (i, c) in s.char_indices() {
+        // jonesy: expect panic(format)
         println!("Char '{c}' starts at byte {i}");
     }
 }

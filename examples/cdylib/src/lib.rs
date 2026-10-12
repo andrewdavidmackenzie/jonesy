@@ -5,6 +5,7 @@ mod module;
 /// A library function that can panic
 #[unsafe(no_mangle)]
 pub extern "C" fn library_function() {
+    // jonesy: expect panic(capacity)
     if std::env::args().len() > 1 {
         // jonesy: expect panic runtime panic depending on args
         panic!("{}", PANIC_STR);
@@ -67,7 +68,7 @@ pub extern "C" fn library_function() {
     // jonesy: expect panic shift overflow
     module::cause_shift_overflow();
 
-    // Known limitation: slice index detection is platform-specific (see issue #59)
+    // jonesy: expect panic
     module::cause_slice_index_oob();
 
     // jonesy: expect panic string/slice error

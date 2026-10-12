@@ -7,7 +7,7 @@ clean:
 	cargo clean --manifest-path examples/workspace_test/Cargo.toml
 
 clippy:
-	cargo clippy --tests --no-deps --all-features --all-targets
+	cargo clippy --tests --no-deps --all-features --all-targets -- -D warnings
 
 build:
 	cargo build
@@ -17,7 +17,11 @@ build-examples: build
 	cargo build --manifest-path examples/workspace_test/Cargo.toml
 
 test: build-examples
-	cargo test -p jonesy
+	@# Remove stale dSYM bundles so jonesy regenerates them from the freshly built binaries
+	@find target/debug -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
+	@# Integration tests run single-threaded to avoid dSYM generation race conditions
+	@# when multiple tests analyse the same binary concurrently
+	cargo test -p jonesy -- --test-threads=1
 
 coverage: build-examples
 	cargo llvm-cov -p jonesy

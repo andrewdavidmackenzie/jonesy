@@ -13,6 +13,7 @@ pub fn cause_an_unwrap() {
 
     // Panic-free alternative: use if let, match, or unwrap_or
     if let Some(value) = opt {
+        // jonesy: expect panic(format)
         println!("Got value: {value}");
     }
     let _value = opt.unwrap_or(0);
@@ -32,6 +33,7 @@ pub fn cause_unwrap_err() {
 
     // Panic-free alternative: use if let, match, or the ? operator
     if let Ok(value) = result {
+        // jonesy: expect panic(format)
         println!("Got value: {value}");
     }
     let _value = result.unwrap_or(0);
@@ -46,7 +48,9 @@ pub fn cause_expect_none() {
     // Panic-free alternative: use if let, match, or unwrap_or
     let opt: Option<i32> = None;
     match opt {
+        // jonesy: expect panic(format)
         Some(value) => println!("Got value: {value}"),
+        // jonesy: expect panic(format)
         None => println!("No value present"),
     }
 }
@@ -59,7 +63,9 @@ pub fn cause_expect_err() {
     // Panic-free alternative: use match or the ? operator in functions returning Result
     let result: Result<i32, &str> = Err("error");
     match result {
+        // jonesy: expect panic(format)
         Ok(value) => println!("Got value: {value}"),
+        // jonesy: expect panic(format)
         Err(e) => println!("Error occurred: {e}"),
     }
 }
@@ -113,6 +119,7 @@ pub fn cause_divide_by_zero() {
     if divisor != 0 {
         let _result = dividend / divisor;
     } else {
+        // jonesy: expect panic(format)
         println!("Cannot divide by zero");
     }
     // Or use checked_div which returns None on division by zero
@@ -154,7 +161,9 @@ pub fn cause_unwrap_err_on_ok() {
     // Panic-free alternative: use match to handle both cases
     let result: Result<i32, &str> = Ok(42);
     match result {
+        // jonesy: expect panic(format)
         Ok(value) => println!("Got Ok value: {value}"),
+        // jonesy: expect panic(format)
         Err(e) => println!("Got error: {e}"),
     }
 }
@@ -167,8 +176,10 @@ pub fn cause_expect_err_on_ok() {
     // Panic-free alternative: use if let or match
     let result: Result<i32, &str> = Ok(42);
     if let Err(e) = result {
+        // jonesy: expect panic(format)
         println!("Got expected error: {e}");
     } else {
+        // jonesy: expect panic(format)
         println!("Got Ok, but expected Err");
     }
 }
@@ -182,8 +193,10 @@ pub fn cause_assert_eq() {
     let a = 1;
     let b = 2;
     if a == b {
+        // jonesy: expect panic(format)
         println!("Values are equal");
     } else {
+        // jonesy: expect panic(format)
         println!("Values differ: {a} != {b}");
     }
 }
@@ -197,8 +210,10 @@ pub fn cause_assert_ne() {
     let a = 1;
     let b = 1;
     if a != b {
+        // jonesy: expect panic(format)
         println!("Values differ");
     } else {
+        // jonesy: expect panic(format)
         println!("Values are equal: {a} == {b}");
     }
 }
@@ -211,8 +226,10 @@ pub fn cause_debug_assert_eq() {
     let a = 1;
     let b = 2;
     if a != b {
+        // jonesy: expect panic(format)
         println!("Debug: values differ: {a} != {b}");
     } else {
+        // jonesy: expect panic(format)
         println!("Debug: values are equal");
     }
 }
@@ -226,8 +243,10 @@ pub fn cause_debug_assert_ne() {
     let a = 1;
     let b = 1;
     if a == b {
+        // jonesy: expect panic(format)
         println!("Debug: values are equal: {a} == {b}");
     } else {
+        // jonesy: expect panic(format)
         println!("Debug: values differ");
     }
 }
@@ -241,8 +260,10 @@ pub fn cause_slice_index_oob() {
 
     // Panic-free alternative: use .get() which returns Option
     if let Some(value) = v.get(10) {
+        // jonesy: expect panic(format)
         println!("Got value: {value}");
     } else {
+        // jonesy: expect panic(format)
         println!("Index out of bounds");
     }
 }
@@ -254,12 +275,15 @@ pub fn cause_string_index_panic() {
 
     // Panic-free alternative: use .get() which returns Option
     if let Some(slice) = s.get(0..7) {
+        // jonesy: expect panic(format)
         println!("Got slice: {slice}");
     } else {
+        // jonesy: expect panic(format)
         println!("Invalid string slice boundary");
     }
     // Or use char_indices to find valid boundaries
     for (i, c) in s.char_indices() {
+        // jonesy: expect panic(format)
         println!("Char '{c}' starts at byte {i}");
     }
 }
@@ -292,6 +316,7 @@ pub fn cause_capacity_overflow() {
 
     // Panic-free alternative: use try_reserve
     // (not shown here to avoid additional panic points from println!)
+    // jonesy: expect panic(capacity)
 }
 
 #[repr(u8)]
@@ -327,6 +352,7 @@ pub fn cause_misaligned_pointer() {
 #[inline(never)]
 pub fn cause_hashmap_index_panic() {
     use std::collections::HashMap;
+    // jonesy: expect panic(capacity)
     let map: HashMap<&str, i32> = HashMap::new();
     // jonesy: expect panic(key_not_found)
     let _ = map["missing_key"];
@@ -348,6 +374,7 @@ pub fn cause_hashset_capacity_overflow() {
 
 /// Empty async function — the compiler generates a poll-after-completion check
 /// that panics with `panic_const_async_fn_resumed` if polled after returning Ready.
+// jonesy: expect panic(async_resumed)
 async fn cause_async_fn_resumed() {}
 
 /// Same as above but allowed via inline comment
@@ -369,8 +396,10 @@ pub fn poll_async_fn() {
     let mut cx = Context::from_waker(&waker);
 
     let mut f1 = std::pin::pin!(cause_async_fn_resumed());
+    // jonesy: expect panic(async_resumed)
     let _ = f1.as_mut().poll(&mut cx);
 
     let mut f2 = std::pin::pin!(cause_async_fn_resumed_allowed());
+    // jonesy: expect panic(panic)
     let _ = f2.as_mut().poll(&mut cx);
 }

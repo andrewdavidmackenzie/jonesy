@@ -201,7 +201,7 @@ impl TestLspClient {
     #[allow(dead_code)]
     fn collect_notifications(&mut self, duration: Duration) -> Vec<Value> {
         // First, drain any notifications that were buffered during wait_for_response
-        let mut notifications: Vec<Value> = self.notification_buffer.drain(..).collect();
+        let mut notifications: Vec<Value> = std::mem::take(&mut self.notification_buffer);
 
         let deadline = std::time::Instant::now() + duration;
 

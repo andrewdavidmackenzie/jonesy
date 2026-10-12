@@ -496,7 +496,7 @@ pub fn collect_crate_code_points(
     assign_unknown_causes(&mut roots);
 
     // Collect pre-filter locations for unused-rule detection
-    collect_locations(&roots, &mut *PRE_FILTER_LOCATIONS.lock().unwrap());
+    collect_locations(&roots, &mut PRE_FILTER_LOCATIONS.lock().unwrap());
 
     filter_allowed_causes(&mut roots, config, project_context);
 
