@@ -578,11 +578,11 @@ fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
     // A `let OFFSET = input;` would shadow a file-level `const OFFSET`,
     // making it unsafe to assume the expression uses the const value.
     let let_pattern = format!("let {token}");
-    if source.lines().any(|l| {
+    let has_let_shadow = source.lines().any(|l| {
         let t = l.trim();
-        t.starts_with(&let_pattern)
-            && t[let_pattern.len()..].starts_with([' ', ':', '='])
-    }) {
+        t.starts_with(&let_pattern) && t[let_pattern.len()..].starts_with([' ', ':', '='])
+    });
+    if has_let_shadow {
         return None;
     }
 
