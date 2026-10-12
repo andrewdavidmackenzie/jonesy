@@ -1328,4 +1328,284 @@ mod tests {
         // OFFSET is a let binding, not a const declaration — resolve_const_value should fail
         assert_eq!(evaluate_const_arithmetic(source, 3), None);
     }
+
+    // -- parse_numeric_literal coverage --
+
+    #[test]
+    fn test_parse_numeric_literal_decimal() {
+        assert_eq!(parse_numeric_literal("42"), Some((42, IntType::I32Default)));
+        assert_eq!(parse_numeric_literal("0"), Some((0, IntType::I32Default)));
+    }
+
+    #[test]
+    fn test_parse_numeric_literal_hex() {
+        assert_eq!(
+            parse_numeric_literal("0xFF"),
+            Some((255, IntType::I32Default))
+        );
+        assert_eq!(
+            parse_numeric_literal("0XAB"),
+            Some((171, IntType::I32Default))
+        );
+    }
+
+    #[test]
+    fn test_parse_numeric_literal_octal() {
+        assert_eq!(
+            parse_numeric_literal("0o77"),
+            Some((63, IntType::I32Default))
+        );
+    }
+
+    #[test]
+    fn test_parse_numeric_literal_binary() {
+        assert_eq!(
+            parse_numeric_literal("0b1010"),
+            Some((10, IntType::I32Default))
+        );
+    }
+
+    #[test]
+    fn test_parse_numeric_literal_with_underscores() {
+        assert_eq!(
+            parse_numeric_literal("1_000_000"),
+            Some((1_000_000, IntType::I32Default))
+        );
+    }
+
+    #[test]
+    fn test_parse_numeric_literal_with_type_suffix() {
+        assert_eq!(parse_numeric_literal("1u8"), Some((1, IntType::U8)));
+        assert_eq!(parse_numeric_literal("200u8"), Some((200, IntType::U8)));
+        assert_eq!(parse_numeric_literal("42i32"), Some((42, IntType::I32)));
+        assert_eq!(
+            parse_numeric_literal("100usize"),
+            Some((100, IntType::Usize))
+        );
+        assert_eq!(parse_numeric_literal("0xFFu16"), Some((255, IntType::U16)));
+    }
+
+    #[test]
+    fn test_parse_numeric_literal_invalid() {
+        assert_eq!(parse_numeric_literal(""), None);
+        assert_eq!(parse_numeric_literal("abc"), None);
+    }
+
+    // -- check_overflow coverage for all operations --
+
+    #[test]
+    fn test_check_overflow_subtraction() {
+        // u8: 0 - 1 underflows
+        assert!(check_overflow(0, '-', 1, IntType::U8));
+        // i32: 100 - 50 = 50, safe
+        assert!(!check_overflow(100, '-', 50, IntType::I32Default));
+    }
+
+    #[test]
+    fn test_check_overflow_multiplication() {
+        // u8: 20 * 20 = 400, overflows u8
+        assert!(check_overflow(20, '*', 20, IntType::U8));
+        // i32: 100 * 100 = 10000, safe
+        assert!(!check_overflow(100, '*', 100, IntType::I32Default));
+    }
+
+    #[test]
+    fn test_check_overflow_division() {
+        // division by zero
+        assert!(check_overflow(10, '/', 0, IntType::I32Default));
+        // i32: 100 / 10 = 10, safe
+        assert!(!check_overflow(100, '/', 10, IntType::I32Default));
+    }
+
+    #[test]
+    fn test_check_overflow_remainder() {
+        // remainder by zero
+        assert!(check_overflow(10, '%', 0, IntType::I32Default));
+        // i32: 100 % 7 = 2, safe
+        assert!(!check_overflow(100, '%', 7, IntType::I32Default));
+    }
+
+    #[test]
+    fn test_check_overflow_shift() {
+        // left shift: 1 << 8 = 256, overflows u8
+        assert!(check_overflow(1, '<', 8, IntType::U8));
+        // left shift: 1 << 4 = 16, safe for u8
+        assert!(!check_overflow(1, '<', 4, IntType::U8));
+    }
+
+    #[test]
+    fn test_check_overflow_unknown_operator() {
+        // Unknown operator returns false (no overflow detected)
+        assert!(!check_overflow(1, '?', 1, IntType::I32Default));
+    }
+
+    // -- IntType::overflows coverage for various types --
+
+    #[test]
+    fn test_overflows_unsigned_types() {
+        assert!(IntType::U16.overflows(70000));
+        assert!(!IntType::U16.overflows(60000));
+        assert!(IntType::U32.overflows(u32::MAX as i128 + 1));
+        assert!(!IntType::U32.overflows(u32::MAX as i128));
+        assert!(IntType::U64.overflows(-1));
+        assert!(!IntType::U64.overflows(0));
+        assert!(IntType::U128.overflows(-1));
+        assert!(!IntType::U128.overflows(0));
+        assert!(IntType::Usize.overflows(-1));
+        assert!(!IntType::Usize.overflows(1000));
+    }
+
+    #[test]
+    fn test_overflows_signed_types() {
+        assert!(IntType::I8.overflows(128));
+        assert!(!IntType::I8.overflows(127));
+        assert!(IntType::I8.overflows(-129));
+        assert!(!IntType::I8.overflows(-128));
+        assert!(IntType::I16.overflows(40000));
+        assert!(!IntType::I16.overflows(30000));
+        assert!(!IntType::I64.overflows(i64::MAX as i128));
+        assert!(IntType::I64.overflows(i64::MAX as i128 + 1));
+        assert!(!IntType::I128.overflows(i128::MAX));
+        assert!(!IntType::Isize.overflows(0));
+        assert!(IntType::Isize.overflows(i64::MAX as i128 + 1));
+    }
+
+    // -- evaluate_const_arithmetic coverage for more operations --
+
+    #[test]
+    fn test_evaluate_const_arithmetic_subtraction_safe() {
+        let source = "const A: u8 = 10;\n\
+                      const B: u8 = 5;\n\
+                      fn f() {\n\
+                          let _ = A - B;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_subtraction_underflow() {
+        let source = "const A: u8 = 5;\n\
+                      const B: u8 = 10;\n\
+                      fn f() {\n\
+                          let _ = A - B;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_multiplication() {
+        let source = "const A: u8 = 20;\n\
+                      const B: u8 = 20;\n\
+                      fn f() {\n\
+                          let _ = A * B;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_division_safe() {
+        let source = "const A: i32 = 100;\n\
+                      const B: i32 = 10;\n\
+                      fn f() {\n\
+                          let _ = A / B;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_remainder() {
+        let source = "const A: i32 = 100;\n\
+                      const B: i32 = 7;\n\
+                      fn f() {\n\
+                          let _ = A % B;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 4),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_shift_safe() {
+        let source = "const A: u32 = 1;\n\
+                      fn f() {\n\
+                          let _ = A << 4;\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 3),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_hex_literal() {
+        let source = "fn f() {\n\
+                          let _ = 0xFF + 1;\n\
+                      }";
+        // 0xFF + 1 = 256, safe for i32 default
+        assert_eq!(
+            evaluate_const_arithmetic(source, 2),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_line_out_of_range() {
+        let source = "fn f() {}";
+        // Line 100 is out of range
+        assert_eq!(evaluate_const_arithmetic(source, 100), None);
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_no_expression() {
+        let source = "fn f() {\n\
+                          // just a comment\n\
+                      }";
+        assert_eq!(evaluate_const_arithmetic(source, 2), None);
+    }
+
+    #[test]
+    fn test_evaluate_const_arithmetic_bare_expression() {
+        // Expression without `let` prefix — e.g., in a return position
+        let source = "const A: i32 = 10;\n\
+                      fn f() -> i32 {\n\
+                          A + 5\n\
+                      }";
+        assert_eq!(
+            evaluate_const_arithmetic(source, 3),
+            Some(ConstArithmeticResult::Safe)
+        );
+    }
+
+    // -- IntType::from_str coverage --
+
+    #[test]
+    fn test_int_type_from_str() {
+        assert_eq!(IntType::from_str("u8"), Some(IntType::U8));
+        assert_eq!(IntType::from_str("u16"), Some(IntType::U16));
+        assert_eq!(IntType::from_str("u32"), Some(IntType::U32));
+        assert_eq!(IntType::from_str("u64"), Some(IntType::U64));
+        assert_eq!(IntType::from_str("u128"), Some(IntType::U128));
+        assert_eq!(IntType::from_str("usize"), Some(IntType::Usize));
+        assert_eq!(IntType::from_str("i8"), Some(IntType::I8));
+        assert_eq!(IntType::from_str("i16"), Some(IntType::I16));
+        assert_eq!(IntType::from_str("i32"), Some(IntType::I32));
+        assert_eq!(IntType::from_str("i64"), Some(IntType::I64));
+        assert_eq!(IntType::from_str("i128"), Some(IntType::I128));
+        assert_eq!(IntType::from_str("isize"), Some(IntType::Isize));
+        assert_eq!(IntType::from_str("f64"), None);
+        assert_eq!(IntType::from_str("string"), None);
+    }
 }
