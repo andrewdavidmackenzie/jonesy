@@ -118,6 +118,13 @@ pub fn check_inline_allow(
     false
 }
 
+/// Read the full contents of a source file, handling both absolute and relative paths.
+///
+/// Returns `None` if the file cannot be found or read.
+pub(crate) fn read_source_file(file_path: &str, workspace_root: Option<&Path>) -> Option<String> {
+    read_source_file_with_root(file_path, workspace_root)
+}
+
 /// Try to read a source file, handling both absolute and relative paths.
 /// DWARF often stores relative paths from the workspace root.
 ///

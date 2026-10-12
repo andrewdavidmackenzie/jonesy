@@ -71,7 +71,7 @@ let (result, overflow) = x.overflowing_shl(amount);
 ```text
  --> src/lib.rs:3:5 [JP003/overflow: shift_overflow]
      = help: Validate shift amount is within valid range
-     = warning: With default release settings (overflow-checks=false), this wraps silently
+     = warning: With default release settings (overflow-checks=false), this wraps silently — producing an incorrect result without any error
 ```
 
 ## Related

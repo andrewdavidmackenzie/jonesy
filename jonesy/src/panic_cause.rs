@@ -610,9 +610,9 @@ impl PanicCause {
     /// - Undefined behavior: <https://doc.rust-lang.org/reference/behavior-considered-undefined.html>
     pub fn release_warning(&self) -> Option<&'static str> {
         match self {
-            PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_) => {
-                Some("With default release settings (overflow-checks=false), this wraps silently")
-            }
+            PanicCause::ArithmeticOverflow(_) | PanicCause::ShiftOverflow(_) => Some(
+                "With default release settings (overflow-checks=false), this wraps silently — producing an incorrect result without any error",
+            ),
             _ => None,
         }
     }

@@ -12,7 +12,19 @@ title: "JP003: Arithmetic Overflow"
 
 An arithmetic operation (addition, subtraction, multiplication, division, or negation) produces a result that cannot be represented in the target integer type.
 
-**Note**: By default, overflow only panics in debug builds. Release builds wrap silently unless `overflow-checks = true` is set in Cargo.toml.
+### Why jonesy flags this
+
+Jonesy analyses debug binaries, where Rust inserts overflow checks that panic at runtime. In release builds (with the default `overflow-checks = false`), these checks are stripped and the arithmetic **wraps silently** instead of panicking. This means the code won't crash in production — but it will produce a wrong answer without any indication of failure, which is almost certainly not what the author intended.
+
+Jonesy flags arithmetic overflow because:
+- **In debug mode**: the code will panic, crashing the programme
+- **In release mode**: the code won't panic but will silently produce an incorrect result
+
+Either way, the arithmetic is likely a bug. The author should use checked, saturating, or wrapping arithmetic to make their intent explicit, or validate inputs to prevent overflow.
+
+### Const arithmetic suppression
+
+When both operands are compile-time constants (e.g., `OFFSET + 1`), jonesy evaluates the arithmetic at analysis time. If the result fits in the target type, the detection is suppressed — the arithmetic is provably safe and cannot overflow at runtime. If the result *would* overflow, jonesy still flags it.
 
 ## Example
 
@@ -91,7 +103,7 @@ overflow-checks = true
 ```text
  --> src/lib.rs:3:5 [JP003/overflow: arithmetic_overflow]
      = help: Use checked_*, saturating_*, or wrapping_* methods
-     = warning: With default release settings (overflow-checks=false), this wraps silently
+     = warning: With default release settings (overflow-checks=false), this wraps silently — producing an incorrect result without any error
 ```
 
 ## Related
