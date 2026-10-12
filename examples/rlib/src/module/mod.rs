@@ -10,7 +10,7 @@ pub fn cause_an_unwrap() {
     } else {
         None
     };
-    // jonesy: expect panic(unwrap)
+    // jonesy: expect panic(unwrap) [macos]
     opt.unwrap();
 }
 

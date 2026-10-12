@@ -43,7 +43,7 @@ fn find_workspace_root() -> PathBuf {
     }
 }
 
-/// Expected panic marker with file, line, and optional cause
+/// Expected panic marker with file, line, optional cause, and optional platform filter
 #[derive(Debug, Clone)]
 struct ExpectedMarker {
     file: String,
@@ -51,6 +51,25 @@ struct ExpectedMarker {
     /// Expected cause identifier (e.g., "unwrap", "overflow")
     /// None means any cause is acceptable
     cause: Option<String>,
+    /// Optional platform filter (e.g., ["macos"], ["linux", "linux-x86_64"])
+    /// None means the marker applies on all platforms
+    platforms: Option<Vec<String>>,
+}
+
+/// Check whether a marker's platform filter matches the current platform.
+/// Returns true if the marker has no platform filter or if the current platform
+/// matches one of the specified platforms.
+fn marker_matches_current_platform(marker: &ExpectedMarker) -> bool {
+    let platforms = match &marker.platforms {
+        Some(p) => p,
+        None => return true,
+    };
+
+    let current_os = std::env::consts::OS; // "macos" or "linux"
+    let current_arch = std::env::consts::ARCH; // "aarch64" or "x86_64"
+    let os_arch = format!("{current_os}-{current_arch}");
+
+    platforms.iter().any(|p| p == current_os || p == &os_arch)
 }
 
 /// Check if any detected cause matches the expected cause, including parent IDs.
@@ -86,34 +105,67 @@ fn find_expected_panic_markers(src_dir: &Path) -> Vec<ExpectedMarker> {
                     .to_string_lossy()
                     .to_string();
 
-                // Parse optional cause: "// jonesy: expect panic(cause)"
-                let cause = if let Some(rest) = trimmed.strip_prefix(PANIC_MARKER) {
+                // Parse optional cause and platform filter:
+                // "// jonesy: expect panic(cause) [platform,platform]"
+                let (cause, platforms) = if let Some(rest) = trimmed.strip_prefix(PANIC_MARKER) {
                     let rest = rest.trim();
-                    if rest.starts_with('(') && rest.contains(')') {
+
+                    // Parse optional cause in parentheses
+                    let (cause, after_cause) = if rest.starts_with('(') && rest.contains(')') {
                         let cause_str = rest
                             .trim_start_matches('(')
                             .split(')')
                             .next()
                             .unwrap_or("")
                             .trim();
-                        if !cause_str.is_empty() {
-                            Some(cause_str.to_string())
-                        } else {
+                        let after = rest.split(')').nth(1).unwrap_or("").trim();
+                        let c = if cause_str.is_empty() {
                             None
+                        } else {
+                            Some(cause_str.to_string())
+                        };
+                        (c, after)
+                    } else {
+                        (None, rest)
+                    };
+
+                    // Parse optional platform filter in square brackets
+                    let platforms = if after_cause.starts_with('[') && after_cause.contains(']') {
+                        let filter_str = after_cause
+                            .trim_start_matches('[')
+                            .split(']')
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        if filter_str.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                filter_str
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .collect(),
+                            )
                         }
                     } else {
                         None
-                    }
+                    };
+
+                    (cause, platforms)
                 } else {
-                    None
+                    (None, None)
                 };
 
-                // Store the line where the comment is (1-indexed)
-                markers.push(ExpectedMarker {
+                // Only include markers that match the current platform
+                let marker = ExpectedMarker {
                     file: rel_path,
                     line: (i + 1) as u32,
                     cause,
-                });
+                    platforms,
+                };
+                if marker_matches_current_platform(&marker) {
+                    markers.push(marker);
+                }
             }
         }
     });
