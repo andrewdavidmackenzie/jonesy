@@ -840,4 +840,25 @@ mod tests {
             "core::panicking::panic_const::panic_const_async_fn_resumed"
         ));
     }
+
+    /// Issue #266: const arithmetic (e.g., `CONST + 1`) cannot overflow at runtime
+    /// because the compiler would reject it at compile time. Jonesy should suppress
+    /// arithmetic overflow detections when the source line only involves constants.
+    #[test]
+    fn test_const_arithmetic_not_reported_as_overflow() {
+        // Lines where both operands are compile-time constants
+        assert!(is_const_arithmetic("    let _result = OFFSET + 1;"));
+        assert!(is_const_arithmetic("    let x = PATH_OFFSET + HEADER_SIZE;"));
+        assert!(is_const_arithmetic("    let _ = 7 + 1;"));
+        assert!(is_const_arithmetic("    let _ = CONST_A - CONST_B;"));
+        assert!(is_const_arithmetic("    let _ = SIZE * 2;"));
+        assert!(is_const_arithmetic("    let _ = TOTAL / 4;"));
+
+        // Lines where at least one operand is a runtime variable — NOT const arithmetic
+        assert!(!is_const_arithmetic("    let _ = x + 1;"));
+        assert!(!is_const_arithmetic("    let _ = input * 2;"));
+        assert!(!is_const_arithmetic("    let _ = vec.len() + offset;"));
+        assert!(!is_const_arithmetic("    opt.unwrap();"));
+        assert!(!is_const_arithmetic("    let _ = a.checked_add(b);"));
+    }
 }
