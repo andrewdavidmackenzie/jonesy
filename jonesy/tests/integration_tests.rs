@@ -21,8 +21,8 @@ const PANIC_MARKER: &str = "// jonesy: expect panic";
 struct PanicPoint {
     file: String,
     line: u32,
-    /// The panic cause identifiers (e.g., "unwrap", "overflow", "bounds")
-    /// A single code point may have multiple causes when different panic paths converge
+    /// The panic cause identifiers (e.g., "unwrap", "overflow", "bounds"),
+    /// sorted for deterministic comparison regardless of traversal order
     causes: Vec<String>,
 }
 
@@ -401,6 +401,8 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             {
                 // parts[0] is the column, parts[1] is the line, parts[2] is the file path
                 let file = if parts.len() > 2 { parts[2] } else { "" };
+                let mut causes = causes;
+                causes.sort();
                 points.insert(PanicPoint {
                     file: file.to_string(),
                     line: line_num,
