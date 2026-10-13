@@ -1,7 +1,7 @@
 //! x86_64 architecture support
 //!
 //! This module contains all x86_64-specific logic for binary analysis:
-//! - Instruction disassembly using Capstone
+//! - Instruction disassembly using iced-x86 (zero-allocation decoder)
 //! - CALL instruction detection
 //! - Relocation type constants
 //! - GOT (Global Offset Table) resolution for indirect calls
@@ -17,8 +17,17 @@
 //! - **CALL rel32**: Direct PC-relative call (E8 opcode)
 //! - **CALL r/m64**: Indirect call through register or memory
 //! - **CALL [rip+offset]**: RIP-relative indirect call (common for GOT/PLT)
+//!
+//! ## Decoder Choice
+//!
+//! This module uses `iced-x86` instead of Capstone for instruction decoding.
+//! Key advantages:
+//! - **Zero heap allocation**: `decode_out()` reuses a stack-allocated `Instruction` struct
+//! - **`Send + Sync`**: enables true parallel disassembly (Capstone is not `Sync`)
+//! - **Pure Rust**: no C FFI overhead
 
-use capstone::prelude::*;
+use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
+use rayon::prelude::*;
 
 /// Extracted instruction data for parallel processing
 pub(crate) struct InsnData {
@@ -32,140 +41,128 @@ struct RegisterLoad {
     got_addr: u64,
 }
 
-/// Scan a chunk of x86_64 code for CALL instructions using Capstone disassembler.
+/// Minimum chunk size for parallel disassembly (avoid overhead for small sections).
+const MIN_CHUNK_SIZE: usize = 256 * 1024; // 256KB
+
+/// Bytes decoded before each chunk start so the decoder resynchronises with the
+/// real instruction stream. x86_64 instructions are at most 15 bytes, and the
+/// decoder typically resynchronises within a few instructions. 256 bytes
+/// provides a generous margin.
+const RESYNC_LOOKBACK: usize = 256;
+
+/// Scan a chunk of x86_64 code for CALL and JMP instructions using iced-x86.
+///
+/// Uses `decode_out()` to reuse a single stack-allocated `Instruction` struct,
+/// avoiding the massive heap allocations that Capstone's `disasm_all()` incurs
+/// (which allocated ~15 GB for a 213 MB binary).
+///
+/// The `stop_addr` parameter controls when to stop decoding. When used for
+/// parallel chunking, each chunk decodes until the first instruction at or
+/// past `stop_addr`, ensuring instructions that cross chunk boundaries are
+/// decoded fully and reported by exactly one chunk.
 fn scan_call_instructions(
-    cs: &Capstone,
     data: &[u8],
     base_addr: u64,
+    stop_addr: u64,
     got_cache: &ahash::AHashMap<u64, u64>,
 ) -> Vec<InsnData> {
     let mut results = Vec::new();
+    let mut decoder = Decoder::with_ip(64, data, base_addr, DecoderOptions::NONE);
+    let mut insn = Instruction::default();
 
-    // Disassemble the code section
-    let insns = match cs.disasm_all(data, base_addr) {
-        Ok(insns) => insns,
-        Err(_) => return results,
-    };
+    // Track register loads from GOT for resolving call *%reg patterns.
+    // Map: register -> RegisterLoad
+    // We track recent GOT loads but only within the same basic block
+    // (cleared on any control flow).
+    let mut register_loads: ahash::AHashMap<Register, RegisterLoad> = ahash::AHashMap::new();
 
-    // Track register loads from GOT for resolving call *%reg patterns
-    // Map: register_id -> RegisterLoad
-    // We track recent GOT loads but only within the same basic block (cleared on any control flow)
-    let mut register_loads: ahash::AHashMap<u16, RegisterLoad> = ahash::AHashMap::new();
+    while decoder.can_decode() && decoder.ip() < stop_addr {
+        decoder.decode_out(&mut insn);
 
-    // Extract CALL instructions
-    for insn in insns.iter() {
-        let mnemonic = insn.mnemonic().unwrap_or("");
-
-        // Clear register tracking on control flow instructions (except call)
-        // This prevents false matches across basic block boundaries
-        if matches!(
-            mnemonic,
-            "jmp"
-                | "je"
-                | "jne"
-                | "jz"
-                | "jnz"
-                | "ja"
-                | "jae"
-                | "jb"
-                | "jbe"
-                | "jg"
-                | "jge"
-                | "jl"
-                | "jle"
-                | "ret"
-        ) {
-            register_loads.clear();
+        if insn.is_invalid() {
+            continue;
         }
 
-        // Track MOV instructions that load from GOT into registers
-        if mnemonic == "mov" {
-            if let Ok(detail) = cs.insn_detail(insn) {
-                let arch_detail = detail.arch_detail();
-                let operands = arch_detail.operands();
+        let mnemonic = insn.mnemonic();
 
-                // Pattern: mov offset(%rip), %reg
-                if operands.len() == 2 {
-                    if let (
-                        arch::ArchOperand::X86Operand(dst),
-                        arch::ArchOperand::X86Operand(src),
-                    ) = (&operands[0], &operands[1])
-                    {
-                        // Check if destination is a register (this will get overwritten)
-                        if let arch::x86::X86OperandType::Reg(dst_reg) = dst.op_type {
-                            // Check if source is RIP-relative memory load
-                            if let arch::x86::X86OperandType::Mem(mem_op) = src.op_type {
-                                if mem_op.base()
-                                    == capstone::RegId(arch::x86::X86Reg::X86_REG_RIP as u16)
-                                {
-                                    let rip_offset = mem_op.disp();
-                                    let insn_size = insn.bytes().len() as u64;
-                                    let next_insn = insn.address().wrapping_add(insn_size);
-                                    let got_addr = next_insn.wrapping_add(rip_offset as u64);
-
-                                    // Update this register's GOT load
-                                    register_loads.insert(dst_reg.0, RegisterLoad { got_addr });
-                                } else {
-                                    // Non-RIP-relative write to register - clear it
-                                    register_loads.remove(&dst_reg.0);
-                                }
-                            } else {
-                                // Register being written with non-memory source - clear it
-                                register_loads.remove(&dst_reg.0);
-                            }
-                        }
-                    }
-                }
+        // Clear register tracking on control flow instructions (except call).
+        // This prevents false matches across basic block boundaries.
+        match insn.flow_control() {
+            FlowControl::ConditionalBranch
+            | FlowControl::UnconditionalBranch
+            | FlowControl::Return
+                // For JMP (unconditional branch), we still want to process it
+                // as a potential tail call below before clearing
+                if mnemonic != Mnemonic::Jmp =>
+            {
+                register_loads.clear();
+                continue;
             }
+            _ => {}
+        }
+
+        // Track MOV instructions that load from GOT into registers.
+        // Pattern: mov reg, [rip+offset]
+        if mnemonic == Mnemonic::Mov
+            && insn.op_count() == 2
+            && insn.op0_kind() == OpKind::Register
+            && insn.op1_kind() == OpKind::Memory
+            && insn.memory_base() == Register::RIP
+            && insn.memory_index() == Register::None
+        {
+            let dst_reg = insn.op0_register();
+            let disp = insn.memory_displacement64();
+            // RIP-relative: effective address = next_insn_addr + disp
+            // iced-x86 already computes this for us in memory_displacement64()
+            // when the base is RIP: the displacement is the absolute address
+            let got_addr = disp;
+            register_loads.insert(dst_reg, RegisterLoad { got_addr });
+            continue;
+        }
+
+        // Any other write to a register invalidates our tracking for that register.
+        // We only track MOV from RIP-relative memory, so clear on other MOVs
+        // and LEA to tracked registers.
+        if (mnemonic == Mnemonic::Mov || mnemonic == Mnemonic::Lea)
+            && insn.op_count() >= 1
+            && insn.op0_kind() == OpKind::Register
+        {
+            let dst_reg = insn.op0_register();
+            register_loads.remove(&dst_reg);
         }
 
         // Track both CALL and JMP instructions.
         // JMP with an immediate target is a tail call (like aarch64 B instruction).
         // Without tracking JMPs, the call chain breaks at tail calls like
-        // rust_begin_unwind → rust_panic.
-        if mnemonic == "call" || mnemonic == "jmp" {
-            let detail = match cs.insn_detail(insn) {
-                Ok(detail) => detail,
-                Err(_) => continue,
-            };
-
-            let arch_detail = detail.arch_detail();
-            let operands = arch_detail.operands();
-
-            let call_target = if operands.len() == 1 {
-                match &operands[0] {
-                    arch::ArchOperand::X86Operand(op) => match op.op_type {
-                        // Direct call/jmp with immediate target — resolve through
-                        // stub cache if the target is a stub address
-                        arch::x86::X86OperandType::Imm(imm_val) => {
-                            let addr = imm_val as u64;
-                            Some(got_cache.get(&addr).copied().unwrap_or(addr))
+        // rust_begin_unwind -> rust_panic.
+        if mnemonic == Mnemonic::Call || mnemonic == Mnemonic::Jmp {
+            let call_target = if insn.op_count() == 1 {
+                match insn.op0_kind() {
+                    // Direct call/jmp with near branch target
+                    OpKind::NearBranch64 | OpKind::NearBranch32 | OpKind::NearBranch16 => {
+                        let addr = insn.near_branch_target();
+                        Some(got_cache.get(&addr).copied().unwrap_or(addr))
+                    }
+                    // Indirect call through memory (likely GOT): call [rip+offset]
+                    OpKind::Memory => {
+                        if insn.memory_base() == Register::RIP
+                            && insn.memory_index() == Register::None
+                        {
+                            let got_addr = insn.memory_displacement64();
+                            got_cache.get(&got_addr).copied()
+                        } else {
+                            None
                         }
-                        // Indirect call through memory (likely GOT)
-                        arch::x86::X86OperandType::Mem(mem_op) => {
-                            // Check for RIP-relative addressing
-                            if mem_op.base()
-                                == capstone::RegId(arch::x86::X86Reg::X86_REG_RIP as u16)
-                            {
-                                let rip_offset = mem_op.disp();
-                                let insn_size = insn.bytes().len() as u64;
-                                got::resolve_target(
-                                    insn.address(),
-                                    insn_size,
-                                    rip_offset,
-                                    got_cache,
-                                )
-                            } else {
-                                None
-                            }
-                        }
-                        // Indirect call through register: call *%rax
-                        // Check if this register was loaded from GOT recently (within same basic block)
-                        arch::x86::X86OperandType::Reg(reg) => register_loads
-                            .get(&reg.0)
-                            .and_then(|load| got_cache.get(&load.got_addr).copied()),
-                        _ => None,
-                    },
+                    }
+                    // Indirect call through register: call *%rax
+                    // Check if this register was loaded from GOT recently
+                    // (within same basic block)
+                    OpKind::Register => {
+                        let reg = insn.op0_register();
+                        register_loads
+                            .get(&reg)
+                            .and_then(|load| got_cache.get(&load.got_addr).copied())
+                    }
                     _ => None,
                 }
             } else {
@@ -173,9 +170,14 @@ fn scan_call_instructions(
             };
 
             results.push(InsnData {
-                address: insn.address(),
+                address: insn.ip(),
                 call_target,
             });
+
+            // Clear register tracking after JMP (end of basic block)
+            if mnemonic == Mnemonic::Jmp {
+                register_loads.clear();
+            }
         }
     }
 
@@ -183,7 +185,24 @@ fn scan_call_instructions(
 }
 
 /// Scan for x86_64 CALL instructions in parallel by dividing into chunks.
-/// Uses Capstone disassembler to handle variable-length instructions.
+///
+/// Uses iced-x86 for zero-allocation instruction decoding. Since iced-x86's
+/// `Decoder` is `Send + Sync`, we can truly parallelise the disassembly across
+/// threads, unlike Capstone which required sequential processing.
+///
+/// ## Chunk boundary handling
+///
+/// x86_64 has variable-length instructions (1-15 bytes), so splitting at
+/// arbitrary byte offsets can land mid-instruction. To handle this safely:
+///
+/// 1. Each chunk starts decoding `RESYNC_LOOKBACK` bytes early, giving the
+///    decoder enough context to resynchronise with the real instruction stream
+///    before reaching the chunk's logical start.
+/// 2. Only results at or after the chunk's logical start are retained.
+/// 3. Each chunk decodes until the first instruction at or past the chunk's
+///    logical end, so instructions crossing boundaries are decoded fully and
+///    reported by exactly one chunk.
+///
 /// Builds an indirect call cache from ELF GOT or MachO stubs.
 pub(crate) fn parallel_disassemble(
     text_data: &[u8],
@@ -197,24 +216,58 @@ pub(crate) fn parallel_disassemble(
         crate::binary_format::BinaryRef::MachO(macho) => got::build_macho_stub_cache(macho, buffer),
     };
 
-    // Create Capstone disassembler once (major optimization - was being created per chunk!)
-    let cs = match Capstone::new()
-        .x86()
-        .mode(arch::x86::ArchMode::Mode64)
-        .detail(true)
-        .build()
-    {
-        Ok(cs) => cs,
-        Err(_) => return Vec::new(),
+    let num_threads = rayon::current_num_threads();
+    let text_end = text_addr + text_data.len() as u64;
+
+    let ideal_chunk_size = text_data.len() / num_threads;
+    let chunk_size = if ideal_chunk_size < MIN_CHUNK_SIZE {
+        text_data.len()
+    } else {
+        ideal_chunk_size
     };
 
-    // Note: Capstone is not Sync, so we can't parallelize disassembly across threads.
-    // However, creating one instance and scanning sequentially is MUCH faster than
-    // the previous approach of creating a new Capstone instance per chunk (which
-    // happened 8-12 times on multi-core systems).
-    //
-    // Sequential scanning with one Capstone instance is the optimization here.
-    scan_call_instructions(&cs, text_data, text_addr, &got_cache)
+    if chunk_size >= text_data.len() {
+        // Single chunk — sequential scanning
+        return scan_call_instructions(text_data, text_addr, text_end, &got_cache);
+    }
+
+    // Build chunk start offsets
+    let starts: Vec<usize> = (0..text_data.len()).step_by(chunk_size).collect();
+
+    let results: Vec<Vec<InsnData>> = starts
+        .par_iter()
+        .map(|&start| {
+            let chunk_end_offset = (start + chunk_size).min(text_data.len());
+            let chunk_start_addr = text_addr + start as u64;
+            let chunk_end_addr = text_addr + chunk_end_offset as u64;
+
+            // Start decoding early so the decoder resynchronises before the
+            // chunk's logical start. The first chunk (start == 0) needs no
+            // lookback.
+            let decode_start = start.saturating_sub(RESYNC_LOOKBACK);
+            let decode_start_addr = text_addr + decode_start as u64;
+
+            // For the last chunk, decode to the end of the section
+            let stop_addr = if chunk_end_offset >= text_data.len() {
+                text_end
+            } else {
+                chunk_end_addr
+            };
+
+            let mut found = scan_call_instructions(
+                &text_data[decode_start..],
+                decode_start_addr,
+                stop_addr,
+                &got_cache,
+            );
+
+            // Discard results from the lookback region
+            found.retain(|d| d.address >= chunk_start_addr);
+            found
+        })
+        .collect();
+
+    results.into_iter().flatten().collect()
 }
 
 /// MachO relocation type for x86_64 PC-relative calls (X86_64_RELOC_BRANCH)
@@ -447,23 +500,6 @@ pub mod got {
             }
         }
     }
-
-    /// Resolve a GOT-based call target.
-    ///
-    /// Given a RIP-relative memory operand, compute the GOT entry address
-    /// and look up the target function address.
-    pub(crate) fn resolve_target(
-        insn_addr: u64,
-        insn_size: u64,
-        rip_offset: i64,
-        got_cache: &ahash::AHashMap<u64, u64>,
-    ) -> Option<u64> {
-        // Compute GOT entry address: next_insn_addr + rip_offset
-        let next_insn = insn_addr.wrapping_add(insn_size);
-        let got_addr = next_insn.wrapping_add(rip_offset as u64);
-
-        got_cache.get(&got_addr).copied()
-    }
 }
 
 /// PLT (Procedure Linkage Table) resolution stub module
@@ -479,5 +515,297 @@ pub mod plt {
     /// Resolve a PLT stub address to the actual function address (stub)
     pub(crate) fn resolve_stub(target_addr: u64, _plt_map: &HashMap<u64, u64>) -> u64 {
         target_addr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: assemble a small code buffer and scan it
+    fn scan(code: &[u8], base: u64, got: &ahash::AHashMap<u64, u64>) -> Vec<InsnData> {
+        let stop = base + code.len() as u64;
+        scan_call_instructions(code, base, stop, got)
+    }
+
+    // --- Direct CALL rel32 ---
+
+    #[test]
+    fn test_direct_call_detected() {
+        // CALL rel32: E8 xx xx xx xx  (call +5, i.e. next instruction)
+        let code: &[u8] = &[0xE8, 0x00, 0x00, 0x00, 0x00];
+        let results = scan(code, 0x1000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+        // Target = next_insn (0x1005) + 0 = 0x1005
+        assert_eq!(results[0].call_target, Some(0x1005));
+    }
+
+    #[test]
+    fn test_direct_call_with_offset() {
+        // CALL rel32: E8 FB FF FF FF  (call -5, i.e. call self)
+        let code: &[u8] = &[0xE8, 0xFB, 0xFF, 0xFF, 0xFF];
+        let results = scan(code, 0x2000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call_target, Some(0x2000));
+    }
+
+    // --- Direct JMP rel32 (tail call) ---
+
+    #[test]
+    fn test_jmp_detected_as_tail_call() {
+        // JMP rel32: E9 00 00 00 00  (jmp +5)
+        let code: &[u8] = &[0xE9, 0x00, 0x00, 0x00, 0x00];
+        let results = scan(code, 0x3000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x3000);
+        assert_eq!(results[0].call_target, Some(0x3005));
+    }
+
+    // --- RIP-relative CALL [rip+disp32] ---
+
+    #[test]
+    fn test_rip_relative_call_with_got() {
+        // FF 15 xx xx xx xx = CALL [rip+disp32]
+        // disp32 = 0x00001000
+        // instruction at 0x4000, len=6, so rip=0x4006
+        // GOT addr = 0x4006 + 0x1000 = 0x5006
+        let code: &[u8] = &[0xFF, 0x15, 0x00, 0x10, 0x00, 0x00];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x5006, 0xDEAD);
+        let results = scan(code, 0x4000, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call_target, Some(0xDEAD));
+    }
+
+    #[test]
+    fn test_rip_relative_call_without_got_entry() {
+        // Same encoding but no GOT entry — target should be None
+        let code: &[u8] = &[0xFF, 0x15, 0x00, 0x10, 0x00, 0x00];
+        let results = scan(code, 0x4000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].call_target.is_none());
+    }
+
+    // --- GOT stub resolution for direct CALL ---
+
+    #[test]
+    fn test_direct_call_resolves_through_got_cache() {
+        // CALL rel32 to address 0x2005 which is a stub in the GOT cache
+        let code: &[u8] = &[0xE8, 0x00, 0x00, 0x00, 0x00]; // call +5 -> 0x2005
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x2005, 0xBEEF);
+        let results = scan(code, 0x2000, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call_target, Some(0xBEEF));
+    }
+
+    // --- Register-indirect CALL with MOV tracking ---
+
+    #[test]
+    fn test_register_indirect_call_with_mov_tracking() {
+        // mov rax, [rip+0x1000]  ; load from GOT
+        // call rax               ; indirect call
+        //
+        // REX.W MOV rax, [rip+disp32]: 48 8B 05 00 10 00 00
+        //   instruction at 0x5000, len=7, rip=0x5007
+        //   GOT addr = 0x5007 + 0x1000 = 0x6007
+        // CALL rax: FF D0
+        let code: &[u8] = &[
+            0x48, 0x8B, 0x05, 0x00, 0x10, 0x00, 0x00, // mov rax, [rip+0x1000]
+            0xFF, 0xD0, // call rax
+        ];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x6007, 0xCAFE);
+        let results = scan(code, 0x5000, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x5007); // address of the call rax
+        assert_eq!(results[0].call_target, Some(0xCAFE));
+    }
+
+    // --- Control flow clears register tracking ---
+
+    #[test]
+    fn test_conditional_branch_clears_register_tracking() {
+        // mov rax, [rip+0x1000]  ; load from GOT
+        // je +0                  ; conditional branch (clears tracking)
+        // call rax               ; should NOT resolve (tracking was cleared)
+        let code: &[u8] = &[
+            0x48, 0x8B, 0x05, 0x00, 0x10, 0x00, 0x00, // mov rax, [rip+0x1000]
+            0x74, 0x00, // je +0 (jump to next insn)
+            0xFF, 0xD0, // call rax
+        ];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x6007, 0xCAFE);
+        let results = scan(code, 0x5000, &got);
+        // The call rax should be detected but with None target
+        // (register tracking cleared by the conditional branch)
+        let call_results: Vec<_> = results.iter().filter(|r| r.address == 0x5009).collect();
+        assert_eq!(call_results.len(), 1);
+        assert!(call_results[0].call_target.is_none());
+    }
+
+    // --- Non-RIP MOV invalidates tracking ---
+
+    #[test]
+    fn test_non_rip_mov_invalidates_register() {
+        // mov rax, [rip+0x1000]  ; load from GOT
+        // mov rax, rbx           ; overwrite rax (invalidates tracking)
+        // call rax               ; should NOT resolve
+        let code: &[u8] = &[
+            0x48, 0x8B, 0x05, 0x00, 0x10, 0x00, 0x00, // mov rax, [rip+0x1000]
+            0x48, 0x89, 0xD8, // mov rax, rbx
+            0xFF, 0xD0, // call rax
+        ];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x6007, 0xCAFE);
+        let results = scan(code, 0x5000, &got);
+        let call_results: Vec<_> = results.iter().filter(|r| r.address == 0x500A).collect();
+        assert_eq!(call_results.len(), 1);
+        assert!(call_results[0].call_target.is_none());
+    }
+
+    // --- Empty input ---
+
+    #[test]
+    fn test_empty_input() {
+        let results = scan(&[], 0x1000, &ahash::AHashMap::new());
+        assert!(results.is_empty());
+    }
+
+    // --- Non-call instructions produce no results ---
+
+    #[test]
+    fn test_non_call_instructions_ignored() {
+        // NOP; NOP; RET
+        let code: &[u8] = &[0x90, 0x90, 0xC3];
+        let results = scan(code, 0x1000, &ahash::AHashMap::new());
+        assert!(results.is_empty());
+    }
+
+    // --- Multiple calls ---
+
+    #[test]
+    fn test_multiple_calls_detected() {
+        // call +5; nop; call +5
+        let code: &[u8] = &[
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call rel32
+            0x90, // nop
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call rel32
+        ];
+        let results = scan(code, 0x1000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].address, 0x1000);
+        assert_eq!(results[1].address, 0x1006);
+    }
+
+    // --- stop_addr parameter ---
+
+    #[test]
+    fn test_stop_addr_limits_decoding() {
+        // Two calls but stop_addr cuts off before the second
+        let code: &[u8] = &[
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call at 0x1000
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call at 0x1005
+        ];
+        let got = ahash::AHashMap::new();
+        // Stop before the second call
+        let results = scan_call_instructions(code, 0x1000, 0x1005, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+    }
+
+    // --- Parallel vs sequential equivalence on a real binary ---
+
+    #[test]
+    fn test_parallel_matches_sequential_on_real_binary() {
+        use std::path::PathBuf;
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let binary_path = PathBuf::from(manifest_dir).join("../target/debug/jonesy");
+
+        let Ok(buffer) = std::fs::read(&binary_path) else {
+            // Binary not built yet — skip
+            return;
+        };
+
+        let elf = match goblin::Object::parse(&buffer) {
+            Ok(goblin::Object::Elf(elf)) => elf,
+            _ => return,
+        };
+
+        // Find .text section
+        let text_sh = elf.section_headers.iter().find(|sh| {
+            elf.shdr_strtab
+                .get_at(sh.sh_name)
+                .is_some_and(|n| n == ".text")
+        });
+        let Some(text_sh) = text_sh else {
+            return;
+        };
+        let offset = text_sh.sh_offset as usize;
+        let size = text_sh.sh_size as usize;
+        if offset + size > buffer.len() {
+            return;
+        }
+        let text_data = &buffer[offset..offset + size];
+        let text_addr = text_sh.sh_addr;
+
+        // Build GOT cache
+        let got_cache = got::build_cache(&elf, &buffer);
+        let text_end = text_addr + text_data.len() as u64;
+        let sequential = scan_call_instructions(text_data, text_addr, text_end, &got_cache);
+
+        // Run parallel (forces multiple chunks by using a small chunk size)
+        // We simulate this by manually chunking with RESYNC_LOOKBACK
+        let chunk_size = text_data.len() / 4;
+        let starts: Vec<usize> = (0..text_data.len()).step_by(chunk_size).collect();
+
+        let mut parallel_results: Vec<InsnData> = Vec::new();
+        for &start in &starts {
+            let chunk_end_offset = (start + chunk_size).min(text_data.len());
+            let chunk_start_addr = text_addr + start as u64;
+            let chunk_end_addr = text_addr + chunk_end_offset as u64;
+
+            let decode_start = start.saturating_sub(RESYNC_LOOKBACK);
+            let decode_start_addr = text_addr + decode_start as u64;
+
+            let stop_addr = if chunk_end_offset >= text_data.len() {
+                text_end
+            } else {
+                chunk_end_addr
+            };
+
+            let mut found = scan_call_instructions(
+                &text_data[decode_start..],
+                decode_start_addr,
+                stop_addr,
+                &got_cache,
+            );
+            found.retain(|d| d.address >= chunk_start_addr);
+            parallel_results.extend(found);
+        }
+
+        // Compare: same count and same addresses
+        assert_eq!(
+            sequential.len(),
+            parallel_results.len(),
+            "Sequential found {} calls, chunked found {}",
+            sequential.len(),
+            parallel_results.len()
+        );
+
+        for (i, (s, p)) in sequential.iter().zip(parallel_results.iter()).enumerate() {
+            assert_eq!(
+                s.address, p.address,
+                "Mismatch at index {}: sequential addr={:#x}, parallel addr={:#x}",
+                i, s.address, p.address
+            );
+            assert_eq!(
+                s.call_target, p.call_target,
+                "Mismatch at index {} (addr {:#x}): sequential target={:?}, parallel target={:?}",
+                i, s.address, s.call_target, p.call_target
+            );
+        }
     }
 }
