@@ -44,14 +44,26 @@ struct RegisterLoad {
 /// Minimum chunk size for parallel disassembly (avoid overhead for small sections).
 const MIN_CHUNK_SIZE: usize = 256 * 1024; // 256KB
 
+/// Bytes decoded before each chunk start so the decoder resynchronises with the
+/// real instruction stream. x86_64 instructions are at most 15 bytes, and the
+/// decoder typically resynchronises within a few instructions. 256 bytes
+/// provides a generous margin.
+const RESYNC_LOOKBACK: usize = 256;
+
 /// Scan a chunk of x86_64 code for CALL and JMP instructions using iced-x86.
 ///
 /// Uses `decode_out()` to reuse a single stack-allocated `Instruction` struct,
 /// avoiding the massive heap allocations that Capstone's `disasm_all()` incurs
 /// (which allocated ~15 GB for a 213 MB binary).
+///
+/// The `stop_addr` parameter controls when to stop decoding. When used for
+/// parallel chunking, each chunk decodes until the first instruction at or
+/// past `stop_addr`, ensuring instructions that cross chunk boundaries are
+/// decoded fully and reported by exactly one chunk.
 fn scan_call_instructions(
     data: &[u8],
     base_addr: u64,
+    stop_addr: u64,
     got_cache: &ahash::AHashMap<u64, u64>,
 ) -> Vec<InsnData> {
     let mut results = Vec::new();
@@ -64,7 +76,7 @@ fn scan_call_instructions(
     // (cleared on any control flow).
     let mut register_loads: ahash::AHashMap<Register, RegisterLoad> = ahash::AHashMap::new();
 
-    while decoder.can_decode() {
+    while decoder.can_decode() && decoder.ip() < stop_addr {
         decoder.decode_out(&mut insn);
 
         if insn.is_invalid() {
@@ -178,6 +190,19 @@ fn scan_call_instructions(
 /// `Decoder` is `Send + Sync`, we can truly parallelise the disassembly across
 /// threads, unlike Capstone which required sequential processing.
 ///
+/// ## Chunk boundary handling
+///
+/// x86_64 has variable-length instructions (1-15 bytes), so splitting at
+/// arbitrary byte offsets can land mid-instruction. To handle this safely:
+///
+/// 1. Each chunk starts decoding `RESYNC_LOOKBACK` bytes early, giving the
+///    decoder enough context to resynchronise with the real instruction stream
+///    before reaching the chunk's logical start.
+/// 2. Only results at or after the chunk's logical start are retained.
+/// 3. Each chunk decodes until the first instruction at or past the chunk's
+///    logical end, so instructions crossing boundaries are decoded fully and
+///    reported by exactly one chunk.
+///
 /// Builds an indirect call cache from ELF GOT or MachO stubs.
 pub(crate) fn parallel_disassemble(
     text_data: &[u8],
@@ -192,13 +217,8 @@ pub(crate) fn parallel_disassemble(
     };
 
     let num_threads = rayon::current_num_threads();
+    let text_end = text_addr + text_data.len() as u64;
 
-    // Calculate chunk size — we cannot split at arbitrary boundaries on x86_64
-    // because instructions are variable-length. However, since we start decoding
-    // from the section start, the decoder will establish correct boundaries.
-    // For parallel chunks, we accept that a chunk boundary might land mid-instruction;
-    // the decoder will recover within a few bytes (self-synchronising property of
-    // x86_64 instruction encoding in compiler-generated code).
     let ideal_chunk_size = text_data.len() / num_threads;
     let chunk_size = if ideal_chunk_size < MIN_CHUNK_SIZE {
         text_data.len()
@@ -208,22 +228,43 @@ pub(crate) fn parallel_disassemble(
 
     if chunk_size >= text_data.len() {
         // Single chunk — sequential scanning
-        return scan_call_instructions(text_data, text_addr, &got_cache);
+        return scan_call_instructions(text_data, text_addr, text_end, &got_cache);
     }
 
-    // Scan chunks in parallel
-    let chunks: Vec<(usize, &[u8], u64)> = text_data
-        .chunks(chunk_size)
-        .enumerate()
-        .map(|(i, chunk)| {
-            let chunk_addr = text_addr + (i * chunk_size) as u64;
-            (i, chunk, chunk_addr)
-        })
-        .collect();
+    // Build chunk start offsets
+    let starts: Vec<usize> = (0..text_data.len()).step_by(chunk_size).collect();
 
-    let results: Vec<Vec<InsnData>> = chunks
+    let results: Vec<Vec<InsnData>> = starts
         .par_iter()
-        .map(|(_i, chunk, chunk_addr)| scan_call_instructions(chunk, *chunk_addr, &got_cache))
+        .map(|&start| {
+            let chunk_end_offset = (start + chunk_size).min(text_data.len());
+            let chunk_start_addr = text_addr + start as u64;
+            let chunk_end_addr = text_addr + chunk_end_offset as u64;
+
+            // Start decoding early so the decoder resynchronises before the
+            // chunk's logical start. The first chunk (start == 0) needs no
+            // lookback.
+            let decode_start = start.saturating_sub(RESYNC_LOOKBACK);
+            let decode_start_addr = text_addr + decode_start as u64;
+
+            // For the last chunk, decode to the end of the section
+            let stop_addr = if chunk_end_offset >= text_data.len() {
+                text_end
+            } else {
+                chunk_end_addr
+            };
+
+            let mut found = scan_call_instructions(
+                &text_data[decode_start..],
+                decode_start_addr,
+                stop_addr,
+                &got_cache,
+            );
+
+            // Discard results from the lookback region
+            found.retain(|d| d.address >= chunk_start_addr);
+            found
+        })
         .collect();
 
     results.into_iter().flatten().collect()
@@ -474,5 +515,297 @@ pub mod plt {
     /// Resolve a PLT stub address to the actual function address (stub)
     pub(crate) fn resolve_stub(target_addr: u64, _plt_map: &HashMap<u64, u64>) -> u64 {
         target_addr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: assemble a small code buffer and scan it
+    fn scan(code: &[u8], base: u64, got: &ahash::AHashMap<u64, u64>) -> Vec<InsnData> {
+        let stop = base + code.len() as u64;
+        scan_call_instructions(code, base, stop, got)
+    }
+
+    // --- Direct CALL rel32 ---
+
+    #[test]
+    fn test_direct_call_detected() {
+        // CALL rel32: E8 xx xx xx xx  (call +5, i.e. next instruction)
+        let code: &[u8] = &[0xE8, 0x00, 0x00, 0x00, 0x00];
+        let results = scan(code, 0x1000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+        // Target = next_insn (0x1005) + 0 = 0x1005
+        assert_eq!(results[0].call_target, Some(0x1005));
+    }
+
+    #[test]
+    fn test_direct_call_with_offset() {
+        // CALL rel32: E8 FB FF FF FF  (call -5, i.e. call self)
+        let code: &[u8] = &[0xE8, 0xFB, 0xFF, 0xFF, 0xFF];
+        let results = scan(code, 0x2000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call_target, Some(0x2000));
+    }
+
+    // --- Direct JMP rel32 (tail call) ---
+
+    #[test]
+    fn test_jmp_detected_as_tail_call() {
+        // JMP rel32: E9 00 00 00 00  (jmp +5)
+        let code: &[u8] = &[0xE9, 0x00, 0x00, 0x00, 0x00];
+        let results = scan(code, 0x3000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x3000);
+        assert_eq!(results[0].call_target, Some(0x3005));
+    }
+
+    // --- RIP-relative CALL [rip+disp32] ---
+
+    #[test]
+    fn test_rip_relative_call_with_got() {
+        // FF 15 xx xx xx xx = CALL [rip+disp32]
+        // disp32 = 0x00001000
+        // instruction at 0x4000, len=6, so rip=0x4006
+        // GOT addr = 0x4006 + 0x1000 = 0x5006
+        let code: &[u8] = &[0xFF, 0x15, 0x00, 0x10, 0x00, 0x00];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x5006, 0xDEAD);
+        let results = scan(code, 0x4000, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call_target, Some(0xDEAD));
+    }
+
+    #[test]
+    fn test_rip_relative_call_without_got_entry() {
+        // Same encoding but no GOT entry — target should be None
+        let code: &[u8] = &[0xFF, 0x15, 0x00, 0x10, 0x00, 0x00];
+        let results = scan(code, 0x4000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].call_target.is_none());
+    }
+
+    // --- GOT stub resolution for direct CALL ---
+
+    #[test]
+    fn test_direct_call_resolves_through_got_cache() {
+        // CALL rel32 to address 0x2005 which is a stub in the GOT cache
+        let code: &[u8] = &[0xE8, 0x00, 0x00, 0x00, 0x00]; // call +5 -> 0x2005
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x2005, 0xBEEF);
+        let results = scan(code, 0x2000, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call_target, Some(0xBEEF));
+    }
+
+    // --- Register-indirect CALL with MOV tracking ---
+
+    #[test]
+    fn test_register_indirect_call_with_mov_tracking() {
+        // mov rax, [rip+0x1000]  ; load from GOT
+        // call rax               ; indirect call
+        //
+        // REX.W MOV rax, [rip+disp32]: 48 8B 05 00 10 00 00
+        //   instruction at 0x5000, len=7, rip=0x5007
+        //   GOT addr = 0x5007 + 0x1000 = 0x6007
+        // CALL rax: FF D0
+        let code: &[u8] = &[
+            0x48, 0x8B, 0x05, 0x00, 0x10, 0x00, 0x00, // mov rax, [rip+0x1000]
+            0xFF, 0xD0, // call rax
+        ];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x6007, 0xCAFE);
+        let results = scan(code, 0x5000, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x5007); // address of the call rax
+        assert_eq!(results[0].call_target, Some(0xCAFE));
+    }
+
+    // --- Control flow clears register tracking ---
+
+    #[test]
+    fn test_conditional_branch_clears_register_tracking() {
+        // mov rax, [rip+0x1000]  ; load from GOT
+        // je +0                  ; conditional branch (clears tracking)
+        // call rax               ; should NOT resolve (tracking was cleared)
+        let code: &[u8] = &[
+            0x48, 0x8B, 0x05, 0x00, 0x10, 0x00, 0x00, // mov rax, [rip+0x1000]
+            0x74, 0x00, // je +0 (jump to next insn)
+            0xFF, 0xD0, // call rax
+        ];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x6007, 0xCAFE);
+        let results = scan(code, 0x5000, &got);
+        // The call rax should be detected but with None target
+        // (register tracking cleared by the conditional branch)
+        let call_results: Vec<_> = results.iter().filter(|r| r.address == 0x5009).collect();
+        assert_eq!(call_results.len(), 1);
+        assert!(call_results[0].call_target.is_none());
+    }
+
+    // --- Non-RIP MOV invalidates tracking ---
+
+    #[test]
+    fn test_non_rip_mov_invalidates_register() {
+        // mov rax, [rip+0x1000]  ; load from GOT
+        // mov rax, rbx           ; overwrite rax (invalidates tracking)
+        // call rax               ; should NOT resolve
+        let code: &[u8] = &[
+            0x48, 0x8B, 0x05, 0x00, 0x10, 0x00, 0x00, // mov rax, [rip+0x1000]
+            0x48, 0x89, 0xD8, // mov rax, rbx
+            0xFF, 0xD0, // call rax
+        ];
+        let mut got = ahash::AHashMap::new();
+        got.insert(0x6007, 0xCAFE);
+        let results = scan(code, 0x5000, &got);
+        let call_results: Vec<_> = results.iter().filter(|r| r.address == 0x500A).collect();
+        assert_eq!(call_results.len(), 1);
+        assert!(call_results[0].call_target.is_none());
+    }
+
+    // --- Empty input ---
+
+    #[test]
+    fn test_empty_input() {
+        let results = scan(&[], 0x1000, &ahash::AHashMap::new());
+        assert!(results.is_empty());
+    }
+
+    // --- Non-call instructions produce no results ---
+
+    #[test]
+    fn test_non_call_instructions_ignored() {
+        // NOP; NOP; RET
+        let code: &[u8] = &[0x90, 0x90, 0xC3];
+        let results = scan(code, 0x1000, &ahash::AHashMap::new());
+        assert!(results.is_empty());
+    }
+
+    // --- Multiple calls ---
+
+    #[test]
+    fn test_multiple_calls_detected() {
+        // call +5; nop; call +5
+        let code: &[u8] = &[
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call rel32
+            0x90, // nop
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call rel32
+        ];
+        let results = scan(code, 0x1000, &ahash::AHashMap::new());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].address, 0x1000);
+        assert_eq!(results[1].address, 0x1006);
+    }
+
+    // --- stop_addr parameter ---
+
+    #[test]
+    fn test_stop_addr_limits_decoding() {
+        // Two calls but stop_addr cuts off before the second
+        let code: &[u8] = &[
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call at 0x1000
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call at 0x1005
+        ];
+        let got = ahash::AHashMap::new();
+        // Stop before the second call
+        let results = scan_call_instructions(code, 0x1000, 0x1005, &got);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].address, 0x1000);
+    }
+
+    // --- Parallel vs sequential equivalence on a real binary ---
+
+    #[test]
+    fn test_parallel_matches_sequential_on_real_binary() {
+        use std::path::PathBuf;
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let binary_path = PathBuf::from(manifest_dir).join("../target/debug/jonesy");
+
+        let Ok(buffer) = std::fs::read(&binary_path) else {
+            // Binary not built yet — skip
+            return;
+        };
+
+        let elf = match goblin::Object::parse(&buffer) {
+            Ok(goblin::Object::Elf(elf)) => elf,
+            _ => return,
+        };
+
+        // Find .text section
+        let text_sh = elf.section_headers.iter().find(|sh| {
+            elf.shdr_strtab
+                .get_at(sh.sh_name)
+                .is_some_and(|n| n == ".text")
+        });
+        let Some(text_sh) = text_sh else {
+            return;
+        };
+        let offset = text_sh.sh_offset as usize;
+        let size = text_sh.sh_size as usize;
+        if offset + size > buffer.len() {
+            return;
+        }
+        let text_data = &buffer[offset..offset + size];
+        let text_addr = text_sh.sh_addr;
+
+        // Build GOT cache
+        let got_cache = got::build_cache(&elf, &buffer);
+        let text_end = text_addr + text_data.len() as u64;
+        let sequential = scan_call_instructions(text_data, text_addr, text_end, &got_cache);
+
+        // Run parallel (forces multiple chunks by using a small chunk size)
+        // We simulate this by manually chunking with RESYNC_LOOKBACK
+        let chunk_size = text_data.len() / 4;
+        let starts: Vec<usize> = (0..text_data.len()).step_by(chunk_size).collect();
+
+        let mut parallel_results: Vec<InsnData> = Vec::new();
+        for &start in &starts {
+            let chunk_end_offset = (start + chunk_size).min(text_data.len());
+            let chunk_start_addr = text_addr + start as u64;
+            let chunk_end_addr = text_addr + chunk_end_offset as u64;
+
+            let decode_start = start.saturating_sub(RESYNC_LOOKBACK);
+            let decode_start_addr = text_addr + decode_start as u64;
+
+            let stop_addr = if chunk_end_offset >= text_data.len() {
+                text_end
+            } else {
+                chunk_end_addr
+            };
+
+            let mut found = scan_call_instructions(
+                &text_data[decode_start..],
+                decode_start_addr,
+                stop_addr,
+                &got_cache,
+            );
+            found.retain(|d| d.address >= chunk_start_addr);
+            parallel_results.extend(found);
+        }
+
+        // Compare: same count and same addresses
+        assert_eq!(
+            sequential.len(),
+            parallel_results.len(),
+            "Sequential found {} calls, chunked found {}",
+            sequential.len(),
+            parallel_results.len()
+        );
+
+        for (i, (s, p)) in sequential.iter().zip(parallel_results.iter()).enumerate() {
+            assert_eq!(
+                s.address, p.address,
+                "Mismatch at index {}: sequential addr={:#x}, parallel addr={:#x}",
+                i, s.address, p.address
+            );
+            assert_eq!(
+                s.call_target, p.call_target,
+                "Mismatch at index {} (addr {:#x}): sequential target={:?}, parallel target={:?}",
+                i, s.address, s.call_target, p.call_target
+            );
+        }
     }
 }
