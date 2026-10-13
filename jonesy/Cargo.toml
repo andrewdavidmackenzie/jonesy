@@ -19,7 +19,7 @@ goblin = "0.10.4"
 gimli = "0.32.3"
 iced-x86 = "1.21"
 rustc-demangle = "0.1"
-capstone = "0.12"
+
 ouroboros = "0.18"
 regex = "1"
 cargo_toml = "0.22"
