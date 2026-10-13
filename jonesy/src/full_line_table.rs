@@ -7,17 +7,18 @@ use gimli::{ColumnType, Dwarf, Reader};
 use rayon::prelude::*;
 
 /// Source location tuple: (file, line, column)
-type SourceLocation = (Option<String>, Option<u32>, Option<u32>);
+type SourceLocation = (Option<String>, u16, u16);
 
 /// A line entry for full source location lookups.
 /// Uses file_id for string interning to reduce memory pressure.
+/// Uses `u16` for line/column with 0 meaning absent (saves space vs `Option<u16>`).
 #[derive(Debug, Clone)]
 pub struct FullLineEntry {
     pub address: u64,
     /// Index into FullLineTable's file_pool for the file path
     file_id: u32,
-    pub line: u32,
-    pub column: Option<u32>,
+    pub line: u16,
+    pub column: u16,
 }
 
 /// Pre-built line table containing ALL line entries, sorted by address.
@@ -48,9 +49,9 @@ impl FullLineTable {
             let entry = &self.entries[first_idx];
             // Look up file path from the interned pool
             let file = self.file_pool.get(entry.file_id as usize).cloned();
-            (file, Some(entry.line), entry.column)
+            (file, entry.line, entry.column)
         } else {
-            (None, None, None)
+            (None, 0, 0)
         }
     }
 
@@ -74,13 +75,13 @@ impl FullLineTable {
         addr: u64,
         func_start: u64,
         func_end: u64,
-        func_start_line: Option<u32>,
+        func_start_line: u16,
         project_context: &ProjectContext,
-    ) -> (Option<u32>, Option<u32>) {
+    ) -> (u16, u16) {
         // Find entries up to and including addr
         let end_idx = self.entries.partition_point(|e| e.address <= addr);
         if end_idx == 0 {
-            return (None, None);
+            return (0, 0);
         }
 
         // Search backward from the call site for the nearest crate-source entry
@@ -93,10 +94,10 @@ impl FullLineTable {
                 if project_context.is_crate_source(file) && entry.line > 0 {
                     // Found a crate entry, but if it's just the function start,
                     // try searching forward for a better line
-                    if func_start_line.is_some_and(|fl| entry.line == fl) {
+                    if func_start_line > 0 && entry.line == func_start_line {
                         break; // Fall through to forward search
                     }
-                    return (Some(entry.line), entry.column);
+                    return (entry.line, entry.column);
                 }
             }
         }
@@ -114,17 +115,15 @@ impl FullLineTable {
                 if project_context.is_crate_source(file) && entry.line > 0 {
                     // Found the next crate entry (e.g., closing brace).
                     // The call is on the line before the epilogue.
-                    if let Some(func_line) = func_start_line {
-                        if entry.line > func_line + 1 {
-                            return (Some(entry.line - 1), None);
-                        }
+                    if func_start_line > 0 && entry.line > func_start_line + 1 {
+                        return (entry.line - 1, 0);
                     }
-                    return (Some(entry.line), entry.column);
+                    return (entry.line, entry.column);
                 }
             }
         }
 
-        (None, None)
+        (0, 0)
     }
 
     /// Get the number of entries
@@ -203,7 +202,7 @@ impl FullLineTable {
                 // switches from crate source to stdlib source. We emit a synthetic crate
                 // entry at the transition address so get_line() resolves to the call site
                 // rather than falling back to the function start.
-                let mut last_crate_line: Option<(u32, Option<u32>)> = None;
+                let mut last_crate_line: Option<(u16, u16)> = None;
                 let mut last_was_crate = false;
 
                 while let Some((_header, row)) = rows.next_row()? {
@@ -216,10 +215,10 @@ impl FullLineTable {
                     let is_crate_match = header_is_crate[file_idx];
 
                     // Add to full line table (all entries)
-                    let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
-                    let column = match row.column() {
-                        ColumnType::LeftEdge => None,
-                        ColumnType::Column(c) => Some(c.get() as u32),
+                    let line = row.line().map(|l| l.get() as u16).unwrap_or(0);
+                    let column: u16 = match row.column() {
+                        ColumnType::LeftEdge => 0,
+                        ColumnType::Column(c) => c.get() as u16,
                     };
                     full_entries.push(FullLineEntry {
                         address: row.address(),

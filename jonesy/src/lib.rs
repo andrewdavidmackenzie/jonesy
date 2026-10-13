@@ -92,10 +92,11 @@ mod struct_size_tests {
 
         // Assert key struct sizes don't regress
         // FunctionInfo is deliberately compact (Copy, cache-friendly)
-        assert_eq!(
-            mem::size_of::<FunctionInfo>(),
-            32,
-            "FunctionInfo should stay at 32 bytes (uses interned indices)"
+        // With u16 line field: 8+8+4+4+2 = 26 bytes, padded to 28 (4-byte alignment from u32 fields)
+        assert!(
+            mem::size_of::<FunctionInfo>() <= 32,
+            "FunctionInfo should be <= 32 bytes (uses interned indices, u16 line), got {}",
+            mem::size_of::<FunctionInfo>()
         );
 
         // CallerInfo is compact (64 bytes, 64-byte aligned for cache-line packing)
@@ -111,14 +112,16 @@ mod struct_size_tests {
         );
 
         // Line table entries should be compact since there are millions of them
+        // With u16 line/column: CrateLineEntry = 8+2+2 = 12 bytes
+        // FullLineEntry = 8+4+2+2 = 16 bytes
         assert!(
-            mem::size_of::<CrateLineEntry>() <= 24,
-            "CrateLineEntry should be <= 24 bytes, got {}",
+            mem::size_of::<CrateLineEntry>() <= 16,
+            "CrateLineEntry should be <= 16 bytes, got {}",
             mem::size_of::<CrateLineEntry>()
         );
         assert!(
-            mem::size_of::<FullLineEntry>() <= 24,
-            "FullLineEntry should be <= 24 bytes, got {}",
+            mem::size_of::<FullLineEntry>() <= 16,
+            "FullLineEntry should be <= 16 bytes, got {}",
             mem::size_of::<FullLineEntry>()
         );
     }

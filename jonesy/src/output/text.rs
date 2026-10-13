@@ -197,7 +197,7 @@ fn write_flat_point<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output (works with GitHub problem matchers)
     let display_path = get_relative_path(&point.file, project_root);
-    let column = point.column.unwrap_or(1);
+    let column = if point.column == 0 { 1 } else { point.column };
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
     // Consider point a leaf if it has no children or we're not showing children
@@ -249,7 +249,7 @@ fn write_flat_child<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output
     let display_path = get_relative_path(&point.file, project_root);
-    let column = point.column.unwrap_or(1);
+    let column = if point.column == 0 { 1 } else { point.column };
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
     let is_leaf = point.children.is_empty() || !include_children;
@@ -310,7 +310,7 @@ fn write_file_entry<W: Write>(
 
     let absolute_path = make_absolute(&point.file, project_root);
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = point.column.unwrap_or(1);
+    let column = if point.column == 0 { 1 } else { point.column };
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
@@ -418,7 +418,7 @@ fn write_crate_point<W: Write>(
     };
 
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = point.column.unwrap_or(1);
+    let column = if point.column == 0 { 1 } else { point.column };
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
@@ -566,14 +566,14 @@ mod tests {
     fn make_test_point(
         name: &str,
         file: &str,
-        line: u32,
+        line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
             name: name.to_string(),
             file: file.to_string(),
             line,
-            column: Some(5),
+            column: 5,
             causes: causes.into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -762,7 +762,7 @@ mod tests {
             name: "child_func".to_string(),
             file: "src/lib.rs".to_string(),
             line: 20,
-            column: Some(1),
+            column: 1,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -772,7 +772,7 @@ mod tests {
             name: "parent_func".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
@@ -814,7 +814,7 @@ mod tests {
             name: "test".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes,
             children: vec![],
             is_direct_panic: true,
@@ -867,7 +867,7 @@ mod tests {
             name: "caller".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
@@ -889,7 +889,7 @@ mod tests {
             name: "child_func".to_string(),
             file: "src/child.rs".to_string(),
             line: 5,
-            column: Some(1),
+            column: 1,
             causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -899,7 +899,7 @@ mod tests {
             name: "parent_func".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
@@ -928,7 +928,7 @@ mod tests {
             name: "child_func".to_string(),
             file: "src/child.rs".to_string(),
             line: 5,
-            column: Some(1),
+            column: 1,
             causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -938,7 +938,7 @@ mod tests {
             name: "parent_func".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
@@ -964,7 +964,7 @@ mod tests {
             name: "grandchild".to_string(),
             file: "src/deep.rs".to_string(),
             line: 1,
-            column: Some(1),
+            column: 1,
             causes: vec![PanicCause::Todo].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -974,7 +974,7 @@ mod tests {
             name: "child".to_string(),
             file: "src/middle.rs".to_string(),
             line: 5,
-            column: Some(1),
+            column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![grandchild],
             is_direct_panic: false,
@@ -984,7 +984,7 @@ mod tests {
             name: "parent".to_string(),
             file: "src/top.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![child],
             is_direct_panic: false,

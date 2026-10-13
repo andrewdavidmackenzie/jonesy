@@ -21,9 +21,9 @@ use std::path::Path;
 /// Also checks the previous line (for comments above the code).
 #[cfg(test)]
 fn is_allowed_by_inline(
-    allows: &std::collections::HashMap<(String, u32), HashSet<String>>,
+    allows: &std::collections::HashMap<(String, u16), HashSet<String>>,
     file_path: &str,
-    line: u32,
+    line: u16,
     cause_id: &str,
 ) -> bool {
     let key = (file_path.to_string(), line);
@@ -48,11 +48,11 @@ fn is_allowed_by_inline(
 
 /// Parse inline allow comments from source content (test helper).
 #[cfg(test)]
-fn parse_file_allows(content: &str) -> std::collections::HashMap<u32, HashSet<String>> {
-    let mut allows: std::collections::HashMap<u32, HashSet<String>> =
+fn parse_file_allows(content: &str) -> std::collections::HashMap<u16, HashSet<String>> {
+    let mut allows: std::collections::HashMap<u16, HashSet<String>> =
         std::collections::HashMap::new();
     for (idx, line) in content.lines().enumerate() {
-        let line_num = (idx + 1) as u32;
+        let line_num = (idx + 1) as u16;
         if let Some(causes) = parse_line_allows(line) {
             allows.insert(line_num, causes);
         }
@@ -70,7 +70,7 @@ fn parse_file_allows(content: &str) -> std::collections::HashMap<u32, HashSet<St
 /// relative paths. If not provided, falls back to current directory.
 pub fn check_inline_allow(
     file_path: &str,
-    line: u32,
+    line: u16,
     cause_id: &str,
     workspace_root: Option<&Path>,
 ) -> bool {
@@ -215,14 +215,14 @@ fn parse_line_allows(line: &str) -> Option<HashSet<String>> {
 /// were detected BEFORE allow filtering (i.e., the raw detections).
 pub fn find_unused_inline_allows(
     root: &Path,
-    reported_locations: &HashSet<(String, u32)>,
-) -> Vec<(String, u32, String)> {
+    reported_locations: &HashSet<(String, u16)>,
+) -> Vec<(String, u16, String)> {
     let mut unused = Vec::new();
 
     fn visit_rs_files(
         dir: &Path,
-        unused: &mut Vec<(String, u32, String)>,
-        reported: &HashSet<(String, u32)>,
+        unused: &mut Vec<(String, u16, String)>,
+        reported: &HashSet<(String, u16)>,
     ) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
@@ -238,7 +238,7 @@ pub fn find_unused_inline_allows(
                     let file_str = path.to_string_lossy().to_string();
                     for (idx, line) in content.lines().enumerate() {
                         if let Some(causes) = parse_line_allows(line) {
-                            let comment_line = (idx + 1) as u32;
+                            let comment_line = (idx + 1) as u16;
                             let causes_str = causes.iter().cloned().collect::<Vec<_>>().join(", ");
                             // An allow comment is "used" if a panic was reported on the
                             // same line or the line immediately after
