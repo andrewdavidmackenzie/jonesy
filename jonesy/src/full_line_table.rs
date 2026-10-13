@@ -265,7 +265,7 @@ impl FullLineTable {
         // same address, which matters for get_source_location (returns the first
         // entry from the earliest compilation unit).
         crate_entries.par_sort_unstable_by_key(|e| e.address);
-        full_entries.sort_by_key(|e| e.address);
+        full_entries.par_sort_by_key(|e| e.address);
 
         Ok((
             CrateLineTable::from_entries(crate_entries),
