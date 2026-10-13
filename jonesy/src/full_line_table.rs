@@ -140,6 +140,11 @@ impl FullLineTable {
     /// Build both CrateLineTable and FullLineTable in a single pass over DWARF.
     /// This is more efficient than building each separately since we only iterate
     /// the line program once.
+    ///
+    /// File paths are pre-resolved from the line program header (typically hundreds
+    /// of entries per compilation unit) and cached in a Vec indexed by DWARF file
+    /// index. This avoids calling `resolve_line_file_path` per row (millions of
+    /// times), eliminating ~1.15 GB of transient string allocations.
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
         project_context: &ProjectContext,
@@ -154,8 +159,46 @@ impl FullLineTable {
             let unit = dwarf.unit(header)?;
 
             if let Some(program) = &unit.line_program {
+                // Pre-resolve all file paths from the line program header.
+                // The header contains one entry per unique source file
+                // (typically tens to hundreds), compared to millions of row
+                // iterations. This turns O(rows * path_alloc) into
+                // O(files * path_alloc + rows * lookup).
+                let prog_header = program.header();
+                let mut header_file_ids: Vec<u32> = Vec::new();
+                let mut header_is_crate: Vec<bool> = Vec::new();
+
+                // Index 0 is reserved in DWARF file tables
+                header_file_ids.push(0);
+                header_is_crate.push(false);
+
+                for file_entry in prog_header.file_names() {
+                    let full_path = resolve_line_file_path(
+                        dwarf,
+                        &unit,
+                        file_entry,
+                        prog_header,
+                        project_context.project_root(),
+                    )?;
+
+                    let is_crate_match = project_context.is_crate_source(&full_path);
+
+                    // Intern the file path
+                    let file_id = if let Some(&id) = file_to_id.get(&full_path) {
+                        id
+                    } else {
+                        let id = file_pool.len() as u32;
+                        file_pool.push(full_path.clone());
+                        file_to_id.insert(full_path, id);
+                        id
+                    };
+
+                    header_file_ids.push(file_id);
+                    header_is_crate.push(is_crate_match);
+                }
+
                 let mut rows = program.clone().rows();
-                // Track last crate entry to carry forward at crate→stdlib transitions.
+                // Track last crate entry to carry forward at crate->stdlib transitions.
                 // When inlined stdlib code (e.g., unwrap) appears, the DWARF line table
                 // switches from crate source to stdlib source. We emit a synthetic crate
                 // entry at the transition address so get_line() resolves to the call site
@@ -163,65 +206,50 @@ impl FullLineTable {
                 let mut last_crate_line: Option<(u32, Option<u32>)> = None;
                 let mut last_was_crate = false;
 
-                while let Some((header, row)) = rows.next_row()? {
-                    if let Some(file_entry) = row.file(header) {
-                        let full_path = resolve_line_file_path(
-                            dwarf,
-                            &unit,
-                            file_entry,
-                            header,
-                            project_context.project_root(),
-                        )?;
+                while let Some((_header, row)) = rows.next_row()? {
+                    let file_idx = row.file_index() as usize;
+                    if file_idx >= header_file_ids.len() {
+                        continue;
+                    }
 
-                        // Check crate match before interning (needs &full_path)
-                        let is_crate_match = project_context.is_crate_source(&full_path);
+                    let file_id = header_file_ids[file_idx];
+                    let is_crate_match = header_is_crate[file_idx];
 
-                        // Intern the file path (avoid double clone on cache miss)
-                        let file_id = if let Some(&id) = file_to_id.get(&full_path) {
-                            id
-                        } else {
-                            let id = file_pool.len() as u32;
-                            file_pool.push(full_path.clone());
-                            file_to_id.insert(full_path, id);
-                            id
-                        };
+                    // Add to full line table (all entries)
+                    let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
+                    let column = match row.column() {
+                        ColumnType::LeftEdge => None,
+                        ColumnType::Column(c) => Some(c.get() as u32),
+                    };
+                    full_entries.push(FullLineEntry {
+                        address: row.address(),
+                        file_id,
+                        line,
+                        column,
+                    });
 
-                        // Add to full line table (all entries)
-                        let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
-                        let column = match row.column() {
-                            ColumnType::LeftEdge => None,
-                            ColumnType::Column(c) => Some(c.get() as u32),
-                        };
-                        full_entries.push(FullLineEntry {
+                    // Add to crate line table if matches pattern and has line
+                    if is_crate_match && line > 0 {
+                        crate_entries.push(CrateLineEntry {
                             address: row.address(),
-                            file_id,
                             line,
                             column,
                         });
-
-                        // Add to crate line table if matches pattern and has line
-                        if is_crate_match && line > 0 {
-                            crate_entries.push(CrateLineEntry {
-                                address: row.address(),
-                                line,
-                                column,
-                            });
-                            last_crate_line = Some((line, column));
-                            last_was_crate = true;
-                        } else {
-                            // Transition from crate to non-crate (stdlib): emit synthetic
-                            // crate entry at this address with the last crate line info
-                            if last_was_crate {
-                                if let Some((prev_line, prev_col)) = last_crate_line {
-                                    crate_entries.push(CrateLineEntry {
-                                        address: row.address(),
-                                        line: prev_line,
-                                        column: prev_col,
-                                    });
-                                }
+                        last_crate_line = Some((line, column));
+                        last_was_crate = true;
+                    } else {
+                        // Transition from crate to non-crate (stdlib): emit synthetic
+                        // crate entry at this address with the last crate line info
+                        if last_was_crate {
+                            if let Some((prev_line, prev_col)) = last_crate_line {
+                                crate_entries.push(CrateLineEntry {
+                                    address: row.address(),
+                                    line: prev_line,
+                                    column: prev_col,
+                                });
                             }
-                            last_was_crate = false;
                         }
+                        last_was_crate = false;
                     }
                 }
             }
