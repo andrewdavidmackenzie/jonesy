@@ -12,9 +12,10 @@ clippy:
 build:
 	CARGO_INCREMENTAL=0 cargo build
 
-# Build the nested workspace_test example separately since it has its own workspace
+# Build the nested workspace_test example separately since it has its own workspace.
+# CARGO_INCREMENTAL=0 ensures deterministic codegen matching CI (fresh builds).
 build-examples: build
-	cargo build --manifest-path examples/workspace_test/Cargo.toml
+	CARGO_INCREMENTAL=0 cargo build --manifest-path examples/workspace_test/Cargo.toml
 
 test: build-examples
 	@# Remove stale dSYM bundles so jonesy regenerates them from the freshly built binaries

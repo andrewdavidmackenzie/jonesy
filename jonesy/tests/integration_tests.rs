@@ -655,13 +655,14 @@ fn test_workspace_test_example() {
     let workspace_root = find_workspace_root();
     let workspace_test_dir = workspace_root.join("examples").join("workspace_test");
 
-    // Build the nested workspace without coverage instrumentation
+    // Build the nested workspace without coverage instrumentation.
+    // CARGO_INCREMENTAL=0 ensures deterministic codegen matching CI fresh builds.
     let status = Command::new("cargo")
         .arg("build")
         .current_dir(&workspace_test_dir)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("CARGO_INCREMENTAL")
+        .env("CARGO_INCREMENTAL", "0")
         .status()
         .expect("Failed to build workspace_test");
     assert!(status.success(), "Failed to build workspace_test");
