@@ -25,6 +25,9 @@ use std::sync::Arc;
 /// lines are shared without cloning the entire vector on each access.
 pub type SourceFileCache = HashMap<String, Option<Arc<Vec<String>>>>;
 
+/// Thread-safe version of `SourceFileCache` for use in parallel tree walks.
+pub type ConcurrentSourceFileCache = dashmap::DashMap<String, Option<Arc<Vec<String>>>>;
+
 /// Check if a cause is allowed at a specific file:line by inline comment.
 /// Also checks the previous line (for comments above the code).
 #[cfg(test)]
@@ -127,6 +130,75 @@ pub fn check_inline_allow(
     }
 
     false
+}
+
+/// Thread-safe version of `check_inline_allow` for use in parallel tree walks.
+/// Uses `ConcurrentSourceFileCache` (DashMap) instead of `&mut SourceFileCache`.
+pub fn check_inline_allow_concurrent(
+    file_path: &str,
+    line: u16,
+    cause_id: &str,
+    workspace_root: Option<&Path>,
+    cache: &ConcurrentSourceFileCache,
+) -> bool {
+    if line == 0 {
+        return false;
+    }
+
+    let lines_arc = concurrent_read_source_lines(file_path, workspace_root, cache);
+
+    let lines = match lines_arc {
+        Some(ref l) => l.as_slice(),
+        None => return false,
+    };
+
+    check_inline_allow_in_lines(lines, line, cause_id)
+}
+
+/// Check inline allows against pre-loaded lines. Shared by both sequential
+/// and concurrent versions.
+fn check_inline_allow_in_lines(lines: &[String], line: u16, cause_id: &str) -> bool {
+    for check_line in [line.saturating_sub(1), line] {
+        if let Some(line_content) = lines.get((check_line as usize).saturating_sub(1)) {
+            let line_content: &str = line_content;
+            if let Some(causes) = parse_line_allows(line_content) {
+                if causes.contains("*") || causes.contains(cause_id) {
+                    return true;
+                }
+                for c in &causes {
+                    if let Some(canonical) = crate::panic_cause::PanicCause::normalise_id(c) {
+                        if canonical == cause_id {
+                            return true;
+                        }
+                        if canonical == "overflow"
+                            && matches!(
+                                cause_id,
+                                "overflow" | "div_overflow" | "rem_overflow" | "shift_overflow"
+                            )
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Read a source file using a concurrent (DashMap) cache.
+fn concurrent_read_source_lines(
+    file_path: &str,
+    workspace_root: Option<&Path>,
+    cache: &ConcurrentSourceFileCache,
+) -> Option<Arc<Vec<String>>> {
+    if let Some(cached) = cache.get(file_path) {
+        return cached.clone();
+    }
+    let lines = read_source_file_with_root(file_path, workspace_root)
+        .map(|content| Arc::new(content.lines().map(String::from).collect()));
+    cache.insert(file_path.to_string(), lines.clone());
+    lines
 }
 
 /// Read a source file as pre-split lines, with caching support.

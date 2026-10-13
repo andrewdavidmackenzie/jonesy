@@ -9,7 +9,7 @@ use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
 use crate::project_context::ProjectContext;
 use crate::sym::CallGraph;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use rayon::prelude::*;
 use rustc_demangle::demangle;
 use std::collections::{HashMap, HashSet};
@@ -279,20 +279,23 @@ pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
     project_context: &ProjectContext,
 ) -> Vec<CrateCodePoint> {
-    let mut points: CodePointMap = CodePointMap::new();
+    let points: DashMap<CodePointKey, CodePointInfo> = DashMap::new();
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
-    let mut source_cache = crate::inline_allows::SourceFileCache::new();
+    let source_cache = crate::inline_allows::ConcurrentSourceFileCache::new();
 
-    collect_crate_relationships(
+    collect_crate_relationships_parallel(
         node,
-        &mut points,
+        &points,
         None,
         None,
         None,
         project_context,
         workspace_root,
-        &mut source_cache,
+        &source_cache,
     );
+
+    // Convert DashMap to HashMap for the subtree builder
+    let points: CodePointMap = points.into_iter().collect();
 
     // All crate code points should be reported as roots.
     // Each point that can lead to a panic deserves its own entry,
@@ -490,6 +493,128 @@ pub fn collect_crate_relationships(
             workspace_root,
             source_cache,
         );
+    }
+}
+
+/// Parallel version of `collect_crate_relationships` that uses `DashMap` for
+/// concurrent code point collection and `par_iter` at each recursion level.
+///
+/// Each branch of the call tree carries its own cause/child context, while
+/// the shared `DashMap` accumulates code points from all branches. Causes
+/// are stored in `HashSet`s so concurrent insertions from different paths
+/// are safe (duplicates are ignored).
+#[allow(clippy::too_many_arguments)]
+fn collect_crate_relationships_parallel(
+    node: &CallTreeNode,
+    points: &DashMap<CodePointKey, CodePointInfo>,
+    child_crate_key: Option<CodePointKey>,
+    current_cause: Option<PanicCause>,
+    immediate_callee: Option<&str>,
+    project_context: &ProjectContext,
+    workspace_root: Option<&std::path::Path>,
+    source_cache: &crate::inline_allows::ConcurrentSourceFileCache,
+) {
+    // Try to detect panic cause from this node's function name
+    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
+
+    // Check if file matches any of the patterns
+    let file_matches = node
+        .file
+        .as_ref()
+        .is_some_and(|file| project_context.is_crate_source(file));
+
+    let node_key = if let Some(file) = &node.file
+        && file_matches
+        && node.line > 0
+    {
+        Some((file.clone(), node.line))
+    } else {
+        None
+    };
+
+    if let Some(key) = &node_key {
+        let is_direct = immediate_callee
+            .map(is_panic_triggering_function)
+            .unwrap_or(false);
+
+        let called_fn = if !is_direct {
+            immediate_callee.map(extract_qualified_function_name)
+        } else {
+            None
+        };
+
+        let mut entry = points.entry(key.clone()).or_insert_with(|| {
+            (
+                node.name.clone(),
+                node.column,
+                HashSet::new(),
+                HashSet::new(),
+                is_direct,
+                called_fn.clone(),
+            )
+        });
+
+        if is_direct {
+            entry.4 = true;
+            entry.5 = None;
+        } else if entry.5.is_none() && called_fn.is_some() {
+            entry.5 = called_fn;
+        }
+
+        if let Some(cause) = &detected_cause {
+            entry.2.insert(cause.clone());
+        }
+
+        if let Some(child_key) = &child_crate_key {
+            entry.3.insert(child_key.clone());
+        }
+    }
+
+    let propagated_cause = if let (Some(key), Some(cause)) = (&node_key, &detected_cause) {
+        let cause_id = cause.id();
+        if crate::inline_allows::check_inline_allow_concurrent(
+            &key.0,
+            key.1,
+            cause_id,
+            workspace_root,
+            source_cache,
+        ) {
+            None
+        } else {
+            detected_cause.clone()
+        }
+    } else {
+        detected_cause.clone()
+    };
+
+    let next_child = node_key.or(child_crate_key);
+
+    if node.callers.len() >= 4 {
+        node.callers.par_iter().for_each(|caller| {
+            collect_crate_relationships_parallel(
+                caller,
+                points,
+                next_child.clone(),
+                propagated_cause.clone(),
+                Some(&node.name),
+                project_context,
+                workspace_root,
+                source_cache,
+            );
+        });
+    } else {
+        for caller in &node.callers {
+            collect_crate_relationships_parallel(
+                caller,
+                points,
+                next_child.clone(),
+                propagated_cause.clone(),
+                Some(&node.name),
+                project_context,
+                workspace_root,
+                source_cache,
+            );
+        }
     }
 }
 
