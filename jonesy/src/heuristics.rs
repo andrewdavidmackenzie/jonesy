@@ -68,44 +68,32 @@ const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::"];
 
 /// Find panic and abort entry point addresses in the binary's symbol table.
 /// Returns `(mangled_name, demangled_name, address)` for each entry point.
-///
-/// Uses a single pass over all symbols to avoid demangling every symbol
-/// multiple times. Previously, separate calls to `find_symbol_containing`
-/// and `find_all_symbols_with_addresses` each iterated all symbols and
-/// demangled each one (4 passes total, ~58 MB of transient allocations).
 pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
-    // Combine all patterns into a single pass over the symbol table.
-    // This demangles each symbol once instead of 4 times.
-    //
-    // PANIC_SYMBOLS (rust_panic$, rust_begin_unwind$) are first-match-only
-    // patterns — we only want one entry point per pattern, matching the
-    // original find_symbol_containing semantics.
-    //
-    // BINARY_PANIC_PREFIXES and ABORT_SYMBOL are all-match patterns —
-    // we want every monomorphised instance.
-    let all_patterns: Vec<&str> = PANIC_SYMBOLS
+    let mut entry_points = Vec::new();
+    let mut seen_addrs = std::collections::HashSet::new();
+
+    // Find panic entry points (rust_panic and rust_begin_unwind)
+    for pattern in PANIC_SYMBOLS {
+        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
+            && let Some(addr) = symbols.find_symbol_address(&sym)
+            && seen_addrs.insert(addr)
+        {
+            entry_points.push((sym, dem, addr));
+        }
+    }
+
+    // Find core::panicking:: functions and abort entry points in a single pass.
+    // These two calls were previously separate, each iterating all symbols and
+    // demangling every one. Combining them into one pass saves ~30 MB of
+    // transient allocations.
+    let all_patterns: Vec<&str> = BINARY_PANIC_PREFIXES
         .iter()
         .copied()
-        .chain(BINARY_PANIC_PREFIXES.iter().copied())
         .chain(std::iter::once(ABORT_SYMBOL))
         .collect();
 
-    let first_match_count = PANIC_SYMBOLS.len();
-
-    let mut entry_points = Vec::new();
-    let mut seen_addrs = std::collections::HashSet::new();
-    // Track which first-match patterns have already been satisfied
-    let mut first_match_found = vec![false; first_match_count];
-
-    if let Ok(matches) = symbols.find_all_matching_in_single_pass(&all_patterns) {
-        for (sym, dem, addr, pattern_idx) in matches {
-            // For first-match patterns (PANIC_SYMBOLS), only take the first hit
-            if pattern_idx < first_match_count {
-                if first_match_found[pattern_idx] {
-                    continue;
-                }
-                first_match_found[pattern_idx] = true;
-            }
+    if let Ok(matches) = symbols.find_all_symbols_with_addresses(&all_patterns) {
+        for (sym, dem, addr) in matches {
             if seen_addrs.insert(addr) {
                 entry_points.push((sym, dem, addr));
             }
