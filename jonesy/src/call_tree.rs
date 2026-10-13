@@ -281,6 +281,7 @@ pub fn collect_crate_code_points_hierarchical(
 ) -> Vec<CrateCodePoint> {
     let mut points: CodePointMap = CodePointMap::new();
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
+    let mut source_cache = crate::inline_allows::SourceFileCache::new();
 
     collect_crate_relationships(
         node,
@@ -290,6 +291,7 @@ pub fn collect_crate_code_points_hierarchical(
         None,
         project_context,
         workspace_root,
+        &mut source_cache,
     );
 
     // All crate code points should be reported as roots.
@@ -378,6 +380,7 @@ pub fn collect_crate_code_points_hierarchical(
 /// Also detects panic causes from function names in the call path.
 /// Tracks `immediate_callee` to determine if panic is direct (calling unwrap/expect directly)
 /// or indirect (calling a function that eventually panics).
+#[allow(clippy::too_many_arguments)]
 pub fn collect_crate_relationships(
     node: &CallTreeNode,
     points: &mut CodePointMap,
@@ -386,6 +389,7 @@ pub fn collect_crate_relationships(
     immediate_callee: Option<&str>,
     project_context: &ProjectContext,
     workspace_root: Option<&std::path::Path>,
+    source_cache: &mut crate::inline_allows::SourceFileCache,
 ) {
     // Try to detect panic cause from this node's function name
     let detected_cause = detect_panic_cause(&node.name).or(current_cause);
@@ -458,7 +462,13 @@ pub fn collect_crate_relationships(
     // covers the entire call subtree within the same crate.
     let propagated_cause = if let (Some(key), Some(cause)) = (&node_key, &detected_cause) {
         let cause_id = cause.id();
-        if crate::inline_allows::check_inline_allow(&key.0, key.1, cause_id, workspace_root) {
+        if crate::inline_allows::check_inline_allow(
+            &key.0,
+            key.1,
+            cause_id,
+            workspace_root,
+            Some(source_cache),
+        ) {
             None
         } else {
             detected_cause.clone()
@@ -478,6 +488,7 @@ pub fn collect_crate_relationships(
             Some(&node.name),
             project_context,
             workspace_root,
+            source_cache,
         );
     }
 }
@@ -543,6 +554,18 @@ pub fn filter_allowed_causes(
     config: &Config,
     project_context: &ProjectContext,
 ) {
+    let mut cache = crate::inline_allows::SourceFileCache::new();
+    filter_allowed_causes_cached(points, config, project_context, &mut cache);
+}
+
+/// Inner implementation of `filter_allowed_causes` that threads a source file cache
+/// to avoid redundant disk reads during recursive filtering.
+fn filter_allowed_causes_cached(
+    points: &mut Vec<CrateCodePoint>,
+    config: &Config,
+    project_context: &ProjectContext,
+    cache: &mut crate::inline_allows::SourceFileCache,
+) {
     use crate::inline_allows::check_inline_allow;
 
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
@@ -551,7 +574,13 @@ pub fn filter_allowed_causes(
         point.causes.retain(|cause| {
             let cause_id = cause.id();
 
-            if check_inline_allow(&point.file, point.line, cause_id, workspace_root) {
+            if check_inline_allow(
+                &point.file,
+                point.line,
+                cause_id,
+                workspace_root,
+                Some(cache),
+            ) {
                 return false;
             }
 
@@ -559,13 +588,14 @@ pub fn filter_allowed_causes(
             // - Safe arithmetic methods like checked_add, saturating_mul (issue #267)
             // - Const-only expressions that are provably safe (issue #266)
             if cause.is_debug_only() {
-                if let Some(source_content) =
-                    crate::inline_allows::read_source_file(&point.file, workspace_root)
-                {
+                if let Some(source_lines) = crate::inline_allows::read_source_lines(
+                    &point.file,
+                    workspace_root,
+                    Some(cache),
+                ) {
                     // Check if the source line uses a safe arithmetic method
-                    if let Some(source_line) = source_content
-                        .lines()
-                        .nth((point.line as usize).saturating_sub(1))
+                    if let Some(source_line) =
+                        source_lines.get((point.line as usize).saturating_sub(1))
                     {
                         if crate::heuristics::is_safe_arithmetic_method(source_line) {
                             return false;
@@ -573,7 +603,7 @@ pub fn filter_allowed_causes(
                     }
 
                     // Check if the expression is const-only and provably safe
-                    if crate::heuristics::evaluate_const_arithmetic(&source_content, point.line)
+                    if crate::heuristics::evaluate_const_arithmetic(&source_lines, point.line)
                         == Some(crate::heuristics::ConstArithmeticResult::Safe)
                     {
                         return false;
@@ -597,7 +627,7 @@ pub fn filter_allowed_causes(
         let should_keep = !point.causes.is_empty();
 
         if should_keep {
-            filter_allowed_causes(&mut point.children, config, project_context);
+            filter_allowed_causes_cached(&mut point.children, config, project_context, cache);
         }
 
         should_keep

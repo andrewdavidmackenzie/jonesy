@@ -13,9 +13,17 @@
 //! reported panic point, or on the line immediately above it. No wider
 //! range is checked.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+
+/// Cache for source file contents as pre-split lines, keyed by file path.
+///
+/// Avoids re-reading the same source file for every cause at every code point,
+/// and avoids re-splitting into lines on every access. Uses `Arc` so cached
+/// lines are shared without cloning the entire vector on each access.
+pub type SourceFileCache = HashMap<String, Option<Arc<Vec<String>>>>;
 
 /// Check if a cause is allowed at a specific file:line by inline comment.
 /// Also checks the previous line (for comments above the code).
@@ -68,28 +76,31 @@ fn parse_file_allows(content: &str) -> std::collections::HashMap<u16, HashSet<St
 ///
 /// The `workspace_root` parameter is optional - if provided, it's used to resolve
 /// relative paths. If not provided, falls back to current directory.
+///
+/// If `cache` is provided, file contents are cached to avoid redundant reads.
+/// Pass `None` for one-off checks (e.g., tests).
 pub fn check_inline_allow(
     file_path: &str,
     line: u16,
     cause_id: &str,
     workspace_root: Option<&Path>,
+    cache: Option<&mut SourceFileCache>,
 ) -> bool {
     if line == 0 {
         return false;
     }
 
-    let content = read_source_file_with_root(file_path, workspace_root);
+    let lines_arc = cached_read_source_lines(file_path, workspace_root, cache);
 
-    let content = match content {
-        Some(c) => c,
+    let lines = match lines_arc {
+        Some(ref l) => l.as_slice(),
         None => return false,
     };
-
-    let lines: Vec<&str> = content.lines().collect();
 
     // Check the reported line and the line above it only
     for check_line in [line.saturating_sub(1), line] {
         if let Some(line_content) = lines.get((check_line as usize).saturating_sub(1)) {
+            let line_content: &str = line_content;
             if let Some(causes) = parse_line_allows(line_content) {
                 if causes.contains("*") || causes.contains(cause_id) {
                     return true;
@@ -118,11 +129,41 @@ pub fn check_inline_allow(
     false
 }
 
-/// Read the full contents of a source file, handling both absolute and relative paths.
+/// Read a source file as pre-split lines, with caching support.
 ///
-/// Returns `None` if the file cannot be found or read.
-pub(crate) fn read_source_file(file_path: &str, workspace_root: Option<&Path>) -> Option<String> {
-    read_source_file_with_root(file_path, workspace_root)
+/// If `cache` is provided, returns cached lines to avoid redundant disk reads
+/// and line splitting. Returns `None` if the file cannot be found or read.
+/// The returned `Arc` avoids cloning the line vector on each access.
+pub(crate) fn read_source_lines(
+    file_path: &str,
+    workspace_root: Option<&Path>,
+    cache: Option<&mut SourceFileCache>,
+) -> Option<Arc<Vec<String>>> {
+    cached_read_source_lines(file_path, workspace_root, cache)
+}
+
+/// Read a source file as pre-split lines with caching support.
+///
+/// When a cache is provided, the file is read and split at most once per
+/// analysis run. Returns a shared reference to the cached lines via `Arc`,
+/// avoiding expensive `Vec<String>` clones on each access.
+fn cached_read_source_lines(
+    file_path: &str,
+    workspace_root: Option<&Path>,
+    cache: Option<&mut SourceFileCache>,
+) -> Option<Arc<Vec<String>>> {
+    if let Some(cache) = cache {
+        if let Some(cached) = cache.get(file_path) {
+            return cached.clone();
+        }
+        let lines = read_source_file_with_root(file_path, workspace_root)
+            .map(|content| Arc::new(content.lines().map(String::from).collect()));
+        cache.insert(file_path.to_string(), lines.clone());
+        lines
+    } else {
+        read_source_file_with_root(file_path, workspace_root)
+            .map(|content| Arc::new(content.lines().map(String::from).collect()))
+    }
 }
 
 /// Try to read a source file, handling both absolute and relative paths.
@@ -424,21 +465,24 @@ fn foo() {
             file_path.to_str().unwrap(),
             2,
             "unwrap",
-            None
+            None,
+            None,
         ));
         // Line 3 checks line 2 (previous line) which has the allow
         assert!(check_inline_allow(
             file_path.to_str().unwrap(),
             3,
             "unwrap",
-            None
+            None,
+            None,
         ));
         // Different cause should not match
         assert!(!check_inline_allow(
             file_path.to_str().unwrap(),
             2,
             "panic",
-            None
+            None,
+            None,
         ));
     }
 
@@ -452,7 +496,7 @@ fn foo() {
         drop(file);
 
         // Absolute path should work without workspace root
-        let result = check_inline_allow(file_path.to_str().unwrap(), 1, "anything", None);
+        let result = check_inline_allow(file_path.to_str().unwrap(), 1, "anything", None, None);
         assert!(result);
     }
 
@@ -462,7 +506,8 @@ fn foo() {
             "/nonexistent/file.rs",
             1,
             "unwrap",
-            None
+            None,
+            None,
         ));
     }
 
@@ -478,13 +523,15 @@ fn foo() {
             file_path.to_str().unwrap(),
             1,
             "anything",
-            None
+            None,
+            None,
         ));
         assert!(check_inline_allow(
             file_path.to_str().unwrap(),
             1,
             "unwrap",
-            None
+            None,
+            None,
         ));
     }
 

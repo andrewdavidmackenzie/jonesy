@@ -329,6 +329,7 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
         c.bench_function("collect_crate_relationships_jonesy", |b| {
             b.iter(|| {
                 let mut points: CodePointMap = std::collections::HashMap::new();
+                let mut source_cache = jonesy::inline_allows::SourceFileCache::new();
                 collect_crate_relationships(
                     &root_node,
                     &mut points,
@@ -337,6 +338,7 @@ fn bench_collect_crate_relationships(c: &mut Criterion) {
                     None,
                     &project_context,
                     Some(std::path::Path::new(project_context.project_root())),
+                    &mut source_cache,
                 );
                 black_box(points)
             })
@@ -371,10 +373,17 @@ fn main() {
 
     c.bench_function("check_inline_allow", |b| {
         b.iter(|| {
+            let mut cache = jonesy::inline_allows::SourceFileCache::new();
             // Check various lines
             for line in 1..12 {
                 for cause in &["unwrap", "expect", "panic", "index"] {
-                    black_box(check_inline_allow(test_file, line, cause, None));
+                    black_box(check_inline_allow(
+                        test_file,
+                        line,
+                        cause,
+                        None,
+                        Some(&mut cache),
+                    ));
                 }
             }
         })
