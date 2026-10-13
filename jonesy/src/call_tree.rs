@@ -59,11 +59,15 @@ impl CallTreeNode {
     }
 }
 
+/// Minimum number of callers at a node to justify parallel iteration.
+/// Below this threshold, sequential iteration avoids rayon task overhead.
+const PARALLEL_THRESHOLD: usize = 4;
+
 /// Build a call tree by recursively finding callers of the target address.
 /// Uses a thread-safe visited set to avoid infinite recursion when there are cycles.
 /// Uses pre-computed CallGraph for O(1) lookups instead of re-scanning instructions.
-/// Parallelizes exploration of top-level callers, with sequential recursion within each branch.
-/// Build a call tree with early filtering during construction.
+/// Uses rayon `par_iter` at every level when there are enough callers to benefit
+/// from parallelism; falls back to sequential for small fan-outs.
 /// Nodes that would be pruned (not in crate and no crate children) are never created.
 pub fn build_call_tree_parallel_filtered(
     call_graph: &CallGraph<'_>,
@@ -73,89 +77,57 @@ pub fn build_call_tree_parallel_filtered(
 ) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
-    callers
-        .par_iter()
-        .filter_map(|caller_info| {
-            let caller_addr = caller_info.caller_start_address;
-            let should_recurse = visited.insert(caller_addr);
-
-            let file = caller_info.file.as_deref().map(String::from);
-            let child_callers = if should_recurse {
-                build_call_tree_sequential_filtered(
-                    call_graph,
-                    caller_addr,
-                    visited,
-                    project_context,
-                )
-            } else {
-                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
-            };
-
-            // Early pruning: skip leaf nodes that aren't in crate source
-            if child_callers.is_empty()
-                && !file
-                    .as_ref()
-                    .is_some_and(|f| project_context.is_crate_source(f))
-            {
-                return None;
-            }
-
-            Some(CallTreeNode {
-                name: caller_info.caller_name.clone().into_owned(),
-                file,
-                line: caller_info.line,
-                column: caller_info.column,
-                callers: child_callers,
+    if callers.len() >= PARALLEL_THRESHOLD {
+        callers
+            .par_iter()
+            .filter_map(|caller_info| {
+                build_caller_node(caller_info, call_graph, visited, project_context)
             })
-        })
-        .collect()
+            .collect()
+    } else {
+        callers
+            .iter()
+            .filter_map(|caller_info| {
+                build_caller_node(caller_info, call_graph, visited, project_context)
+            })
+            .collect()
+    }
 }
 
-/// Sequential version with early filtering during construction.
-pub fn build_call_tree_sequential_filtered(
+/// Build a single caller node with its subtree.
+/// Shared by both parallel and sequential iteration paths.
+fn build_caller_node(
+    caller_info: &crate::call_graph::CallerInfo<'_>,
     call_graph: &CallGraph<'_>,
-    target_addr: u64,
     visited: &Arc<DashSet<u64>>,
     project_context: &ProjectContext,
-) -> Vec<CallTreeNode> {
-    let callers = call_graph.get_callers(target_addr);
+) -> Option<CallTreeNode> {
+    let caller_addr = caller_info.caller_start_address;
+    let should_recurse = visited.insert(caller_addr);
 
-    callers
-        .iter()
-        .filter_map(|caller_info| {
-            let caller_addr = caller_info.caller_start_address;
-            let should_recurse = visited.insert(caller_addr);
+    let file = caller_info.file.as_deref().map(String::from);
+    let child_callers = if should_recurse {
+        build_call_tree_parallel_filtered(call_graph, caller_addr, visited, project_context)
+    } else {
+        build_shallow_callers_filtered(call_graph, caller_addr, project_context)
+    };
 
-            let file = caller_info.file.as_deref().map(String::from);
-            let child_callers = if should_recurse {
-                build_call_tree_sequential_filtered(
-                    call_graph,
-                    caller_addr,
-                    visited,
-                    project_context,
-                )
-            } else {
-                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
-            };
+    // Early pruning: skip leaf nodes that aren't in crate source
+    if child_callers.is_empty()
+        && !file
+            .as_ref()
+            .is_some_and(|f| project_context.is_crate_source(f))
+    {
+        return None;
+    }
 
-            // Early pruning: skip leaf nodes that aren't in crate source
-            if child_callers.is_empty()
-                && !file
-                    .as_ref()
-                    .is_some_and(|f| project_context.is_crate_source(f))
-            {
-                return None;
-            }
-
-            Some(CallTreeNode {
-                name: caller_info.caller_name.clone().into_owned(),
-                file,
-                line: caller_info.line,
-                column: caller_info.column,
-                callers: child_callers,
-            })
-        })
-        .collect()
+    Some(CallTreeNode {
+        name: caller_info.caller_name.clone().into_owned(),
+        file,
+        line: caller_info.line,
+        column: caller_info.column,
+        callers: child_callers,
+    })
 }
 
 /// Build shallow caller nodes with filtering.

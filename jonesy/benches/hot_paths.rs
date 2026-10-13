@@ -22,8 +22,7 @@ use jonesy::analysis::analyze_binary_target;
 use jonesy::binary_format::BinaryRef;
 #[cfg(target_os = "macos")]
 use jonesy::call_tree::{
-    CallTreeNode, CodePointMap, build_call_tree_parallel_filtered,
-    build_call_tree_sequential_filtered, build_shallow_callers_filtered,
+    CallTreeNode, CodePointMap, build_call_tree_parallel_filtered, build_shallow_callers_filtered,
     collect_crate_relationships, filter_allowed_causes,
 };
 #[cfg(target_os = "macos")]
@@ -192,7 +191,7 @@ fn bench_prune_call_tree(_c: &mut Criterion) {
 }
 
 // ============================================================================
-// Hot Function #3: build_call_tree_sequential (92 samples)
+// Hot Function #3: build_call_tree (92 samples)
 // ============================================================================
 #[cfg(target_os = "macos")]
 fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
@@ -202,7 +201,7 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
     let binary_path = root.join("target/debug/jonesy");
 
     if !binary_path.exists() {
-        eprintln!("Skipping build_call_tree_sequential benchmark: jonesy binary not found");
+        eprintln!("Skipping build_call_tree benchmark: jonesy binary not found");
         return;
     }
 
@@ -214,7 +213,7 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
         let panic_addr = entry_points.first().map(|(_, _, a)| *a).unwrap_or(0);
 
         if panic_addr == 0 {
-            eprintln!("Skipping build_call_tree_sequential benchmark: no panic symbol found");
+            eprintln!("Skipping build_call_tree benchmark: no panic symbol found");
             return;
         }
 
@@ -235,10 +234,10 @@ fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
 
         let visited = Arc::new(DashSet::new());
 
-        c.bench_function("build_call_tree_sequential_jonesy", |b| {
+        c.bench_function("build_call_tree_parallel_jonesy", |b| {
             b.iter(|| {
                 visited.clear();
-                let tree = build_call_tree_sequential_filtered(
+                let tree = build_call_tree_parallel_filtered(
                     &call_graph,
                     panic_addr,
                     &visited,

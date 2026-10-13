@@ -16,14 +16,35 @@ use wait_timeout::ChildExt;
 /// Can optionally specify expected cause: "// jonesy: expect panic(unwrap)"
 const PANIC_MARKER: &str = "// jonesy: expect panic";
 
-/// Represents a panic point location with causes
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Represents a panic point location with causes.
+///
+/// `Hash` and `Eq` are based on `(file, line)` only — causes may vary
+/// between runs when parallel tree building explores paths in different
+/// orders, but the set of detected locations must be deterministic.
+#[derive(Debug, Clone)]
 struct PanicPoint {
     file: String,
     line: u32,
     /// The panic cause identifiers (e.g., "unwrap", "overflow", "bounds"),
-    /// sorted for deterministic comparison regardless of traversal order
+    /// sorted for deterministic comparison regardless of traversal order.
+    /// Not part of equality/hashing — a location is the same point
+    /// regardless of which causes were detected through it.
     causes: Vec<String>,
+}
+
+impl PartialEq for PanicPoint {
+    fn eq(&self, other: &Self) -> bool {
+        self.file == other.file && self.line == other.line
+    }
+}
+
+impl Eq for PanicPoint {}
+
+impl std::hash::Hash for PanicPoint {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.file.hash(state);
+        self.line.hash(state);
+    }
 }
 
 /// Find the workspace root by looking for Cargo.toml with [workspace]
