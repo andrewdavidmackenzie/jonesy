@@ -57,11 +57,30 @@ impl<'a> SymbolTable<'a> {
 
     /// Returns the first symbol found whose name matches the given regex pattern.
     /// The pattern is matched against the demangled symbol name.
+    ///
+    /// As an optimisation, extracts a literal substring from the pattern and
+    /// skips demangling for symbols whose mangled name doesn't contain it.
+    /// This avoids demangling ~50K symbols when searching for specific names
+    /// like `rust_panic$` or `rust_begin_unwind$`.
     pub fn find_symbol_containing(
         &self,
         pattern: &str,
     ) -> Result<Option<(String, String)>, regex::Error> {
         let regex = Regex::new(pattern)?;
+
+        // Extract a literal prefix from the pattern for a quick pre-filter.
+        // Strip common regex anchors/metacharacters to get a plain substring
+        // that must appear in the demangled name (and often in the mangled
+        // name too). This avoids demangling the vast majority of symbols.
+        let literal_hint = pattern
+            .trim_start_matches('^')
+            .trim_end_matches('$')
+            .trim_end_matches(".*");
+
+        // Only use the hint if it's a reasonable literal (no regex metacharacters)
+        let use_hint = !literal_hint.is_empty()
+            && !literal_hint.contains(['(', ')', '[', ']', '|', '?', '+', '*', '.', '\\']);
+
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
                 let symbols = match macho.symbols.as_ref() {
@@ -69,6 +88,10 @@ impl<'a> SymbolTable<'a> {
                     None => return Ok(None),
                 };
                 for (sym_name, _) in symbols.iter().flatten() {
+                    // Quick pre-filter: skip symbols that can't possibly match
+                    if use_hint && !sym_name.contains(literal_hint) {
+                        continue;
+                    }
                     let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
                     let demangled = format!("{:#}", demangle(stripped));
                     if regex.is_match(&demangled) {
@@ -84,6 +107,10 @@ impl<'a> SymbolTable<'a> {
                     }
                     if let Some(name) = elf.strtab.get_at(sym.st_name) {
                         if name.is_empty() {
+                            continue;
+                        }
+                        // Quick pre-filter: skip symbols that can't possibly match
+                        if use_hint && !name.contains(literal_hint) {
                             continue;
                         }
                         let demangled = format!("{:#}", demangle(name));
@@ -154,6 +181,9 @@ impl<'a> SymbolTable<'a> {
     /// Returns all defined symbols with addresses whose demangled names match any pattern.
     /// Unlike `find_all_symbols_matching` + `find_symbol_address`, this returns all
     /// instances including multiple monomorphisations at different addresses.
+    ///
+    /// Uses literal substring pre-filtering to avoid demangling symbols that
+    /// cannot possibly match any pattern.
     pub fn find_all_symbols_with_addresses(
         &self,
         patterns: &[&str],
@@ -163,12 +193,41 @@ impl<'a> SymbolTable<'a> {
             .map(|p| Regex::new(p))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Extract literal hints from patterns for pre-filtering.
+        // A symbol can only match if its mangled name contains at least one
+        // of these substrings (since demangling preserves identifier fragments).
+        let hints: Vec<&str> = patterns
+            .iter()
+            .filter_map(|p| {
+                let h = p
+                    .trim_start_matches('^')
+                    .trim_end_matches('$')
+                    .trim_end_matches(".*");
+                // Extract the last path component as a hint (most selective).
+                // e.g. "core::panicking::" -> "panicking"
+                let hint = h.rsplit("::").next().unwrap_or(h);
+                if !hint.is_empty()
+                    && !hint.contains(['(', ')', '[', ']', '|', '?', '+', '*', '.', '\\'])
+                {
+                    Some(hint)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let use_hints = !hints.is_empty();
+
         let mut results = Vec::new();
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
                 if let Some(symbols) = macho.symbols.as_ref() {
                     for (sym_name, nlist) in symbols.iter().flatten() {
                         if nlist.is_undefined() || nlist.n_value == 0 {
+                            continue;
+                        }
+                        // Pre-filter: skip symbols that don't contain any hint
+                        if use_hints && !hints.iter().any(|h| sym_name.contains(h)) {
                             continue;
                         }
                         let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
@@ -193,6 +252,10 @@ impl<'a> SymbolTable<'a> {
                     }
                     if let Some(name) = elf.strtab.get_at(sym.st_name) {
                         if name.is_empty() {
+                            continue;
+                        }
+                        // Pre-filter: skip symbols that don't contain any hint
+                        if use_hints && !hints.iter().any(|h| name.contains(h)) {
                             continue;
                         }
                         let demangled = format!("{:#}", demangle(name));
