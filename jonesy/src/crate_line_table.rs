@@ -52,11 +52,11 @@ impl CrateLineTable {
                         {
                             let column = match row.column() {
                                 ColumnType::LeftEdge => 0,
-                                ColumnType::Column(c) => c.get() as u16,
+                                ColumnType::Column(c) => crate::to_u16_saturating(c.get()),
                             };
                             entries.push(CrateLineEntry {
                                 address: row.address(),
-                                line: line.get() as u16,
+                                line: crate::to_u16_saturating(line.get()),
                                 column,
                             });
                         }

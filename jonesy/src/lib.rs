@@ -3,6 +3,13 @@
 //! This library provides the core functionality for analyzing Rust binaries
 //! to find code paths that can lead to panics.
 
+/// Saturating conversion from `u64` to `u16`.
+/// Returns `u16::MAX` for values above 65535, avoiding silent wrapping
+/// (where e.g. line 65536 would wrap to 0 and be treated as "absent").
+pub(crate) fn to_u16_saturating(v: u64) -> u16 {
+    u16::try_from(v).unwrap_or(u16::MAX)
+}
+
 pub mod analysis;
 pub mod analysis_cache;
 pub(crate) mod arch;

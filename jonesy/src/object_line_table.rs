@@ -245,7 +245,7 @@ impl ObjectLineTable {
                         if file_idx < file_paths.len() && file_idx > 0 {
                             let column: u16 = match row.column() {
                                 ColumnType::LeftEdge => 0,
-                                ColumnType::Column(c) => c.get() as u16,
+                                ColumnType::Column(c) => crate::to_u16_saturating(c.get()),
                             };
 
                             // Determine which function(s) this line entry belongs to
@@ -271,7 +271,7 @@ impl ObjectLineTable {
                                 entries.push(ObjectLineEntry {
                                     address,
                                     file: file_paths[file_idx].clone(),
-                                    line: line.get() as u16,
+                                    line: crate::to_u16_saturating(line.get()),
                                     column,
                                     function_name: Some(function_name),
                                     section_name: section_name.clone(),
@@ -283,7 +283,7 @@ impl ObjectLineTable {
                                 entries.push(ObjectLineEntry {
                                     address,
                                     file: file_paths[file_idx].clone(),
-                                    line: line.get() as u16,
+                                    line: crate::to_u16_saturating(line.get()),
                                     column,
                                     function_name: None,
                                     section_name: section_name.clone(),

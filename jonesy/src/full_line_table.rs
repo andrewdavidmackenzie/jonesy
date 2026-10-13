@@ -116,7 +116,7 @@ impl FullLineTable {
                 if project_context.is_crate_source(file) && entry.line > 0 {
                     // Found the next crate entry (e.g., closing brace).
                     // The call is on the line before the epilogue.
-                    if func_start_line > 0 && entry.line > func_start_line + 1 {
+                    if func_start_line > 0 && entry.line > func_start_line.saturating_add(1) {
                         return (entry.line - 1, 0);
                     }
                     return (entry.line, entry.column);
@@ -216,10 +216,13 @@ impl FullLineTable {
                     let is_crate_match = header_is_crate[file_idx];
 
                     // Add to full line table (all entries)
-                    let line = row.line().map(|l| l.get() as u16).unwrap_or(0);
+                    let line = row
+                        .line()
+                        .map(|l| crate::to_u16_saturating(l.get()))
+                        .unwrap_or(0);
                     let column: u16 = match row.column() {
                         ColumnType::LeftEdge => 0,
-                        ColumnType::Column(c) => c.get() as u16,
+                        ColumnType::Column(c) => crate::to_u16_saturating(c.get()),
                     };
                     full_entries.push(FullLineEntry {
                         address: row.address(),

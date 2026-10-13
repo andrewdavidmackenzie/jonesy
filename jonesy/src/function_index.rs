@@ -516,7 +516,7 @@ fn parse_function_die<R: Reader>(
             }
             gimli::DW_AT_decl_line => {
                 if let AttributeValue::Udata(l) = attr.value() {
-                    line = Some(l as u16);
+                    line = Some(crate::to_u16_saturating(l));
                 }
             }
             gimli::DW_AT_specification => {
@@ -635,7 +635,7 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
             }
             gimli::DW_AT_call_line => {
                 if let AttributeValue::Udata(l) = attr.value() {
-                    call_line = Some(l as u16);
+                    call_line = Some(crate::to_u16_saturating(l));
                 }
             }
             _ => {}
@@ -869,7 +869,7 @@ fn resolve_specification<R: Reader>(
             }
             gimli::DW_AT_decl_line => {
                 if let AttributeValue::Udata(l) = attr.value() {
-                    line = Some(l as u16);
+                    line = Some(crate::to_u16_saturating(l));
                 }
             }
             _ => {}
