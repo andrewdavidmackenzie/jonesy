@@ -199,7 +199,7 @@ impl<'a> CallGraph<'a> {
         // Build both line tables in a single pass (saves iterating DWARF twice)
         let step = Instant::now();
         let (crate_line_table, full_line_table) =
-            FullLineTable::build_both(&dwarf, project_context)?;
+            FullLineTable::build_both(&dwarf, project_context, text_data.len())?;
         if show_timings {
             eprintln!(
                 "    [cg timing] build line tables: {:?} (crate: {} entries, full: {} entries)",
