@@ -579,6 +579,84 @@ mod tests {
         }
     }
 
+    // -- Pre-filter hint tests --
+
+    #[test]
+    fn test_find_symbol_containing_prefilter_skips_non_matching() {
+        // Pattern with a clear literal hint that won't match most symbols
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // "rust_begin_unwind$" has literal hint "rust_begin_unwind"
+                // which should skip most symbols without demangling
+                let result = symbols.find_symbol_containing("rust_begin_unwind$");
+                assert!(result.is_ok());
+                if let Ok(Some((_mangled, demangled))) = result {
+                    assert!(
+                        demangled.contains("rust_begin_unwind"),
+                        "Should find rust_begin_unwind via pre-filtered search"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_containing_regex_metachar_disables_hint() {
+        // Pattern with regex metacharacters — hint should not be used
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // Pattern with '.' metacharacter — falls back to full demangling
+                let result = symbols.find_symbol_containing("rust.panic$");
+                assert!(result.is_ok());
+                // Should still find rust_panic (the '.' matches '_')
+                if let Ok(Some((_mangled, demangled))) = result {
+                    assert!(demangled.contains("rust_panic"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_all_symbols_with_addresses_prefilter() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // "core::panicking::" has hint "panicking" (last path component)
+                let result = symbols.find_all_symbols_with_addresses(&["core::panicking::"]);
+                assert!(result.is_ok());
+                let matches = result.unwrap();
+                // Should find core::panicking:: functions
+                assert!(
+                    !matches.is_empty(),
+                    "Should find core::panicking:: symbols via pre-filtered search"
+                );
+                for (_mangled, demangled, addr) in &matches {
+                    assert!(
+                        demangled.contains("core::panicking::"),
+                        "Matched symbol '{}' should contain 'core::panicking::'",
+                        demangled
+                    );
+                    assert!(*addr > 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_all_symbols_with_addresses_no_match_with_hint() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // Hint "zzz_nonexistent" should skip all symbols quickly
+                let result = symbols.find_all_symbols_with_addresses(&["zzz_nonexistent_module::"]);
+                assert!(result.is_ok());
+                assert!(result.unwrap().is_empty());
+            }
+        }
+    }
+
     // -- SymbolIndex tests --
 
     #[test]
