@@ -148,7 +148,7 @@ impl LibraryCallGraph {
                         let (file, line, column) = line_lookup
                             .as_ref()
                             .and_then(|lt| lt.lookup(call_site_addr))
-                            .unwrap_or((None, None, None));
+                            .unwrap_or((None, 0, 0));
 
                         // If call site points to non-crate code (stdlib/dependency), find
                         // the last crate source line between function start and call site
@@ -165,13 +165,13 @@ impl LibraryCallGraph {
                                         project_context,
                                     )
                             {
-                                (Some(crate_file), Some(crate_line), crate_col)
+                                (Some(crate_file), crate_line, crate_col)
                             } else {
                                 // Fall back to function start address
                                 line_lookup
                                     .as_ref()
                                     .and_then(|lt| lt.lookup(func_addr))
-                                    .unwrap_or((None, None, None))
+                                    .unwrap_or((None, 0, 0))
                             }
                         } else {
                             (file, line, column)
@@ -183,8 +183,8 @@ impl LibraryCallGraph {
                             file: file.map(|s| s.into_boxed_str()),
                             caller_start_address: func_addr,
                             call_site_addr,
-                            line: line.unwrap_or(0) as u16,
-                            column: column.unwrap_or(0) as u16,
+                            line,
+                            column,
                         });
                     }
                 }
@@ -370,9 +370,9 @@ impl LibraryCallGraph {
                         // Final fallback to regular lookup for linked binaries
                         lt.lookup(call_site_addr)
                     })
-                    .unwrap_or((None, None, None))
+                    .unwrap_or((None, 0, 0))
                 } else {
-                    (None, None, None)
+                    (None, 0, 0)
                 };
 
                 // If call site points to non-crate code (stdlib/dependency), try to find
@@ -389,7 +389,7 @@ impl LibraryCallGraph {
                         && let Some((crate_file, crate_line, crate_col)) =
                             lt.get_crate_line_in_range(func_addr, call_site_addr, project_context)
                     {
-                        (Some(crate_file), Some(crate_line), crate_col)
+                        (Some(crate_file), crate_line, crate_col)
                     }
                     // For section-relative addresses (.o files), use section-aware lookup
                     else if let Some(lt) = line_lookup.as_ref()
@@ -401,10 +401,10 @@ impl LibraryCallGraph {
                                 project_context,
                             )
                     {
-                        (Some(crate_file), Some(crate_line), crate_col)
+                        (Some(crate_file), crate_line, crate_col)
                     } else {
                         // No fallback worked - skip this call site
-                        (None, None, None)
+                        (None, 0, 0)
                     }
                 } else {
                     (file, line, column)
@@ -416,8 +416,8 @@ impl LibraryCallGraph {
                     file: file.map(|s| s.into_boxed_str()),
                     caller_start_address: func_addr,
                     call_site_addr,
-                    line: line.unwrap_or(0) as u16,
-                    column: column.unwrap_or(0) as u16,
+                    line,
+                    column,
                 });
             }
         }

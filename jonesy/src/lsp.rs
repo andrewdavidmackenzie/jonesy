@@ -101,12 +101,15 @@ impl JonesyLspServer {
 
         let range = Range {
             start: Position {
-                line: point.line.saturating_sub(1), // LSP uses 0-based lines
-                character: point.column.unwrap_or(1).saturating_sub(1),
+                line: (point.line as u32).saturating_sub(1), // LSP uses 0-based lines
+                character: ((if point.column == 0 { 1 } else { point.column }) as u32)
+                    .saturating_sub(1),
             },
             end: Position {
-                line: point.line.saturating_sub(1),
-                character: point.column.unwrap_or(1).saturating_sub(1) + 10, // Approximate width
+                line: (point.line as u32).saturating_sub(1),
+                character: ((if point.column == 0 { 1 } else { point.column }) as u32)
+                    .saturating_sub(1)
+                    + 10, // Approximate width
             },
         };
 
@@ -471,7 +474,7 @@ impl JonesyLspServer {
 
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
-        let mut seen: std::collections::HashSet<(String, u32, u32)> =
+        let mut seen: std::collections::HashSet<(String, u16, u16)> =
             std::collections::HashSet::new();
         let mut total_points = 0usize;
 
@@ -514,7 +517,7 @@ impl JonesyLspServer {
                     let new_points: Vec<_> = points
                         .into_iter()
                         .filter(|p| {
-                            let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+                            let key = (p.file.clone(), p.line, p.column);
                             seen.insert(key)
                         })
                         .collect();
@@ -1667,7 +1670,7 @@ async fn run_analysis_task(
 
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
-    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut seen: HashSet<(String, u16, u16)> = HashSet::new();
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1696,7 +1699,7 @@ async fn run_analysis_task(
             let new_points: Vec<_> = points
                 .into_iter()
                 .filter(|p| {
-                    let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+                    let key = (p.file.clone(), p.line, p.column);
                     seen.insert(key)
                 })
                 .collect();
@@ -1861,11 +1864,11 @@ fn format_change_summary(
 /// targets report the same panic point from shared code.
 #[cfg(test)]
 fn deduplicate_code_points(points: Vec<CrateCodePoint>) -> Vec<CrateCodePoint> {
-    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut seen: HashSet<(String, u16, u16)> = HashSet::new();
     points
         .into_iter()
         .filter(|p| {
-            let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+            let key = (p.file.clone(), p.line, p.column);
             seen.insert(key)
         })
         .collect()
@@ -1929,7 +1932,7 @@ fn analyze_workspace_targets(
     project_context: &ProjectContext,
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
-    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut seen: HashSet<(String, u16, u16)> = HashSet::new();
 
     for target in targets {
         match analyze_single_target(target, project_context) {
@@ -1942,7 +1945,7 @@ fn analyze_workspace_targets(
                 let new_points: Vec<_> = points
                     .into_iter()
                     .filter(|p| {
-                        let key = (p.file.clone(), p.line, p.column.unwrap_or(0));
+                        let key = (p.file.clone(), p.line, p.column);
                         seen.insert(key)
                     })
                     .collect();
@@ -2458,7 +2461,7 @@ mod tests {
 
         // Parse CLI output for panic points (top-level lines starting with " --> ")
         // Skip nested points (lines in the call tree that are indented)
-        let cli_points: HashSet<(String, u32)> = cli_stdout
+        let cli_points: HashSet<(String, u16)> = cli_stdout
             .lines()
             .filter(|line| line.starts_with(" --> ")) // Only top-level points
             .filter_map(|line| {
@@ -2468,7 +2471,7 @@ mod tests {
                 let parts: Vec<&str> = location.split(':').collect();
                 if parts.len() >= 2 {
                     let file = parts[0].trim();
-                    let line_num: u32 = parts[1].parse().ok()?;
+                    let line_num: u16 = parts[1].parse().ok()?;
                     // Normalize path - extract just the relative part
                     let file = file
                         .rsplit("workspace_test/")
@@ -2489,7 +2492,7 @@ mod tests {
         let project_context = ProjectContext::from_project_root(&workspace_test_dir)
             .expect("Should build project context");
 
-        let mut lsp_points: HashSet<(String, u32)> = HashSet::new();
+        let mut lsp_points: HashSet<(String, u16)> = HashSet::new();
 
         for target in &targets {
             let result = analyze_single_target(target, &project_context);
@@ -2908,7 +2911,7 @@ mod tests {
     // Unit tests for pure helper functions
     // ========================================================================
 
-    fn make_code_point(file: &str, line: u32, column: Option<u32>) -> CrateCodePoint {
+    fn make_code_point(file: &str, line: u16, column: u16) -> CrateCodePoint {
         CrateCodePoint {
             file: file.to_string(),
             line,
@@ -2931,9 +2934,9 @@ mod tests {
     #[test]
     fn test_deduplicate_code_points_no_duplicates() {
         let points = vec![
-            make_code_point("src/main.rs", 10, Some(5)),
-            make_code_point("src/main.rs", 20, Some(10)),
-            make_code_point("src/lib.rs", 10, Some(5)),
+            make_code_point("src/main.rs", 10, 5),
+            make_code_point("src/main.rs", 20, 10),
+            make_code_point("src/lib.rs", 10, 5),
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 3);
@@ -2942,10 +2945,10 @@ mod tests {
     #[test]
     fn test_deduplicate_code_points_with_duplicates() {
         let points = vec![
-            make_code_point("src/main.rs", 10, Some(5)),
-            make_code_point("src/main.rs", 10, Some(5)), // duplicate
-            make_code_point("src/main.rs", 20, Some(10)),
-            make_code_point("src/main.rs", 10, Some(5)), // duplicate
+            make_code_point("src/main.rs", 10, 5),
+            make_code_point("src/main.rs", 10, 5), // duplicate
+            make_code_point("src/main.rs", 20, 10),
+            make_code_point("src/main.rs", 10, 5), // duplicate
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 2);
@@ -2957,8 +2960,8 @@ mod tests {
     fn test_deduplicate_code_points_column_matters() {
         // Same file and line, different columns - NOT duplicates
         let points = vec![
-            make_code_point("src/main.rs", 10, Some(5)),
-            make_code_point("src/main.rs", 10, Some(15)),
+            make_code_point("src/main.rs", 10, 5),
+            make_code_point("src/main.rs", 10, 15),
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 2);
@@ -2968,9 +2971,9 @@ mod tests {
     fn test_deduplicate_code_points_none_column() {
         // None columns are treated as 0 for deduplication
         let points = vec![
-            make_code_point("src/main.rs", 10, None),
-            make_code_point("src/main.rs", 10, None), // duplicate
-            make_code_point("src/main.rs", 10, Some(0)), // also duplicate (None -> 0)
+            make_code_point("src/main.rs", 10, 0),
+            make_code_point("src/main.rs", 10, 0), // duplicate
+            make_code_point("src/main.rs", 10, 0), // also duplicate (None -> 0)
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 1);
@@ -2987,9 +2990,9 @@ mod tests {
     #[test]
     fn test_group_points_by_uri_filters_target_dir() {
         let points = vec![
-            make_code_point("/workspace/src/main.rs", 10, Some(5)),
-            make_code_point("/workspace/target/debug/build/foo.rs", 20, Some(10)), // filtered
-            make_code_point("/workspace/src/lib.rs", 30, Some(15)),
+            make_code_point("/workspace/src/main.rs", 10, 5),
+            make_code_point("/workspace/target/debug/build/foo.rs", 20, 10), // filtered
+            make_code_point("/workspace/src/lib.rs", 30, 15),
         ];
         let workspace_root = PathBuf::from("/workspace");
         let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
@@ -3001,9 +3004,9 @@ mod tests {
     #[test]
     fn test_group_points_by_uri_groups_by_file() {
         let points = vec![
-            make_code_point("/workspace/src/main.rs", 10, Some(5)),
-            make_code_point("/workspace/src/main.rs", 20, Some(10)),
-            make_code_point("/workspace/src/lib.rs", 30, Some(15)),
+            make_code_point("/workspace/src/main.rs", 10, 5),
+            make_code_point("/workspace/src/main.rs", 20, 10),
+            make_code_point("/workspace/src/lib.rs", 30, 15),
         ];
         let workspace_root = PathBuf::from("/workspace");
         let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
@@ -3021,8 +3024,8 @@ mod tests {
     fn test_group_points_by_uri_relative_paths() {
         // Relative paths should be joined with workspace_root
         let points = vec![
-            make_code_point("src/main.rs", 10, Some(5)),
-            make_code_point("src/lib.rs", 20, Some(10)),
+            make_code_point("src/main.rs", 10, 5),
+            make_code_point("src/lib.rs", 20, 10),
         ];
         let workspace_root = PathBuf::from("/workspace");
         let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
@@ -3110,7 +3113,7 @@ mod tests {
 
     #[test]
     fn test_code_point_to_diagnostic_empty_causes() {
-        let point = make_code_point("src/main.rs", 42, Some(10));
+        let point = make_code_point("src/main.rs", 42, 10);
         let diag = JonesyLspServer::code_point_to_diagnostic(&point);
 
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
@@ -3133,7 +3136,7 @@ mod tests {
         let point = CrateCodePoint {
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(5),
+            column: 5,
             name: "my_func".to_string(),
             causes,
             children: Vec::new(),
@@ -3167,7 +3170,7 @@ mod tests {
         let point = CrateCodePoint {
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(5),
+            column: 5,
             name: "my_func".to_string(),
             causes,
             children: Vec::new(),
@@ -3188,7 +3191,7 @@ mod tests {
 
     #[test]
     fn test_code_point_to_diagnostic_no_column() {
-        let point = make_code_point("src/main.rs", 100, None);
+        let point = make_code_point("src/main.rs", 100, 0);
         let diag = JonesyLspServer::code_point_to_diagnostic(&point);
 
         // No column defaults to 1, then subtract 1 for 0-based = 0
@@ -3198,7 +3201,7 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_line_1() {
         // Edge case: line 1 should not underflow
-        let point = make_code_point("src/main.rs", 1, Some(1));
+        let point = make_code_point("src/main.rs", 1, 1);
         let diag = JonesyLspServer::code_point_to_diagnostic(&point);
 
         assert_eq!(diag.range.start.line, 0);

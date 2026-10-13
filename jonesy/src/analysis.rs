@@ -67,7 +67,7 @@ impl BinaryAnalysisResult {
         use std::collections::HashMap;
 
         // Build a map of existing code points by (file, line)
-        let mut points_map: HashMap<(String, u32), CrateCodePoint> = self
+        let mut points_map: HashMap<(String, u16), CrateCodePoint> = self
             .code_points
             .drain(..)
             .map(|cp| ((cp.file.clone(), cp.line), cp))
@@ -105,8 +105,8 @@ impl BinaryAnalysisResult {
 struct PanicCaller {
     file: String,
     name: String,
-    line: u32,
-    column: Option<u32>,
+    line: u16,
+    column: u16,
     /// The panic symbol being called (e.g., "core::option::unwrap_failed")
     target: String,
 }
@@ -535,12 +535,8 @@ pub fn analyze_archive(
                 panic_callers.insert(PanicCaller {
                     file: file.to_string(),
                     name: caller_info.caller_name.to_string(),
-                    line: caller_info.line as u32,
-                    column: if caller_info.column == 0 {
-                        None
-                    } else {
-                        Some(caller_info.column as u32)
-                    },
+                    line: caller_info.line,
+                    column: caller_info.column,
                     target: target_sym.to_string(),
                 });
             }
@@ -600,7 +596,7 @@ pub fn analyze_archive(
     filter_allowed_causes(&mut code_points, config, project_context);
 
     // Deduplicate by (file, line)
-    let mut seen: std::collections::HashMap<(String, u32), usize> =
+    let mut seen: std::collections::HashMap<(String, u16), usize> =
         std::collections::HashMap::new();
     let mut deduped: Vec<CrateCodePoint> = Vec::new();
     for point in code_points {
@@ -619,7 +615,7 @@ pub fn analyze_archive(
     }
 
     // Build summary from code points
-    let mut points: HashSet<(String, u32)> = HashSet::new();
+    let mut points: HashSet<(String, u16)> = HashSet::new();
     let mut files_affected: HashSet<String> = HashSet::new();
     for point in &deduped {
         points.insert((point.file.clone(), point.line));
@@ -649,14 +645,14 @@ mod tests {
         assert_eq!(result.summary.files_affected(), 0);
     }
 
-    fn make_code_point(file: &str, line: u32, cause: PanicCause) -> CrateCodePoint {
+    fn make_code_point(file: &str, line: u16, cause: PanicCause) -> CrateCodePoint {
         let mut causes = HashSet::new();
         causes.insert(cause);
         CrateCodePoint {
             name: "test_func".to_string(),
             file: file.to_string(),
             line,
-            column: None,
+            column: 0,
             causes,
             children: Vec::new(),
             is_direct_panic: true,

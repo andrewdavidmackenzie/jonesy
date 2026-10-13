@@ -265,8 +265,8 @@ fn render_panic_point(
     let indent = "            ".repeat(depth + 1);
     let absolute_path = make_absolute_path(&point.file, project_root);
     let file_url = escape_html(&format!("file://{}", absolute_path));
-    let location = if let Some(col) = point.column {
-        format!("{}:{}:{}", point.file, point.line, col)
+    let location = if point.column > 0 {
+        format!("{}:{}:{}", point.file, point.line, point.column)
     } else {
         format!("{}:{}", point.file, point.line)
     };
@@ -349,8 +349,8 @@ fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &
     let indent = "            ".repeat(depth + 1);
     let absolute_path = make_absolute_path(&point.file, project_root);
     let file_url = escape_html(&format!("file://{}", absolute_path));
-    let location = if let Some(col) = point.column {
-        format!("{}:{}:{}", point.file, point.line, col)
+    let location = if point.column > 0 {
+        format!("{}:{}:{}", point.file, point.line, point.column)
     } else {
         format!("{}:{}", point.file, point.line)
     };
@@ -764,14 +764,14 @@ mod tests {
     fn make_test_point(
         name: &str,
         file: &str,
-        line: u32,
+        line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
             name: name.to_string(),
             file: file.to_string(),
             line,
-            column: Some(1),
+            column: 1,
             causes: causes.into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -837,7 +837,7 @@ mod tests {
             name: "child_func".to_string(),
             file: "src/lib.rs".to_string(),
             line: 20,
-            column: Some(5),
+            column: 5,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -847,7 +847,7 @@ mod tests {
             name: "parent_func".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,

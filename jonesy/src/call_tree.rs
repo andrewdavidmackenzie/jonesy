@@ -15,15 +15,15 @@ use rustc_demangle::demangle;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
-static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u32)>>> =
+static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u16)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Get pre-filter locations collected during analysis, then clear the store.
-pub fn take_pre_filter_locations() -> HashSet<(String, u32)> {
+pub fn take_pre_filter_locations() -> HashSet<(String, u16)> {
     std::mem::take(&mut *PRE_FILTER_LOCATIONS.lock().unwrap())
 }
 
-fn collect_locations(points: &[CrateCodePoint], locations: &mut HashSet<(String, u32)>) {
+fn collect_locations(points: &[CrateCodePoint], locations: &mut HashSet<(String, u16)>) {
     for p in points {
         locations.insert((p.file.clone(), p.line));
         collect_locations(&p.children, locations);
@@ -38,10 +38,10 @@ pub struct CallTreeNode {
     pub name: String,
     /// Source file (if available from debug info)
     pub file: Option<String>,
-    /// Line number (if available from debug info)
-    pub line: Option<u32>,
-    /// Column number (if available from debug info)
-    pub column: Option<u32>,
+    /// Line number (0 = absent)
+    pub line: u16,
+    /// Column number (0 = absent)
+    pub column: u16,
     /// Functions that call this one
     pub callers: Vec<CallTreeNode>,
 }
@@ -52,8 +52,8 @@ impl CallTreeNode {
         CallTreeNode {
             name,
             file: None,
-            line: None,
-            column: None,
+            line: 0,
+            column: 0,
             callers: Vec::new(),
         }
     }
@@ -103,16 +103,8 @@ pub fn build_call_tree_parallel_filtered(
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
-                line: if caller_info.line == 0 {
-                    None
-                } else {
-                    Some(caller_info.line as u32)
-                },
-                column: if caller_info.column == 0 {
-                    None
-                } else {
-                    Some(caller_info.column as u32)
-                },
+                line: caller_info.line,
+                column: caller_info.column,
                 callers: child_callers,
             })
         })
@@ -158,16 +150,8 @@ pub fn build_call_tree_sequential_filtered(
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
-                line: if caller_info.line == 0 {
-                    None
-                } else {
-                    Some(caller_info.line as u32)
-                },
-                column: if caller_info.column == 0 {
-                    None
-                } else {
-                    Some(caller_info.column as u32)
-                },
+                line: caller_info.line,
+                column: caller_info.column,
                 callers: child_callers,
             })
         })
@@ -198,16 +182,8 @@ pub fn build_shallow_callers_filtered(
             Some(CallTreeNode {
                 name: caller_info.caller_name.clone().into_owned(),
                 file,
-                line: if caller_info.line == 0 {
-                    None
-                } else {
-                    Some(caller_info.line as u32)
-                },
-                column: if caller_info.column == 0 {
-                    None
-                } else {
-                    Some(caller_info.column as u32)
-                },
+                line: caller_info.line,
+                column: caller_info.column,
                 callers: vec![], // No deeper recursion to prevent infinite loops
             })
         })
@@ -219,9 +195,9 @@ pub fn build_shallow_callers_filtered(
 pub struct CrateCodePoint {
     pub name: String,
     pub file: String,
-    pub line: u32,
-    /// Column number of the call site (if available from DWARF)
-    pub column: Option<u32>,
+    pub line: u16,
+    /// Column number of the call site (0 = absent)
+    pub column: u16,
     /// All detected causes of panic paths through this point
     pub causes: HashSet<PanicCause>,
     /// Code points that this one calls (closer to panic in the call chain)
@@ -235,12 +211,12 @@ pub struct CrateCodePoint {
 }
 
 /// Key for identifying a code point: (file, line)
-pub type CodePointKey = (String, u32);
+pub type CodePointKey = (String, u16);
 
 /// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic, called_function)
 pub type CodePointInfo = (
     String,
-    Option<u32>,
+    u16,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
     bool,           // is_direct_panic
@@ -420,11 +396,11 @@ pub fn collect_crate_relationships(
         .as_ref()
         .is_some_and(|file| project_context.is_crate_source(file));
 
-    let node_key = if let (Some(file), Some(line)) = (&node.file, &node.line)
+    let node_key = if let Some(file) = &node.file
         && file_matches
-        && *line > 0
+        && node.line > 0
     {
-        Some((file.clone(), *line))
+        Some((file.clone(), node.line))
     } else {
         None
     };
@@ -671,14 +647,14 @@ impl AnalysisResult {
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisSummary {
     /// Unique panic code points: (file, line)
-    points: HashSet<(String, u32)>,
+    points: HashSet<(String, u16)>,
     /// Unique files with panic points
     files: HashSet<String>,
 }
 
 impl AnalysisSummary {
     /// Create a new summary from collected points
-    pub fn from_points(points: HashSet<(String, u32)>, files: HashSet<String>) -> Self {
+    pub fn from_points(points: HashSet<(String, u16)>, files: HashSet<String>) -> Self {
         Self { points, files }
     }
 
@@ -713,7 +689,7 @@ fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
 /// Collect unique (file, line) keys and unique files from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
-    seen_points: &mut HashSet<(String, u32)>,
+    seen_points: &mut HashSet<(String, u16)>,
     seen_files: &mut HashSet<String>,
 ) {
     for p in points {
@@ -726,7 +702,7 @@ fn collect_unique_point_keys_and_files(
 /// Deduplicate crate code points by (file, line), merging children
 fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
     // Group by (file, line)
-    let mut seen: HashMap<(String, u32), usize> = HashMap::new();
+    let mut seen: HashMap<(String, u16), usize> = HashMap::new();
     let mut result: Vec<CrateCodePoint> = Vec::new();
 
     for point in points.drain(..) {
@@ -814,7 +790,7 @@ mod tests {
             name: "app::run".to_string(),
             file: "src/main.rs".to_string(),
             line: 42,
-            column: Some(5),
+            column: 5,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
@@ -850,7 +826,7 @@ mod tests {
             name: "meshchat::device::DeviceIdentifier::hash".to_string(),
             file: "src/device.rs".to_string(),
             line: 74,
-            column: Some(22),
+            column: 22,
             causes: vec![PanicCause::CapacityOverflow].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
@@ -887,7 +863,7 @@ mod tests {
             name: "meshchat::device::DeviceIdentifier::hash".to_string(),
             file: "src/device.rs".to_string(),
             line: 74,
-            column: Some(22),
+            column: 22,
             causes: vec![PanicCause::CapacityOverflow, PanicCause::Unknown]
                 .into_iter()
                 .collect(),
@@ -939,7 +915,7 @@ mod tests {
             name: "app::run".to_string(),
             file: "src/main.rs".to_string(),
             line: 42,
-            column: Some(5),
+            column: 5,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
@@ -963,13 +939,13 @@ mod tests {
             name: "app::run".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: HashSet::new(),
             children: vec![CrateCodePoint {
                 name: "app::helper".to_string(),
                 file: "src/main.rs".to_string(),
                 line: 20,
-                column: Some(1),
+                column: 1,
                 causes: HashSet::new(),
                 children: vec![],
                 is_direct_panic: false,
@@ -1008,7 +984,7 @@ mod tests {
             name: "app::run".to_string(),
             file: "src/main.rs".to_string(),
             line: 42,
-            column: Some(5),
+            column: 5,
             causes: vec![PanicCause::Unknown].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,

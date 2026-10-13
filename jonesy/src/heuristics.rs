@@ -429,7 +429,7 @@ pub(crate) enum ConstArithmeticResult {
 /// - `None` if the line is not const arithmetic or the values cannot be resolved
 pub(crate) fn evaluate_const_arithmetic(
     source: &str,
-    line_number: u32,
+    line_number: u16,
 ) -> Option<ConstArithmeticResult> {
     let lines: Vec<&str> = source.lines().collect();
     let target_line = lines.get((line_number as usize).saturating_sub(1))?;

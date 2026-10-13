@@ -29,7 +29,8 @@
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 use rayon::prelude::*;
 
-/// Extracted instruction data for parallel processing
+/// Extracted instruction data for parallel processing.
+#[repr(C, align(16))]
 pub(crate) struct InsnData {
     pub(crate) address: u64,
     pub(crate) call_target: Option<u64>,

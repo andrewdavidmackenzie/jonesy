@@ -118,8 +118,8 @@ fn code_point_to_json(point: &CrateCodePoint, project_root: &str, include_childr
         "function": point.name,
     });
 
-    if let Some(col) = point.column {
-        obj["column"] = json!(col);
+    if point.column > 0 {
+        obj["column"] = json!(point.column);
     }
     if !causes_json.is_empty() {
         obj["causes"] = json!(causes_json);
@@ -201,14 +201,14 @@ mod tests {
     fn make_test_code_point(
         name: &str,
         file: &str,
-        line: u32,
+        line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
             name: name.to_string(),
             file: file.to_string(),
             line,
-            column: Some(1),
+            column: 1,
             causes: causes.into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -307,7 +307,7 @@ mod tests {
             name: "child_func".to_string(),
             file: "src/lib.rs".to_string(),
             line: 20,
-            column: Some(5),
+            column: 5,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
@@ -318,7 +318,7 @@ mod tests {
             name: "parent_func".to_string(),
             file: "src/main.rs".to_string(),
             line: 10,
-            column: Some(1),
+            column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,

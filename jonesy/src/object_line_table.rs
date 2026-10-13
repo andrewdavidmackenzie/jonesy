@@ -3,13 +3,14 @@ use crate::sym::resolve_line_file_path;
 use gimli::{AttributeValue, ColumnType, Dwarf, Reader};
 use rustc_demangle::demangle;
 
-/// Line entry for DWARF line table lookups
+/// Line entry for DWARF line table lookups.
+/// Uses `u16` for line/column with 0 meaning absent (saves space vs `Option<u16>`).
 #[derive(Debug, Clone)]
 struct ObjectLineEntry {
     address: u64,
     file: String,
-    line: u32,
-    column: Option<u32>,
+    line: u16,
+    column: u16,
     /// Function name - used to disambiguate overlapping section-relative addresses in .o files
     /// For ELF, multiple .text.* sections all start at 0x0, so we need function context
     function_name: Option<String>,
@@ -242,9 +243,9 @@ impl ObjectLineTable {
                     let file_idx = row.file_index() as usize;
                     if let Some(line) = row.line() {
                         if file_idx < file_paths.len() && file_idx > 0 {
-                            let column = match row.column() {
-                                ColumnType::LeftEdge => None,
-                                ColumnType::Column(c) => Some(c.get() as u32),
+                            let column: u16 = match row.column() {
+                                ColumnType::LeftEdge => 0,
+                                ColumnType::Column(c) => crate::to_u16_saturating(c.get()),
                             };
 
                             // Determine which function(s) this line entry belongs to
@@ -270,7 +271,7 @@ impl ObjectLineTable {
                                 entries.push(ObjectLineEntry {
                                     address,
                                     file: file_paths[file_idx].clone(),
-                                    line: line.get() as u32,
+                                    line: crate::to_u16_saturating(line.get()),
                                     column,
                                     function_name: Some(function_name),
                                     section_name: section_name.clone(),
@@ -282,7 +283,7 @@ impl ObjectLineTable {
                                 entries.push(ObjectLineEntry {
                                     address,
                                     file: file_paths[file_idx].clone(),
-                                    line: line.get() as u32,
+                                    line: crate::to_u16_saturating(line.get()),
                                     column,
                                     function_name: None,
                                     section_name: section_name.clone(),
@@ -301,10 +302,7 @@ impl ObjectLineTable {
     }
 
     /// Look up file/line/column for an address. Returns (file, line, column) if found.
-    pub(crate) fn lookup(
-        &self,
-        address: u64,
-    ) -> Option<(Option<String>, Option<u32>, Option<u32>)> {
+    pub(crate) fn lookup(&self, address: u64) -> Option<(Option<String>, u16, u16)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -317,7 +315,7 @@ impl ObjectLineTable {
         };
 
         let entry = &self.entries[idx];
-        Some((Some(entry.file.clone()), Some(entry.line), entry.column))
+        Some((Some(entry.file.clone()), entry.line, entry.column))
     }
 
     /// Look up file/line/column for an address, constrained to a specific function/section.
@@ -332,7 +330,7 @@ impl ObjectLineTable {
         address: u64,
         function_name: &str,
         section_name: Option<&str>,
-    ) -> Option<(Option<String>, Option<u32>, Option<u32>)> {
+    ) -> Option<(Option<String>, u16, u16)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -372,8 +370,7 @@ impl ObjectLineTable {
 
         // Find the entry with the largest address <= target address
         let entry = candidates.iter().max_by_key(|e| e.address)?;
-
-        Some((Some(entry.file.clone()), Some(entry.line), entry.column))
+        Some((Some(entry.file.clone()), entry.line, entry.column))
     }
 
     /// Look up file/line/column for an address, constrained to a specific function.
@@ -382,7 +379,7 @@ impl ObjectLineTable {
         &self,
         address: u64,
         function_name: &str,
-    ) -> Option<(Option<String>, Option<u32>, Option<u32>)> {
+    ) -> Option<(Option<String>, u16, u16)> {
         // Call the section-aware version without a section filter
         self.lookup_for_function_and_section(address, function_name, None)
     }
@@ -394,7 +391,7 @@ impl ObjectLineTable {
         func_start: u64,
         call_site_addr: u64,
         project_context: &ProjectContext,
-    ) -> Option<(String, u32, Option<u32>)> {
+    ) -> Option<(String, u16, u16)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -430,7 +427,7 @@ impl ObjectLineTable {
         function_name: &str,
         section_name: Option<&str>,
         project_context: &ProjectContext,
-    ) -> Option<(String, u32, Option<u32>)> {
+    ) -> Option<(String, u16, u16)> {
         if self.entries.is_empty() {
             return None;
         }

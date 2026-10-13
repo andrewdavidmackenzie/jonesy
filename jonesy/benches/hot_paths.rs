@@ -472,8 +472,8 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
             CrateCodePoint {
                 name: format!("function_{}", i),
                 file: format!("src/file_{}.rs", i % 10),
-                line: (i * 10 + 1) as u32,
-                column: Some(5),
+                line: (i * 10 + 1) as u16,
+                column: 5,
                 causes,
                 children: Vec::new(),
                 is_direct_panic: i % 3 == 0,

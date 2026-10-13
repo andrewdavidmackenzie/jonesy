@@ -284,9 +284,9 @@ fn process_instruction_data_with_crate_table<'a>(
         // Keep a copy for fallback file resolution
         let decl_file = func_file.clone();
         let (mut file, mut line, mut column) = match (func_file, func_line) {
-            (Some(f), Some(l)) => {
+            (Some(f), l) if l > 0 => {
                 // Fast path: use DWARF function info directly
-                (Some(f), Some(l), None)
+                (Some(f), l, 0)
             }
             (func_file, func_line) => {
                 // Use pre-built full line table for O(log n) lookup
@@ -294,7 +294,7 @@ fn process_instruction_data_with_crate_table<'a>(
                     full_line_table.get_source_location(func.start_address);
                 (
                     func_file.or(line_file),
-                    func_line.or(line_line),
+                    if func_line > 0 { func_line } else { line_line },
                     line_column,
                 )
             }
@@ -309,7 +309,7 @@ fn process_instruction_data_with_crate_table<'a>(
             {
                 let (crate_line, crate_column) =
                     crate_line_table.get_line(func.start_address, data.address);
-                if crate_line.is_some() {
+                if crate_line > 0 {
                     if crate_line == func_line {
                         // Only found function-start line. Try full line table.
                         let (full_line, full_column) = full_line_table.get_nearest_crate_line(
@@ -319,7 +319,7 @@ fn process_instruction_data_with_crate_table<'a>(
                             func_line,
                             project_context,
                         );
-                        if full_line.is_some() && full_line != func_line {
+                        if full_line > 0 && full_line != func_line {
                             line = full_line;
                             column = full_column;
                         } else {
@@ -335,9 +335,10 @@ fn process_instruction_data_with_crate_table<'a>(
                         // Option::unwrap) rather than the actual call site.
                         // For lines deep inside the function body, the crate
                         // line table result is already correct.
-                        let near_prologue = match (crate_line, func_line) {
-                            (Some(cl), Some(fl)) => cl.saturating_sub(fl) <= 5,
-                            _ => false,
+                        let near_prologue = if crate_line > 0 && func_line > 0 {
+                            crate_line.saturating_sub(func_line) <= 5
+                        } else {
+                            false
                         };
                         if near_prologue {
                             if let Some((call_file, call_line_num, _)) =
@@ -345,11 +346,11 @@ fn process_instruction_data_with_crate_table<'a>(
                             {
                                 if project_context.is_crate_source(call_file)
                                     && call_line_num > 0
-                                    && Some(call_line_num) != crate_line
+                                    && call_line_num != crate_line
                                 {
                                     file = Some(call_file.to_string());
-                                    line = Some(call_line_num);
-                                    column = None;
+                                    line = call_line_num;
+                                    column = 0;
                                 } else {
                                     line = crate_line;
                                     column = crate_column;
@@ -400,8 +401,8 @@ fn process_instruction_data_with_crate_table<'a>(
                 file: merged_file,
                 caller_start_address: func.start_address,
                 call_site_addr: data.address,
-                line: line.unwrap_or(0) as u16,
-                column: column.unwrap_or(0) as u16,
+                line,
+                column,
             },
         ))
     } else if let Some((func_addr, func_name)) =

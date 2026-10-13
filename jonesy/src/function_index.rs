@@ -15,11 +15,12 @@ type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 type DwarfFunctionResult = (Vec<FunctionInfo>, Vec<FunctionInfo>, StringTables);
 
 /// Resolved specification data: (name, file, line)
-type SpecificationResult = (Option<String>, Option<String>, Option<u32>);
+type SpecificationResult = (Option<String>, Option<String>, u16);
 
 /// Function info extracted from DWARF of the calling function.
-/// Uses indices into StringTables for compact memory layout (32 bytes).
+/// Uses indices into StringTables for compact memory layout.
 #[derive(Debug, Clone, Copy)]
+#[repr(C, align(32))]
 pub struct FunctionInfo {
     /// Start address of the function
     pub start_address: u64,
@@ -30,7 +31,7 @@ pub struct FunctionInfo {
     /// Index into StringTables.files (0 = None, otherwise idx + 1)
     pub file_idx: u32,
     /// Line number (0 = None)
-    pub line: u32,
+    pub line: u16,
 }
 
 /// Bucket size for spatial partitioning of inlined functions.
@@ -119,12 +120,9 @@ impl FunctionIndex {
 
     /// Get the line number for a FunctionInfo (None if 0)
     #[inline]
-    pub fn get_line(&self, func: &FunctionInfo) -> Option<u32> {
-        if func.line == 0 {
-            None
-        } else {
-            Some(func.line)
-        }
+    /// Get the line number for a function (0 = absent).
+    pub fn get_line(&self, func: &FunctionInfo) -> u16 {
+        func.line
     }
 
     /// Get a reference to the string tables
@@ -225,7 +223,7 @@ impl FunctionIndex {
     /// and DW_AT_call_line point back to the crate code that called it.
     ///
     /// Returns `(call_file, call_line, inlined_function_name)`.
-    pub fn get_inlined_call_site(&self, addr: u64) -> Option<(&str, u32, &str)> {
+    pub fn get_inlined_call_site(&self, addr: u64) -> Option<(&str, u16, &str)> {
         let bucket = Self::bucket_id(addr);
         let indices = self.inlined_buckets.get(&bucket)?;
 
@@ -281,7 +279,7 @@ struct ParsedFunctionInfo {
     start_address: u64,
     end_address: u64,
     file: Option<String>,
-    line: Option<u32>,
+    line: Option<u16>,
 }
 
 /// Load DWARF sections from binary
@@ -443,7 +441,7 @@ pub fn get_functions_from_dwarf<'a>(
                 end_address: parsed.end_address,
                 name_idx: strings.intern_name(parsed.name),
                 file_idx: strings.intern_file(parsed.file),
-                line: parsed.line.unwrap_or(0),
+                line: parsed.line.unwrap_or(0u16),
             });
         }
         for parsed in inl {
@@ -452,7 +450,7 @@ pub fn get_functions_from_dwarf<'a>(
                 end_address: parsed.end_address,
                 name_idx: strings.intern_name(parsed.name),
                 file_idx: strings.intern_file(parsed.file),
-                line: parsed.line.unwrap_or(0),
+                line: parsed.line.unwrap_or(0u16),
             });
         }
     }
@@ -473,7 +471,7 @@ fn parse_function_die<R: Reader>(
     let mut high_pc: Option<u64> = None;
     let mut high_pc_is_offset = false;
     let mut file: Option<String> = None;
-    let mut line: Option<u32> = None;
+    let mut line: Option<u16> = None;
     let mut specification: Option<gimli::UnitOffset<R::Offset>> = None;
 
     let mut attrs = entry.attrs();
@@ -518,7 +516,7 @@ fn parse_function_die<R: Reader>(
             }
             gimli::DW_AT_decl_line => {
                 if let AttributeValue::Udata(l) = attr.value() {
-                    line = Some(l as u32);
+                    line = Some(crate::to_u16_saturating(l));
                 }
             }
             gimli::DW_AT_specification => {
@@ -542,8 +540,8 @@ fn parse_function_die<R: Reader>(
             if file.is_none() {
                 file = spec_file;
             }
-            if line.is_none() {
-                line = spec_line;
+            if line.is_none() && spec_line > 0 {
+                line = Some(spec_line);
             }
         }
     }
@@ -583,7 +581,7 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     let mut high_pc_is_offset = false;
     let mut ranges_attr: Option<AttributeValue<R>> = None;
     let mut call_file: Option<String> = None;
-    let mut call_line: Option<u32> = None;
+    let mut call_line: Option<u16> = None;
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
@@ -637,7 +635,7 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
             }
             gimli::DW_AT_call_line => {
                 if let AttributeValue::Udata(l) = attr.value() {
-                    call_line = Some(l as u32);
+                    call_line = Some(crate::to_u16_saturating(l));
                 }
             }
             _ => {}
@@ -844,7 +842,7 @@ fn resolve_specification<R: Reader>(
     let entry = unit.entry(offset)?;
     let mut name: Option<String> = None;
     let mut file: Option<String> = None;
-    let mut line: Option<u32> = None;
+    let mut line: Option<u16> = None;
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
@@ -871,14 +869,14 @@ fn resolve_specification<R: Reader>(
             }
             gimli::DW_AT_decl_line => {
                 if let AttributeValue::Udata(l) = attr.value() {
-                    line = Some(l as u32);
+                    line = Some(crate::to_u16_saturating(l));
                 }
             }
             _ => {}
         }
     }
 
-    Ok((name, file, line))
+    Ok((name, file, line.unwrap_or(0)))
 }
 
 #[cfg(test)]
