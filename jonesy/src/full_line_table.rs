@@ -255,10 +255,13 @@ impl FullLineTable {
             }
         }
 
-        // Sort by address for binary search
-        // crate_entries: par_sort is safe (get_line returns last entry, order doesn't matter)
-        // full_entries: stable sort needed (get_source_location returns first entry)
-        crate_entries.par_sort_by_key(|e| e.address);
+        // Sort by address for binary search.
+        // crate_entries: unstable par_sort is safe (get_line returns last entry,
+        // so tie-breaking order doesn't matter).
+        // full_entries: stable sort preserves insertion order for entries at the
+        // same address, which matters for get_source_location (returns the first
+        // entry from the earliest compilation unit).
+        crate_entries.par_sort_unstable_by_key(|e| e.address);
         full_entries.sort_by_key(|e| e.address);
 
         Ok((
