@@ -7,6 +7,7 @@ use gimli::{ColumnType, Dwarf, Reader};
 /// A line entry for crate source code, used for fast lookups.
 /// Uses `u16` for line/column with 0 meaning absent (saves space vs `Option<u16>`).
 #[derive(Debug, Clone)]
+#[repr(C, align(16))]
 pub struct CrateLineEntry {
     pub address: u64,
     pub line: u16,

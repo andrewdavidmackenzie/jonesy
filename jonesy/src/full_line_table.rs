@@ -13,6 +13,7 @@ type SourceLocation = (Option<String>, u16, u16);
 /// Uses file_id for string interning to reduce memory pressure.
 /// Uses `u16` for line/column with 0 meaning absent (saves space vs `Option<u16>`).
 #[derive(Debug, Clone)]
+#[repr(C, align(16))]
 pub struct FullLineEntry {
     pub address: u64,
     /// Index into FullLineTable's file_pool for the file path

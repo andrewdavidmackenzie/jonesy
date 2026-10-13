@@ -23,6 +23,7 @@
 use rayon::prelude::*;
 
 /// Extracted instruction data for parallel processing (avoids Insn lifetime issues).
+#[repr(C, align(16))]
 pub(crate) struct InsnData {
     pub(crate) address: u64,
     pub(crate) call_target: Option<u64>,

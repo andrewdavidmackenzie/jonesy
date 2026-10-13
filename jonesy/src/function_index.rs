@@ -20,6 +20,7 @@ type SpecificationResult = (Option<String>, Option<String>, u16);
 /// Function info extracted from DWARF of the calling function.
 /// Uses indices into StringTables for compact memory layout.
 #[derive(Debug, Clone, Copy)]
+#[repr(C, align(32))]
 pub struct FunctionInfo {
     /// Start address of the function
     pub start_address: u64,
