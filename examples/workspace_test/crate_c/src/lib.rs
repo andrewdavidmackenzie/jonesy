@@ -20,7 +20,7 @@ pub fn unwrap_err() {
     let result: Result<i32, &str> = if rng.random_bool(0.0) {
         Ok(42)
     } else {
-        // jonesy: expect panic(unwrap)
+        // jonesy: expect panic(unwrap) [linux-x86_64]
         Err("error")
     };
     // jonesy: expect panic unwrap on Err
