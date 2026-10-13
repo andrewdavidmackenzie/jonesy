@@ -255,12 +255,14 @@ impl FullLineTable {
             }
         }
 
-        // Sort by address for binary search. Unstable sort avoids O(n) scratch
-        // allocation (~69 MB for large binaries). For full_entries, a secondary
-        // key (file_id) ensures deterministic ordering when multiple entries share
-        // the same address (e.g. from inlined code across compilation units).
+        // Sort by address for binary search.
+        // crate_entries: unstable par_sort is safe (get_line returns last entry,
+        // so tie-breaking order doesn't matter).
+        // full_entries: stable sort preserves insertion order for entries at the
+        // same address, which matters for get_source_location (returns the first
+        // entry from the earliest compilation unit).
         crate_entries.par_sort_unstable_by_key(|e| e.address);
-        full_entries.sort_unstable_by_key(|e| (e.address, e.file_id));
+        full_entries.sort_by_key(|e| e.address);
 
         Ok((
             CrateLineTable::from_entries(crate_entries),
