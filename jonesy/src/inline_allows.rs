@@ -13,9 +13,16 @@
 //! reported panic point, or on the line immediately above it. No wider
 //! range is checked.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+
+/// Cache for source file contents, keyed by file path.
+///
+/// Avoids re-reading the same source file for every cause at every code point.
+/// The profiler showed 48% of analysis time was spent in `__open`, `read`,
+/// `close` syscalls and `Lines::next` from repeated file reads.
+pub type SourceFileCache = HashMap<String, Option<String>>;
 
 /// Check if a cause is allowed at a specific file:line by inline comment.
 /// Also checks the previous line (for comments above the code).
@@ -68,17 +75,21 @@ fn parse_file_allows(content: &str) -> std::collections::HashMap<u16, HashSet<St
 ///
 /// The `workspace_root` parameter is optional - if provided, it's used to resolve
 /// relative paths. If not provided, falls back to current directory.
+///
+/// If `cache` is provided, file contents are cached to avoid redundant reads.
+/// Pass `None` for one-off checks (e.g., tests).
 pub fn check_inline_allow(
     file_path: &str,
     line: u16,
     cause_id: &str,
     workspace_root: Option<&Path>,
+    cache: Option<&mut SourceFileCache>,
 ) -> bool {
     if line == 0 {
         return false;
     }
 
-    let content = read_source_file_with_root(file_path, workspace_root);
+    let content = cached_read_source_file(file_path, workspace_root, cache);
 
     let content = match content {
         Some(c) => c,
@@ -120,9 +131,35 @@ pub fn check_inline_allow(
 
 /// Read the full contents of a source file, handling both absolute and relative paths.
 ///
+/// If `cache` is provided, returns cached content to avoid redundant disk reads.
 /// Returns `None` if the file cannot be found or read.
-pub(crate) fn read_source_file(file_path: &str, workspace_root: Option<&Path>) -> Option<String> {
-    read_source_file_with_root(file_path, workspace_root)
+pub(crate) fn read_source_file(
+    file_path: &str,
+    workspace_root: Option<&Path>,
+    cache: Option<&mut SourceFileCache>,
+) -> Option<String> {
+    cached_read_source_file(file_path, workspace_root, cache)
+}
+
+/// Read a source file with caching support.
+///
+/// When a cache is provided, the file is read at most once per analysis run.
+/// Returns a clone of the cached content (or `None` if the file was not found).
+fn cached_read_source_file(
+    file_path: &str,
+    workspace_root: Option<&Path>,
+    cache: Option<&mut SourceFileCache>,
+) -> Option<String> {
+    if let Some(cache) = cache {
+        if let Some(cached) = cache.get(file_path) {
+            return cached.clone();
+        }
+        let content = read_source_file_with_root(file_path, workspace_root);
+        cache.insert(file_path.to_string(), content.clone());
+        content
+    } else {
+        read_source_file_with_root(file_path, workspace_root)
+    }
 }
 
 /// Try to read a source file, handling both absolute and relative paths.
@@ -424,21 +461,24 @@ fn foo() {
             file_path.to_str().unwrap(),
             2,
             "unwrap",
-            None
+            None,
+            None,
         ));
         // Line 3 checks line 2 (previous line) which has the allow
         assert!(check_inline_allow(
             file_path.to_str().unwrap(),
             3,
             "unwrap",
-            None
+            None,
+            None,
         ));
         // Different cause should not match
         assert!(!check_inline_allow(
             file_path.to_str().unwrap(),
             2,
             "panic",
-            None
+            None,
+            None,
         ));
     }
 
@@ -452,7 +492,7 @@ fn foo() {
         drop(file);
 
         // Absolute path should work without workspace root
-        let result = check_inline_allow(file_path.to_str().unwrap(), 1, "anything", None);
+        let result = check_inline_allow(file_path.to_str().unwrap(), 1, "anything", None, None);
         assert!(result);
     }
 
@@ -462,7 +502,8 @@ fn foo() {
             "/nonexistent/file.rs",
             1,
             "unwrap",
-            None
+            None,
+            None,
         ));
     }
 
@@ -478,13 +519,15 @@ fn foo() {
             file_path.to_str().unwrap(),
             1,
             "anything",
-            None
+            None,
+            None,
         ));
         assert!(check_inline_allow(
             file_path.to_str().unwrap(),
             1,
             "unwrap",
-            None
+            None,
+            None,
         ));
     }
 
