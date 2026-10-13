@@ -588,13 +588,14 @@ fn filter_allowed_causes_cached(
             // - Safe arithmetic methods like checked_add, saturating_mul (issue #267)
             // - Const-only expressions that are provably safe (issue #266)
             if cause.is_debug_only() {
-                if let Some(source_content) =
-                    crate::inline_allows::read_source_file(&point.file, workspace_root, Some(cache))
-                {
+                if let Some(source_lines) = crate::inline_allows::read_source_lines(
+                    &point.file,
+                    workspace_root,
+                    Some(cache),
+                ) {
                     // Check if the source line uses a safe arithmetic method
-                    if let Some(source_line) = source_content
-                        .lines()
-                        .nth((point.line as usize).saturating_sub(1))
+                    if let Some(source_line) =
+                        source_lines.get((point.line as usize).saturating_sub(1))
                     {
                         if crate::heuristics::is_safe_arithmetic_method(source_line) {
                             return false;
@@ -602,7 +603,7 @@ fn filter_allowed_causes_cached(
                     }
 
                     // Check if the expression is const-only and provably safe
-                    if crate::heuristics::evaluate_const_arithmetic(&source_content, point.line)
+                    if crate::heuristics::evaluate_const_arithmetic(&source_lines, point.line)
                         == Some(crate::heuristics::ConstArithmeticResult::Safe)
                     {
                         return false;

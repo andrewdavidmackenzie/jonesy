@@ -428,11 +428,10 @@ pub(crate) enum ConstArithmeticResult {
 /// - `Some(Overflow)` if the line has const-only arithmetic that overflows
 /// - `None` if the line is not const arithmetic or the values cannot be resolved
 pub(crate) fn evaluate_const_arithmetic(
-    source: &str,
+    source_lines: &[String],
     line_number: u16,
 ) -> Option<ConstArithmeticResult> {
-    let lines: Vec<&str> = source.lines().collect();
-    let target_line = lines.get((line_number as usize).saturating_sub(1))?;
+    let target_line = source_lines.get((line_number as usize).saturating_sub(1))?;
 
     // Extract expression, split into operands, and verify they look like constants
     let expr = extract_expression(target_line)?;
@@ -451,8 +450,8 @@ pub(crate) fn evaluate_const_arithmetic(
     // is_const_token already verified the tokens look like constants, but
     // resolve_const_value additionally requires a matching `const` declaration
     // for SCREAMING_CASE identifiers (rejecting `let` bindings).
-    let (lhs_val, lhs_type) = resolve_const_value(lhs, source)?;
-    let (rhs_val, rhs_type) = resolve_const_value(rhs, source)?;
+    let (lhs_val, lhs_type) = resolve_const_value(lhs, source_lines)?;
+    let (rhs_val, rhs_type) = resolve_const_value(rhs, source_lines)?;
 
     // Determine the result type (use the more specific type, or default to i32)
     let result_type = if lhs_type != IntType::I32Default {
@@ -563,7 +562,7 @@ fn parse_binary_arithmetic(expr: &str) -> Option<(&str, char, &str)> {
 ///
 /// The caller must have already verified the token passes `is_const_token` (either a
 /// numeric literal or a SCREAMING_CASE identifier).
-fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
+fn resolve_const_value(token: &str, source_lines: &[String]) -> Option<(i128, IntType)> {
     let token = token.trim();
 
     // Try to parse as a numeric literal first
@@ -575,7 +574,7 @@ fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
     // A `let OFFSET = input;` would shadow a file-level `const OFFSET`,
     // making it unsafe to assume the expression uses the const value.
     let let_pattern = format!("let {token}");
-    let has_let_shadow = source.lines().any(|l| {
+    let has_let_shadow = source_lines.iter().any(|l| {
         let t = l.trim();
         t.starts_with(&let_pattern) && t[let_pattern.len()..].starts_with([' ', ':', '='])
     });
@@ -584,7 +583,7 @@ fn resolve_const_value(token: &str, source: &str) -> Option<(i128, IntType)> {
     }
 
     // Search for a matching `const NAME: TYPE = VALUE;` declaration.
-    for line in source.lines() {
+    for line in source_lines {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("const ") {
             if let Some((name_type, value_part)) = rest.split_once('=') {
@@ -1313,6 +1312,11 @@ mod tests {
         assert!(!is_const_arithmetic("    let _ = a.checked_add(b);"));
     }
 
+    /// Helper to convert a `&str` source to `Vec<String>` lines for testing.
+    fn to_lines(source: &str) -> Vec<String> {
+        source.lines().map(String::from).collect()
+    }
+
     /// Issue #266: `evaluate_const_arithmetic` should resolve constant values from
     /// the source file and evaluate whether the arithmetic overflows.
     #[test]
@@ -1325,7 +1329,7 @@ mod tests {
                       }";
         // Line 4 has `let _result = OFFSET + 1;` — OFFSET=7, 7+1=8, no overflow
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1341,7 +1345,7 @@ mod tests {
                       }";
         // Line 5 has `let _ = A + B;` — A=200, B=200, 200+200=400 overflows u8
         assert_eq!(
-            evaluate_const_arithmetic(source, 5),
+            evaluate_const_arithmetic(&to_lines(source), 5),
             Some(ConstArithmeticResult::Overflow)
         );
     }
@@ -1353,7 +1357,7 @@ mod tests {
                       }";
         // Pure literals: 7+1=8, no overflow (default integer type is i32)
         assert_eq!(
-            evaluate_const_arithmetic(source, 2),
+            evaluate_const_arithmetic(&to_lines(source), 2),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1365,7 +1369,7 @@ mod tests {
                           let _ = x + 1;\n\
                       }";
         // `x` is a runtime variable, not const arithmetic
-        assert_eq!(evaluate_const_arithmetic(source, 3), None);
+        assert_eq!(evaluate_const_arithmetic(&to_lines(source), 3), None);
     }
 
     #[test]
@@ -1375,7 +1379,7 @@ mod tests {
                           let _ = 1u8 + 2;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 2),
+            evaluate_const_arithmetic(&to_lines(source), 2),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1387,7 +1391,7 @@ mod tests {
                           let _ = 250u8 + 10;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 2),
+            evaluate_const_arithmetic(&to_lines(source), 2),
             Some(ConstArithmeticResult::Overflow)
         );
     }
@@ -1414,7 +1418,7 @@ mod tests {
                           let _ = OFFSET + 1;\n\
                       }";
         // OFFSET is a let binding, not a const declaration — resolve_const_value should fail
-        assert_eq!(evaluate_const_arithmetic(source, 3), None);
+        assert_eq!(evaluate_const_arithmetic(&to_lines(source), 3), None);
     }
 
     #[test]
@@ -1430,7 +1434,7 @@ mod tests {
                       }";
         // Even though const OFFSET = 1 and 1 + 1 = 2 (safe), the let binding
         // shadows it, so we can't be sure — should return None
-        assert_eq!(evaluate_const_arithmetic(source, 5), None);
+        assert_eq!(evaluate_const_arithmetic(&to_lines(source), 5), None);
     }
 
     #[test]
@@ -1443,7 +1447,7 @@ mod tests {
                       }";
         // u8 has 8 bits, so shifting by 8 overflows regardless of the value
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Overflow)
         );
     }
@@ -1457,7 +1461,7 @@ mod tests {
                       }";
         // 1 << 7 = 128, fits in u8 (0..=255)
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1627,7 +1631,7 @@ mod tests {
                           let _ = A - B;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1640,7 +1644,7 @@ mod tests {
                           let _ = A - B;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Overflow)
         );
     }
@@ -1653,7 +1657,7 @@ mod tests {
                           let _ = A * B;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Overflow)
         );
     }
@@ -1666,7 +1670,7 @@ mod tests {
                           let _ = A / B;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1679,7 +1683,7 @@ mod tests {
                           let _ = A % B;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 4),
+            evaluate_const_arithmetic(&to_lines(source), 4),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1691,7 +1695,7 @@ mod tests {
                           let _ = A << 4;\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 3),
+            evaluate_const_arithmetic(&to_lines(source), 3),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1703,7 +1707,7 @@ mod tests {
                       }";
         // 0xFF + 1 = 256, safe for i32 default
         assert_eq!(
-            evaluate_const_arithmetic(source, 2),
+            evaluate_const_arithmetic(&to_lines(source), 2),
             Some(ConstArithmeticResult::Safe)
         );
     }
@@ -1712,7 +1716,7 @@ mod tests {
     fn test_evaluate_const_arithmetic_line_out_of_range() {
         let source = "fn f() {}";
         // Line 100 is out of range
-        assert_eq!(evaluate_const_arithmetic(source, 100), None);
+        assert_eq!(evaluate_const_arithmetic(&to_lines(source), 100), None);
     }
 
     #[test]
@@ -1720,7 +1724,7 @@ mod tests {
         let source = "fn f() {\n\
                           // just a comment\n\
                       }";
-        assert_eq!(evaluate_const_arithmetic(source, 2), None);
+        assert_eq!(evaluate_const_arithmetic(&to_lines(source), 2), None);
     }
 
     #[test]
@@ -1731,7 +1735,7 @@ mod tests {
                           A + 5\n\
                       }";
         assert_eq!(
-            evaluate_const_arithmetic(source, 3),
+            evaluate_const_arithmetic(&to_lines(source), 3),
             Some(ConstArithmeticResult::Safe)
         );
     }

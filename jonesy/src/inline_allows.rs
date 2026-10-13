@@ -16,13 +16,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
-/// Cache for source file contents, keyed by file path.
+/// Cache for source file contents as pre-split lines, keyed by file path.
 ///
-/// Avoids re-reading the same source file for every cause at every code point.
-/// The profiler showed 48% of analysis time was spent in `__open`, `read`,
-/// `close` syscalls and `Lines::next` from repeated file reads.
-pub type SourceFileCache = HashMap<String, Option<String>>;
+/// Avoids re-reading the same source file for every cause at every code point,
+/// and avoids re-splitting into lines on every access. Uses `Arc` so cached
+/// lines are shared without cloning the entire vector on each access.
+pub type SourceFileCache = HashMap<String, Option<Arc<Vec<String>>>>;
 
 /// Check if a cause is allowed at a specific file:line by inline comment.
 /// Also checks the previous line (for comments above the code).
@@ -89,18 +90,17 @@ pub fn check_inline_allow(
         return false;
     }
 
-    let content = cached_read_source_file(file_path, workspace_root, cache);
+    let lines_arc = cached_read_source_lines(file_path, workspace_root, cache);
 
-    let content = match content {
-        Some(c) => c,
+    let lines = match lines_arc {
+        Some(ref l) => l.as_slice(),
         None => return false,
     };
-
-    let lines: Vec<&str> = content.lines().collect();
 
     // Check the reported line and the line above it only
     for check_line in [line.saturating_sub(1), line] {
         if let Some(line_content) = lines.get((check_line as usize).saturating_sub(1)) {
+            let line_content: &str = line_content;
             if let Some(causes) = parse_line_allows(line_content) {
                 if causes.contains("*") || causes.contains(cause_id) {
                     return true;
@@ -129,36 +129,40 @@ pub fn check_inline_allow(
     false
 }
 
-/// Read the full contents of a source file, handling both absolute and relative paths.
+/// Read a source file as pre-split lines, with caching support.
 ///
-/// If `cache` is provided, returns cached content to avoid redundant disk reads.
-/// Returns `None` if the file cannot be found or read.
-pub(crate) fn read_source_file(
+/// If `cache` is provided, returns cached lines to avoid redundant disk reads
+/// and line splitting. Returns `None` if the file cannot be found or read.
+/// The returned `Arc` avoids cloning the line vector on each access.
+pub(crate) fn read_source_lines(
     file_path: &str,
     workspace_root: Option<&Path>,
     cache: Option<&mut SourceFileCache>,
-) -> Option<String> {
-    cached_read_source_file(file_path, workspace_root, cache)
+) -> Option<Arc<Vec<String>>> {
+    cached_read_source_lines(file_path, workspace_root, cache)
 }
 
-/// Read a source file with caching support.
+/// Read a source file as pre-split lines with caching support.
 ///
-/// When a cache is provided, the file is read at most once per analysis run.
-/// Returns a clone of the cached content (or `None` if the file was not found).
-fn cached_read_source_file(
+/// When a cache is provided, the file is read and split at most once per
+/// analysis run. Returns a shared reference to the cached lines via `Arc`,
+/// avoiding expensive `Vec<String>` clones on each access.
+fn cached_read_source_lines(
     file_path: &str,
     workspace_root: Option<&Path>,
     cache: Option<&mut SourceFileCache>,
-) -> Option<String> {
+) -> Option<Arc<Vec<String>>> {
     if let Some(cache) = cache {
         if let Some(cached) = cache.get(file_path) {
             return cached.clone();
         }
-        let content = read_source_file_with_root(file_path, workspace_root);
-        cache.insert(file_path.to_string(), content.clone());
-        content
+        let lines = read_source_file_with_root(file_path, workspace_root)
+            .map(|content| Arc::new(content.lines().map(String::from).collect()));
+        cache.insert(file_path.to_string(), lines.clone());
+        lines
     } else {
         read_source_file_with_root(file_path, workspace_root)
+            .map(|content| Arc::new(content.lines().map(String::from).collect()))
     }
 }
 
