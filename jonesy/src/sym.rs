@@ -218,11 +218,14 @@ impl<'a> SymbolTable<'a> {
     /// and M symbols, separate calls cost O(N * M * demangle), while this
     /// method costs O(M * demangle + M * N * regex_match).
     ///
-    /// Returns `(mangled_name, demangled_name, address)` for each match.
+    /// Returns `(mangled_name, demangled_name, address, pattern_index)` for
+    /// each match, where `pattern_index` is the index of the first matching
+    /// pattern. This allows callers to distinguish which pattern matched
+    /// (e.g. for first-match-only vs all-match semantics).
     pub fn find_all_matching_in_single_pass(
         &self,
         patterns: &[&str],
-    ) -> Result<Vec<(String, String, u64)>, regex::Error> {
+    ) -> Result<Vec<(String, String, u64, usize)>, regex::Error> {
         let regexes: Vec<Regex> = patterns
             .iter()
             .map(|p| Regex::new(p))
@@ -238,12 +241,13 @@ impl<'a> SymbolTable<'a> {
                         }
                         let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
                         let demangled = format!("{:#}", demangle(stripped));
-                        for regex in &regexes {
+                        for (idx, regex) in regexes.iter().enumerate() {
                             if regex.is_match(&demangled) {
                                 results.push((
                                     sym_name.to_string(),
                                     demangled.clone(),
                                     nlist.n_value,
+                                    idx,
                                 ));
                                 break;
                             }
@@ -261,9 +265,14 @@ impl<'a> SymbolTable<'a> {
                             continue;
                         }
                         let demangled = format!("{:#}", demangle(name));
-                        for regex in &regexes {
+                        for (idx, regex) in regexes.iter().enumerate() {
                             if regex.is_match(&demangled) {
-                                results.push((name.to_string(), demangled.clone(), sym.st_value));
+                                results.push((
+                                    name.to_string(),
+                                    demangled.clone(),
+                                    sym.st_value,
+                                    idx,
+                                ));
                                 break;
                             }
                         }

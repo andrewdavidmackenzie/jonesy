@@ -76,6 +76,13 @@ const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::"];
 pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
     // Combine all patterns into a single pass over the symbol table.
     // This demangles each symbol once instead of 4 times.
+    //
+    // PANIC_SYMBOLS (rust_panic$, rust_begin_unwind$) are first-match-only
+    // patterns — we only want one entry point per pattern, matching the
+    // original find_symbol_containing semantics.
+    //
+    // BINARY_PANIC_PREFIXES and ABORT_SYMBOL are all-match patterns —
+    // we want every monomorphised instance.
     let all_patterns: Vec<&str> = PANIC_SYMBOLS
         .iter()
         .copied()
@@ -83,11 +90,22 @@ pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
         .chain(std::iter::once(ABORT_SYMBOL))
         .collect();
 
+    let first_match_count = PANIC_SYMBOLS.len();
+
     let mut entry_points = Vec::new();
     let mut seen_addrs = std::collections::HashSet::new();
+    // Track which first-match patterns have already been satisfied
+    let mut first_match_found = vec![false; first_match_count];
 
     if let Ok(matches) = symbols.find_all_matching_in_single_pass(&all_patterns) {
-        for (sym, dem, addr) in matches {
+        for (sym, dem, addr, pattern_idx) in matches {
+            // For first-match patterns (PANIC_SYMBOLS), only take the first hit
+            if pattern_idx < first_match_count {
+                if first_match_found[pattern_idx] {
+                    continue;
+                }
+                first_match_found[pattern_idx] = true;
+            }
             if seen_addrs.insert(addr) {
                 entry_points.push((sym, dem, addr));
             }
