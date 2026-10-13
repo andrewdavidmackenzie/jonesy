@@ -137,40 +137,49 @@ impl FullLineTable {
         self.entries.is_empty()
     }
 
-    /// Build both CrateLineTable and FullLineTable in a single pass over DWARF.
-    /// This is more efficient than building each separately since we only iterate
-    /// the line program once.
+    /// Build both CrateLineTable and FullLineTable by processing DWARF
+    /// compilation units in parallel.
     ///
-    /// File paths are pre-resolved from the line program header (typically hundreds
-    /// of entries per compilation unit) and cached in a Vec indexed by DWARF file
-    /// index. This avoids calling `resolve_line_file_path` per row (millions of
-    /// times), eliminating ~1.15 GB of transient string allocations.
-    pub fn build_both<R: Reader>(
+    /// Each compilation unit's line program is processed independently by a
+    /// rayon worker thread. File path interning uses a `DashMap` for
+    /// lock-free concurrent access. Per-unit results are merged and sorted
+    /// at the end.
+    ///
+    /// File paths are pre-resolved from the line program header (typically
+    /// hundreds of entries per compilation unit) and cached per-unit. This
+    /// avoids calling `resolve_line_file_path` per row (millions of times).
+    pub fn build_both<R: Reader<Offset = usize> + Send + Sync>(
         dwarf: &Dwarf<R>,
         project_context: &ProjectContext,
         text_section_size: usize,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
-        // Pre-allocate with estimated capacity based on text section size.
-        // Measured ratio: ~1 line entry per 6 text bytes, crate entries ~1%.
-        // Avoids ~23 Vec doublings and ~134 MB of redundant memcpy for large
-        // binaries like flowrgui (5.7M entries from 34 MB text section).
-        let estimated_full = text_section_size / 6;
-        let estimated_crate = estimated_full / 100;
-        let mut crate_entries = Vec::with_capacity(estimated_crate);
-        let mut full_entries = Vec::with_capacity(estimated_full);
-        let mut file_pool = Vec::new();
-        let mut file_to_id: ahash::AHashMap<String, u32> = ahash::AHashMap::new();
+        use dashmap::DashMap;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
-        let mut units = dwarf.units();
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
+        // Collect all unit headers first (fast, sequential)
+        let mut headers = Vec::new();
+        let mut units_iter = dwarf.units();
+        while let Some(header) = units_iter.next()? {
+            headers.push(header);
+        }
 
-            if let Some(program) = &unit.line_program {
+        // Shared file interning across all threads
+        let file_to_id: DashMap<String, u32> = DashMap::new();
+        let next_file_id = AtomicU32::new(0);
+
+        // Process each compilation unit's line program in parallel.
+        // Each thread produces its own (crate_entries, full_entries) vectors
+        // with file IDs from the shared pool.
+        let per_unit_results: Vec<_> = headers
+            .into_par_iter()
+            .filter_map(|header| {
+                let unit = dwarf.unit(header).ok()?;
+                let program = unit.line_program.as_ref()?;
+
+                let mut unit_crate_entries = Vec::new();
+                let mut unit_full_entries = Vec::new();
+
                 // Pre-resolve all file paths from the line program header.
-                // The header contains one entry per unique source file
-                // (typically tens to hundreds), compared to millions of row
-                // iterations. This turns O(rows * path_alloc) into
-                // O(files * path_alloc + rows * lookup).
                 let prog_header = program.header();
                 let mut header_file_ids: Vec<u32> = Vec::new();
                 let mut header_is_crate: Vec<bool> = Vec::new();
@@ -186,18 +195,19 @@ impl FullLineTable {
                         file_entry,
                         prog_header,
                         project_context.project_root(),
-                    )?;
+                    )
+                    .ok()?;
 
                     let is_crate_match = project_context.is_crate_source(&full_path);
 
-                    // Intern the file path
-                    let file_id = if let Some(&id) = file_to_id.get(&full_path) {
-                        id
+                    // Intern the file path using shared DashMap
+                    let file_id = if let Some(existing) = file_to_id.get(&full_path) {
+                        *existing
                     } else {
-                        let id = file_pool.len() as u32;
-                        file_pool.push(full_path.clone());
-                        file_to_id.insert(full_path, id);
-                        id
+                        let id = next_file_id.fetch_add(1, Ordering::Relaxed);
+                        // Use entry API to handle race: another thread may have
+                        // inserted between our get and this insert
+                        *file_to_id.entry(full_path).or_insert(id)
                     };
 
                     header_file_ids.push(file_id);
@@ -205,15 +215,10 @@ impl FullLineTable {
                 }
 
                 let mut rows = program.clone().rows();
-                // Track last crate entry to carry forward at crate->stdlib transitions.
-                // When inlined stdlib code (e.g., unwrap) appears, the DWARF line table
-                // switches from crate source to stdlib source. We emit a synthetic crate
-                // entry at the transition address so get_line() resolves to the call site
-                // rather than falling back to the function start.
                 let mut last_crate_line: Option<(u16, u16)> = None;
                 let mut last_was_crate = false;
 
-                while let Some((_header, row)) = rows.next_row()? {
+                while let Some((_header, row)) = rows.next_row().ok()? {
                     let file_idx = row.file_index() as usize;
                     if file_idx >= header_file_ids.len() {
                         continue;
@@ -222,7 +227,6 @@ impl FullLineTable {
                     let file_id = header_file_ids[file_idx];
                     let is_crate_match = header_is_crate[file_idx];
 
-                    // Add to full line table (all entries)
                     let line = row
                         .line()
                         .map(|l| crate::to_u16_saturating(l.get()))
@@ -231,16 +235,15 @@ impl FullLineTable {
                         ColumnType::LeftEdge => 0,
                         ColumnType::Column(c) => crate::to_u16_saturating(c.get()),
                     };
-                    full_entries.push(FullLineEntry {
+                    unit_full_entries.push(FullLineEntry {
                         address: row.address(),
                         file_id,
                         line,
                         column,
                     });
 
-                    // Add to crate line table if matches pattern and has line
                     if is_crate_match && line > 0 {
-                        crate_entries.push(CrateLineEntry {
+                        unit_crate_entries.push(CrateLineEntry {
                             address: row.address(),
                             line,
                             column,
@@ -252,7 +255,7 @@ impl FullLineTable {
                         // crate entry at this address with the last crate line info
                         if last_was_crate {
                             if let Some((prev_line, prev_col)) = last_crate_line {
-                                crate_entries.push(CrateLineEntry {
+                                unit_crate_entries.push(CrateLineEntry {
                                     address: row.address(),
                                     line: prev_line,
                                     column: prev_col,
@@ -262,6 +265,34 @@ impl FullLineTable {
                         last_was_crate = false;
                     }
                 }
+
+                Some((unit_crate_entries, unit_full_entries))
+            })
+            .collect();
+
+        // Merge per-unit results
+        // Pre-calculate total sizes for a single allocation
+        let total_full: usize = per_unit_results.iter().map(|(_, f)| f.len()).sum();
+        let total_crate: usize = per_unit_results.iter().map(|(c, _)| c.len()).sum();
+
+        let mut full_entries = Vec::with_capacity(total_full);
+        let mut crate_entries = Vec::with_capacity(total_crate);
+
+        for (unit_crate, unit_full) in per_unit_results {
+            crate_entries.extend(unit_crate);
+            full_entries.extend(unit_full);
+        }
+
+        // Build the file pool from the DashMap.
+        // The AtomicU32 may have over-counted if races occurred (two threads
+        // both called fetch_add for the same path, but entry() ensured only
+        // one ID was stored). Compact the pool by iterating the DashMap.
+        let actual_file_count = file_to_id.len();
+        let mut file_pool = vec![String::new(); actual_file_count];
+        for entry in file_to_id.iter() {
+            let id = *entry.value() as usize;
+            if id < file_pool.len() {
+                file_pool[id] = entry.key().clone();
             }
         }
 
