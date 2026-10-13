@@ -148,9 +148,16 @@ impl FullLineTable {
     pub fn build_both<R: Reader>(
         dwarf: &Dwarf<R>,
         project_context: &ProjectContext,
+        text_section_size: usize,
     ) -> Result<(CrateLineTable, FullLineTable), gimli::Error> {
-        let mut crate_entries = Vec::new();
-        let mut full_entries = Vec::new();
+        // Pre-allocate with estimated capacity based on text section size.
+        // Measured ratio: ~1 line entry per 6 text bytes, crate entries ~1%.
+        // Avoids ~23 Vec doublings and ~134 MB of redundant memcpy for large
+        // binaries like flowrgui (5.7M entries from 34 MB text section).
+        let estimated_full = text_section_size / 6;
+        let estimated_crate = estimated_full / 100;
+        let mut crate_entries = Vec::with_capacity(estimated_crate);
+        let mut full_entries = Vec::with_capacity(estimated_full);
         let mut file_pool = Vec::new();
         let mut file_to_id: ahash::AHashMap<String, u32> = ahash::AHashMap::new();
 
