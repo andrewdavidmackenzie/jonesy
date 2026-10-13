@@ -17,6 +17,57 @@ use regex::Regex;
 use rustc_demangle::demangle;
 use std::io;
 
+/// Extract a literal substring hint from a regex pattern for pre-filtering.
+///
+/// Strips common regex anchors (`^`, `$`, `.*`) and checks that the remainder
+/// contains no regex metacharacters. For patterns containing `::`, extracts the
+/// last path component as the most selective hint (e.g. `core::panicking::` yields
+/// `panicking`).
+///
+/// Returns `Some(hint)` if a usable literal was extracted, `None` otherwise.
+fn extract_literal_hint(pattern: &str) -> Option<&str> {
+    let stripped = pattern
+        .trim_start_matches('^')
+        .trim_end_matches('$')
+        .trim_end_matches(".*");
+
+    // For patterns with `::`, use the last non-empty component (most selective)
+    let hint = if stripped.contains("::") {
+        stripped
+            .split("::")
+            .filter(|s| !s.is_empty())
+            .last()
+            .unwrap_or(stripped)
+    } else {
+        stripped
+    };
+
+    if !hint.is_empty() && !hint.contains(['(', ')', '[', ']', '|', '?', '+', '*', '.', '\\']) {
+        Some(hint)
+    } else {
+        None
+    }
+}
+
+/// Check whether a symbol name could match based on a literal hint.
+/// Returns `true` if there is no hint (no pre-filtering possible) or if the
+/// symbol name contains the hint substring.
+fn matches_hint(hint: &Option<&str>, name: &str) -> bool {
+    match hint {
+        Some(h) => name.contains(h),
+        None => true,
+    }
+}
+
+/// Check whether a symbol name could match any of a set of literal hints.
+/// Returns `true` if any hint is `None` (pattern without usable literal) or
+/// if the symbol name contains at least one hint substring.
+fn matches_any_hint(hints: &[Option<&str>], name: &str) -> bool {
+    hints
+        .iter()
+        .any(|h| h.is_none_or(|literal| name.contains(literal)))
+}
+
 #[allow(clippy::large_enum_variant)]
 pub enum SymbolTable<'a> {
     MachO(goblin::mach::Mach<'a>),
@@ -57,11 +108,18 @@ impl<'a> SymbolTable<'a> {
 
     /// Returns the first symbol found whose name matches the given regex pattern.
     /// The pattern is matched against the demangled symbol name.
+    ///
+    /// As an optimisation, extracts a literal substring from the pattern and
+    /// skips demangling for symbols whose mangled name doesn't contain it.
+    /// This avoids demangling ~50K symbols when searching for specific names
+    /// like `rust_panic$` or `rust_begin_unwind$`.
     pub fn find_symbol_containing(
         &self,
         pattern: &str,
     ) -> Result<Option<(String, String)>, regex::Error> {
         let regex = Regex::new(pattern)?;
+        let hint = extract_literal_hint(pattern);
+
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
                 let symbols = match macho.symbols.as_ref() {
@@ -69,6 +127,9 @@ impl<'a> SymbolTable<'a> {
                     None => return Ok(None),
                 };
                 for (sym_name, _) in symbols.iter().flatten() {
+                    if !matches_hint(&hint, sym_name) {
+                        continue;
+                    }
                     let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
                     let demangled = format!("{:#}", demangle(stripped));
                     if regex.is_match(&demangled) {
@@ -84,6 +145,9 @@ impl<'a> SymbolTable<'a> {
                     }
                     if let Some(name) = elf.strtab.get_at(sym.st_name) {
                         if name.is_empty() {
+                            continue;
+                        }
+                        if !matches_hint(&hint, name) {
                             continue;
                         }
                         let demangled = format!("{:#}", demangle(name));
@@ -154,6 +218,9 @@ impl<'a> SymbolTable<'a> {
     /// Returns all defined symbols with addresses whose demangled names match any pattern.
     /// Unlike `find_all_symbols_matching` + `find_symbol_address`, this returns all
     /// instances including multiple monomorphisations at different addresses.
+    ///
+    /// Uses literal substring pre-filtering to avoid demangling symbols that
+    /// cannot possibly match any pattern.
     pub fn find_all_symbols_with_addresses(
         &self,
         patterns: &[&str],
@@ -163,12 +230,18 @@ impl<'a> SymbolTable<'a> {
             .map(|p| Regex::new(p))
             .collect::<Result<Vec<_>, _>>()?;
 
+        let hints: Vec<Option<&str>> = patterns.iter().map(|p| extract_literal_hint(p)).collect();
+
         let mut results = Vec::new();
         match self {
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
                 if let Some(symbols) = macho.symbols.as_ref() {
                     for (sym_name, nlist) in symbols.iter().flatten() {
                         if nlist.is_undefined() || nlist.n_value == 0 {
+                            continue;
+                        }
+                        // Pre-filter: skip if no hint matches the mangled name
+                        if !matches_any_hint(&hints, sym_name) {
                             continue;
                         }
                         let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
@@ -193,6 +266,10 @@ impl<'a> SymbolTable<'a> {
                     }
                     if let Some(name) = elf.strtab.get_at(sym.st_name) {
                         if name.is_empty() {
+                            continue;
+                        }
+                        // Pre-filter: skip if no hint matches the mangled name
+                        if !matches_any_hint(&hints, name) {
                             continue;
                         }
                         let demangled = format!("{:#}", demangle(name));
@@ -512,6 +589,141 @@ mod tests {
         if let Ok(buffer) = std::fs::read(&binary_path) {
             if let Ok(symbols) = SymbolTable::from(&buffer) {
                 assert!(symbols.find_symbol_address("_zzz_nonexistent").is_none());
+            }
+        }
+    }
+    // -- Pre-filter hint extraction and matching tests --
+
+    #[test]
+    fn test_extract_literal_hint_simple() {
+        assert_eq!(extract_literal_hint("rust_panic$"), Some("rust_panic"));
+    }
+
+    #[test]
+    fn test_extract_literal_hint_with_anchors() {
+        assert_eq!(extract_literal_hint("^rust_panic$"), Some("rust_panic"));
+    }
+
+    #[test]
+    fn test_extract_literal_hint_with_path() {
+        // Should extract last path component
+        assert_eq!(extract_literal_hint("core::panicking::"), Some("panicking"));
+    }
+
+    #[test]
+    fn test_extract_literal_hint_with_wildcard_suffix() {
+        assert_eq!(extract_literal_hint("panic.*"), Some("panic"));
+    }
+
+    #[test]
+    fn test_extract_literal_hint_metachar_returns_none() {
+        assert_eq!(extract_literal_hint("rust.panic$"), None);
+        assert_eq!(extract_literal_hint("(foo|bar)"), None);
+        assert_eq!(extract_literal_hint("[abc]"), None);
+        assert_eq!(extract_literal_hint("foo?"), None);
+    }
+
+    #[test]
+    fn test_extract_literal_hint_empty_returns_none() {
+        assert_eq!(extract_literal_hint("$"), None);
+        assert_eq!(extract_literal_hint("^$"), None);
+    }
+
+    #[test]
+    fn test_matches_hint_with_some() {
+        let hint = Some("panic");
+        assert!(matches_hint(&hint, "_ZN4core9panicking9panic_fmt"));
+        assert!(!matches_hint(&hint, "_ZN3std3env4args"));
+    }
+
+    #[test]
+    fn test_matches_hint_with_none() {
+        let hint = None;
+        // No hint means no pre-filtering — always matches
+        assert!(matches_hint(&hint, "anything"));
+        assert!(matches_hint(&hint, ""));
+    }
+
+    #[test]
+    fn test_matches_any_hint_mixed() {
+        let hints = vec![Some("panicking"), Some("abort")];
+        assert!(matches_any_hint(&hints, "_ZN4core9panicking"));
+        assert!(matches_any_hint(&hints, "std_process_abort"));
+        assert!(!matches_any_hint(&hints, "_ZN3std3env4args"));
+    }
+
+    #[test]
+    fn test_matches_any_hint_with_none_always_matches() {
+        // If any hint is None, every symbol passes (can't pre-filter)
+        let hints = vec![Some("panicking"), None];
+        assert!(matches_any_hint(&hints, "anything_at_all"));
+    }
+
+    // -- Pre-filter integration tests on real binary --
+
+    #[test]
+    fn test_find_symbol_containing_prefilter_skips_non_matching() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_symbol_containing("rust_begin_unwind$");
+                assert!(result.is_ok());
+                if let Ok(Some((_mangled, demangled))) = result {
+                    assert!(
+                        demangled.contains("rust_begin_unwind"),
+                        "Should find rust_begin_unwind via pre-filtered search"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_symbol_containing_regex_metachar_disables_hint() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_symbol_containing("rust.panic$");
+                assert!(result.is_ok());
+                if let Ok(Some((_mangled, demangled))) = result {
+                    assert!(demangled.contains("rust_panic"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_all_symbols_with_addresses_prefilter() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_all_symbols_with_addresses(&["core::panicking::"]);
+                assert!(result.is_ok());
+                let matches = result.unwrap();
+                assert!(
+                    !matches.is_empty(),
+                    "Should find core::panicking:: symbols via pre-filtered search"
+                );
+                for (_mangled, demangled, addr) in &matches {
+                    assert!(
+                        demangled.contains("core::panicking::"),
+                        "Matched symbol '{}' should contain 'core::panicking::'",
+                        demangled
+                    );
+                    assert!(*addr > 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_all_symbols_with_addresses_no_match_with_hint() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_all_symbols_with_addresses(&["zzz_nonexistent_module::"]);
+                assert!(result.is_ok());
+                assert!(result.unwrap().is_empty());
             }
         }
     }
