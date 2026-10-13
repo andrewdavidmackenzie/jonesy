@@ -210,6 +210,71 @@ impl<'a> SymbolTable<'a> {
         Ok(results)
     }
 
+    /// Find all symbols matching any of the given regex patterns in a single pass.
+    ///
+    /// This is more efficient than calling `find_symbol_containing` or
+    /// `find_all_symbols_with_addresses` multiple times, since each of those
+    /// methods iterates all symbols and demangles each one. With N patterns
+    /// and M symbols, separate calls cost O(N * M * demangle), while this
+    /// method costs O(M * demangle + M * N * regex_match).
+    ///
+    /// Returns `(mangled_name, demangled_name, address)` for each match.
+    pub fn find_all_matching_in_single_pass(
+        &self,
+        patterns: &[&str],
+    ) -> Result<Vec<(String, String, u64)>, regex::Error> {
+        let regexes: Vec<Regex> = patterns
+            .iter()
+            .map(|p| Regex::new(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut results = Vec::new();
+        match self {
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
+                if let Some(symbols) = macho.symbols.as_ref() {
+                    for (sym_name, nlist) in symbols.iter().flatten() {
+                        if nlist.is_undefined() || nlist.n_value == 0 {
+                            continue;
+                        }
+                        let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
+                        let demangled = format!("{:#}", demangle(stripped));
+                        for regex in &regexes {
+                            if regex.is_match(&demangled) {
+                                results.push((
+                                    sym_name.to_string(),
+                                    demangled.clone(),
+                                    nlist.n_value,
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            SymbolTable::Elf(elf) => {
+                for sym in elf.syms.iter() {
+                    if sym.st_value == 0 || sym.st_shndx == 0 {
+                        continue;
+                    }
+                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let demangled = format!("{:#}", demangle(name));
+                        for regex in &regexes {
+                            if regex.is_match(&demangled) {
+                                results.push((name.to_string(), demangled.clone(), sym.st_value));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(results)
+    }
+
     /// Returns the address of the first defined symbol found whose name matches `name` exactly.
     pub fn find_symbol_address(&self, name: &str) -> Option<u64> {
         match self {

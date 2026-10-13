@@ -68,35 +68,26 @@ const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::"];
 
 /// Find panic and abort entry point addresses in the binary's symbol table.
 /// Returns `(mangled_name, demangled_name, address)` for each entry point.
+///
+/// Uses a single pass over all symbols to avoid demangling every symbol
+/// multiple times. Previously, separate calls to `find_symbol_containing`
+/// and `find_all_symbols_with_addresses` each iterated all symbols and
+/// demangled each one (4 passes total, ~58 MB of transient allocations).
 pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
+    // Combine all patterns into a single pass over the symbol table.
+    // This demangles each symbol once instead of 4 times.
+    let all_patterns: Vec<&str> = PANIC_SYMBOLS
+        .iter()
+        .copied()
+        .chain(BINARY_PANIC_PREFIXES.iter().copied())
+        .chain(std::iter::once(ABORT_SYMBOL))
+        .collect();
+
     let mut entry_points = Vec::new();
     let mut seen_addrs = std::collections::HashSet::new();
 
-    // Find panic entry points (rust_panic and rust_begin_unwind)
-    for pattern in PANIC_SYMBOLS {
-        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
-            && let Some(addr) = symbols.find_symbol_address(&sym)
-            && seen_addrs.insert(addr)
-        {
-            entry_points.push((sym, dem, addr));
-        }
-    }
-
-    // Find core::panicking:: functions as entry points.
-    // On x86_64, these are the actual CALL targets from user code.
-    // Use find_all_symbols_with_addresses to capture ALL monomorphised instances
-    // (e.g., multiple panic_fmt at different addresses).
-    if let Ok(panic_symbols) = symbols.find_all_symbols_with_addresses(BINARY_PANIC_PREFIXES) {
-        for (sym, dem, addr) in panic_symbols {
-            if seen_addrs.insert(addr) {
-                entry_points.push((sym, dem, addr));
-            }
-        }
-    }
-
-    // Find abort entry points
-    if let Ok(abort_symbols) = symbols.find_all_symbols_with_addresses(&[ABORT_SYMBOL]) {
-        for (sym, dem, addr) in abort_symbols {
+    if let Ok(matches) = symbols.find_all_matching_in_single_pass(&all_patterns) {
+        for (sym, dem, addr) in matches {
             if seen_addrs.insert(addr) {
                 entry_points.push((sym, dem, addr));
             }
