@@ -286,9 +286,16 @@ fn process_instruction_data_with_crate_table<'a>(
         let (mut file, mut line, mut column) = match (func_file, func_line) {
             (Some(f), l) if l > 0 => {
                 // Fast path: use DWARF function info directly
-                // Look up column from the full line table at the function start address
-                let (_, _, start_column) = full_line_table.get_source_location(func.start_address);
-                (Some(f), l, start_column)
+                // Look up column from the full line table at the function start address,
+                // but only use it if the line table entry matches our file and line
+                let (lt_file, lt_line, lt_column) =
+                    full_line_table.get_source_location(func.start_address);
+                let col = if lt_line == l && lt_file.as_deref() == Some(f.as_str()) {
+                    lt_column
+                } else {
+                    0 // DWARF left edge — column unspecified
+                };
+                (Some(f), l, col)
             }
             (func_file, func_line) => {
                 // Use pre-built full line table for O(log n) lookup
@@ -352,10 +359,17 @@ fn process_instruction_data_with_crate_table<'a>(
                                 {
                                     file = Some(call_file.to_string());
                                     line = call_line_num;
-                                    // Look up column from full line table at the call address
-                                    let (_, _, call_column) =
+                                    // Look up column from full line table at the call address,
+                                    // but only use it if the entry matches file and line
+                                    let (lt_file, lt_line, lt_column) =
                                         full_line_table.get_source_location(data.address);
-                                    column = call_column;
+                                    column = if lt_line == call_line_num
+                                        && lt_file.as_deref() == Some(call_file)
+                                    {
+                                        lt_column
+                                    } else {
+                                        0
+                                    };
                                 } else {
                                     line = crate_line;
                                     column = crate_column;

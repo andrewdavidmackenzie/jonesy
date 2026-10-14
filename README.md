@@ -577,7 +577,7 @@ jobs:
         run: cargo build
 
       - name: Run jonesy
-        uses: andrewdavidmackenzie/jonesy@v1
+        uses: andrewdavidmackenzie/jonesy@v2
 ```
 
 ### Action Inputs
@@ -615,7 +615,7 @@ jobs:
 **Fail on any panics:**
 
 ```yaml
-- uses: andrewdavidmackenzie/jonesy@v1
+- uses: andrewdavidmackenzie/jonesy@v2
   with:
     fail-on-panic: true
 ```
@@ -623,7 +623,7 @@ jobs:
 **Analyze a specific binary:**
 
 ```yaml
-- uses: andrewdavidmackenzie/jonesy@v1
+- uses: andrewdavidmackenzie/jonesy@v2
   with:
     binary: target/debug/my-app
 ```
@@ -633,7 +633,7 @@ jobs:
 ```yaml
 - name: Run jonesy
   id: jonesy
-  uses: andrewdavidmackenzie/jonesy@v1
+  uses: andrewdavidmackenzie/jonesy@v2
 
 - name: Check threshold
   if: steps.jonesy.outputs.panic-count > 10
