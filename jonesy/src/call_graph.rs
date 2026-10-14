@@ -286,7 +286,9 @@ fn process_instruction_data_with_crate_table<'a>(
         let (mut file, mut line, mut column) = match (func_file, func_line) {
             (Some(f), l) if l > 0 => {
                 // Fast path: use DWARF function info directly
-                (Some(f), l, 0)
+                // Look up column from the full line table at the function start address
+                let (_, _, start_column) = full_line_table.get_source_location(func.start_address);
+                (Some(f), l, start_column)
             }
             (func_file, func_line) => {
                 // Use pre-built full line table for O(log n) lookup
@@ -350,7 +352,10 @@ fn process_instruction_data_with_crate_table<'a>(
                                 {
                                     file = Some(call_file.to_string());
                                     line = call_line_num;
-                                    column = 0;
+                                    // Look up column from full line table at the call address
+                                    let (_, _, call_column) =
+                                        full_line_table.get_source_location(data.address);
+                                    column = call_column;
                                 } else {
                                     line = crate_line;
                                     column = crate_column;

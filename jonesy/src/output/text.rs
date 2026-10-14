@@ -197,7 +197,7 @@ fn write_flat_point<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output (works with GitHub problem matchers)
     let display_path = get_relative_path(&point.file, project_root);
-    let column = if point.column == 0 { 1 } else { point.column };
+    let column = point.column;
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
     // Consider point a leaf if it has no children or we're not showing children
@@ -249,7 +249,7 @@ fn write_flat_child<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output
     let display_path = get_relative_path(&point.file, project_root);
-    let column = if point.column == 0 { 1 } else { point.column };
+    let column = point.column;
     let location = format!("{}:{}:{}", display_path, point.line, column);
 
     let is_leaf = point.children.is_empty() || !include_children;
@@ -310,7 +310,7 @@ fn write_file_entry<W: Write>(
 
     let absolute_path = make_absolute(&point.file, project_root);
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = if point.column == 0 { 1 } else { point.column };
+    let column = point.column;
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
@@ -418,7 +418,7 @@ fn write_crate_point<W: Write>(
     };
 
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = if point.column == 0 { 1 } else { point.column };
+    let column = point.column;
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {

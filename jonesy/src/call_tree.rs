@@ -17,6 +17,8 @@ use std::sync::{LazyLock, Mutex};
 
 /// Key for identifying a code point: (file, line, column).
 /// Two call sites at different columns on the same line are distinct points.
+/// Column 0 means "unspecified" and should not create a separate entry —
+/// use `make_code_point_key` to handle this correctly.
 pub type CodePointKey = (String, u16, u16);
 
 static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u16)>>> =
