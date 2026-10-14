@@ -1,5 +1,5 @@
 use crate::binary_format::BinaryRef;
-use crate::string_tables::StringTables;
+use crate::string_tables::{ConcurrentStringTables, StringTables};
 use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian,
     SectionId, Unit,
@@ -273,15 +273,6 @@ fn is_stdlib_name(name: &str) -> bool {
     trimmed.starts_with("core::") || trimmed.starts_with("std::") || trimmed.starts_with("alloc::")
 }
 
-/// Intermediate struct for parsing - uses owned strings before interning
-struct ParsedFunctionInfo {
-    name: String,
-    start_address: u64,
-    end_address: u64,
-    file: Option<String>,
-    line: Option<u16>,
-}
-
 /// Load DWARF sections from binary
 /// Load DWARF sections with ELF relocation support for .o files
 /// This version uses gimli::RelocateReader to track which section each address belongs to
@@ -383,6 +374,12 @@ pub(crate) fn load_dwarf_sections<'a>(
 
 /// Extract all functions from DWARF debug info.
 /// Returns functions, inlined functions, and the shared string tables.
+///
+/// Parses DWARF compilation units in parallel via rayon, interning function
+/// names and file paths concurrently into a shared `ConcurrentStringTables`.
+/// Each thread produces `FunctionInfo` directly (with interned `u32` indices),
+/// eliminating the intermediate `ParsedFunctionInfo` type and the sequential
+/// interning post-processing step.
 pub fn get_functions_from_dwarf<'a>(
     binary: &BinaryRef<'a>,
     buffer: &'a [u8],
@@ -397,7 +394,11 @@ pub fn get_functions_from_dwarf<'a>(
         headers.push(header);
     }
 
-    // Process compilation units in parallel - collect with owned strings
+    // Shared concurrent string tables for parallel interning
+    let strings = ConcurrentStringTables::new();
+
+    // Process compilation units in parallel, interning strings concurrently
+    // and producing FunctionInfo directly (no intermediate ParsedFunctionInfo)
     let results: Vec<_> = headers
         .into_par_iter()
         .filter_map(|header| {
@@ -410,14 +411,14 @@ pub fn get_functions_from_dwarf<'a>(
                 match entry.tag() {
                     gimli::DW_TAG_subprogram => {
                         if let Ok(Some(func)) =
-                            parse_function_die(&dwarf, &unit, entry, project_root)
+                            parse_function_die(&dwarf, &unit, entry, project_root, &strings)
                         {
                             funcs.push(func);
                         }
                     }
                     gimli::DW_TAG_inlined_subroutine => {
                         if let Ok(Some(func)) =
-                            parse_inlined_subroutine(&dwarf, &unit, entry, project_root)
+                            parse_inlined_subroutine(&dwarf, &unit, entry, project_root, &strings)
                         {
                             inl.push(func);
                         }
@@ -429,42 +430,30 @@ pub fn get_functions_from_dwarf<'a>(
         })
         .collect();
 
-    // Combine results and intern strings
-    let mut strings = StringTables::new();
-    let mut functions = Vec::new();
-    let mut inlined = Vec::new();
+    // Flatten per-CU results (no interning needed — already done in parallel)
+    let total_funcs: usize = results.iter().map(|(f, _)| f.len()).sum();
+    let total_inlined: usize = results.iter().map(|(_, i)| i.len()).sum();
+    let mut functions = Vec::with_capacity(total_funcs);
+    let mut inlined = Vec::with_capacity(total_inlined);
 
     for (funcs, inl) in results {
-        for parsed in funcs {
-            functions.push(FunctionInfo {
-                start_address: parsed.start_address,
-                end_address: parsed.end_address,
-                name_idx: strings.intern_name(parsed.name),
-                file_idx: strings.intern_file(parsed.file),
-                line: parsed.line.unwrap_or(0u16),
-            });
-        }
-        for parsed in inl {
-            inlined.push(FunctionInfo {
-                start_address: parsed.start_address,
-                end_address: parsed.end_address,
-                name_idx: strings.intern_name(parsed.name),
-                file_idx: strings.intern_file(parsed.file),
-                line: parsed.line.unwrap_or(0u16),
-            });
-        }
+        functions.extend(funcs);
+        inlined.extend(inl);
     }
 
-    Ok((functions, inlined, strings))
+    // Convert concurrent tables to sequential for fast O(1) lookups
+    Ok((functions, inlined, strings.into_string_tables()))
 }
 
-/// Parse a DW_TAG_subprogram DIE into ParsedFunctionInfo
+/// Parse a DW_TAG_subprogram DIE into a `FunctionInfo`.
+/// Interns name and file directly into the shared concurrent string tables.
 fn parse_function_die<R: Reader>(
     dwarf: &Dwarf<R>,
     unit: &Unit<R>,
     entry: &DebuggingInformationEntry<R>,
     project_root: &str,
-) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
+    strings: &ConcurrentStringTables,
+) -> Result<Option<FunctionInfo>, gimli::Error> {
     let mut name: Option<String> = None;
     let mut has_linkage_name = false;
     let mut low_pc: Option<u64> = None;
@@ -554,18 +543,18 @@ fn parse_function_die<R: Reader>(
     };
 
     match (name, low_pc, high_pc) {
-        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(ParsedFunctionInfo {
-            name,
+        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(FunctionInfo {
+            name_idx: strings.intern_name(name),
             start_address: low_pc,
             end_address: high_pc,
-            file,
-            line,
+            file_idx: strings.intern_file(file),
+            line: line.unwrap_or(0),
         })),
         _ => Ok(None),
     }
 }
 
-/// Parse a DW_TAG_inlined_subroutine DIE into ParsedFunctionInfo.
+/// Parse a DW_TAG_inlined_subroutine DIE into a `FunctionInfo`.
 /// Inlined subroutines use DW_AT_abstract_origin to reference the original function.
 /// Handles both DW_AT_low_pc/DW_AT_high_pc and DW_AT_ranges (DWARF 5).
 /// Extracts DW_AT_call_file/DW_AT_call_line for the call site in the caller.
@@ -574,7 +563,8 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     unit: &Unit<R>,
     entry: &DebuggingInformationEntry<R>,
     project_root: &str,
-) -> Result<Option<ParsedFunctionInfo>, gimli::Error> {
+    strings: &ConcurrentStringTables,
+) -> Result<Option<FunctionInfo>, gimli::Error> {
     let mut abstract_origin: Option<gimli::UnitOffset<usize>> = None;
     let mut low_pc: Option<u64> = None;
     let mut high_pc: Option<u64> = None;
@@ -676,12 +666,12 @@ fn parse_inlined_subroutine<R: Reader<Offset = usize>>(
     };
 
     match (name, final_low_pc, final_high_pc) {
-        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(ParsedFunctionInfo {
-            name,
+        (Some(name), Some(low_pc), Some(high_pc)) => Ok(Some(FunctionInfo {
+            name_idx: strings.intern_name(name),
             start_address: low_pc,
             end_address: high_pc,
-            file: call_file,
-            line: call_line,
+            file_idx: strings.intern_file(call_file),
+            line: call_line.unwrap_or(0),
         })),
         _ => Ok(None),
     }

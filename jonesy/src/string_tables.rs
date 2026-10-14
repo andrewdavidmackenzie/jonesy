@@ -79,6 +79,104 @@ impl StringTables {
     }
 }
 
+/// Thread-safe interning table for function names and file paths.
+///
+/// Uses `DashMap` for concurrent interning during rayon `par_iter` phases,
+/// then converts to a sequential `StringTables` via `into_string_tables()`
+/// for fast O(1) lookups during the analysis phase.
+///
+/// Uses the same index scheme as `StringTables`: name indices start at 0,
+/// file indices use 0 as a sentinel for `None` (actual indices are offset by 1).
+#[derive(Debug)]
+pub struct ConcurrentStringTables {
+    names: DashMap<String, u32>,
+    next_name_id: AtomicU32,
+    files: DashMap<String, u32>,
+    next_file_id: AtomicU32,
+}
+
+impl Default for ConcurrentStringTables {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConcurrentStringTables {
+    /// Create empty concurrent string tables.
+    pub fn new() -> Self {
+        Self {
+            names: DashMap::new(),
+            next_name_id: AtomicU32::new(0),
+            files: DashMap::new(),
+            next_file_id: AtomicU32::new(0),
+        }
+    }
+
+    /// Intern a function name, returning its index.
+    /// Thread-safe: can be called concurrently from multiple rayon threads.
+    pub fn intern_name(&self, name: String) -> u32 {
+        if let Some(entry) = self.names.get(&name) {
+            return *entry.value();
+        }
+        *self
+            .names
+            .entry(name)
+            .or_insert_with(|| self.next_name_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Intern a file path, returning its index + 1.
+    /// Returns 0 for `None`. Index is offset by 1 to use 0 as sentinel.
+    /// Thread-safe: can be called concurrently from multiple rayon threads.
+    pub fn intern_file(&self, file: Option<String>) -> u32 {
+        match file {
+            None => 0,
+            Some(f) => {
+                if let Some(entry) = self.files.get(&f) {
+                    return *entry.value() + 1;
+                }
+                let idx = *self
+                    .files
+                    .entry(f)
+                    .or_insert_with(|| self.next_file_id.fetch_add(1, Ordering::Relaxed));
+                idx + 1
+            }
+        }
+    }
+
+    /// Convert to a sequential `StringTables` for fast O(1) lookups.
+    /// Consumes self, producing the compact lookup table used by `FunctionIndex`.
+    pub fn into_string_tables(self) -> StringTables {
+        let name_count = self.next_name_id.load(Ordering::Relaxed) as usize;
+        let mut names = vec![String::new(); name_count];
+        let mut name_map = HashMap::with_capacity(name_count);
+        for entry in self.names.into_iter() {
+            let idx = entry.1 as usize;
+            if idx < names.len() {
+                name_map.insert(entry.0.clone(), entry.1);
+                names[idx] = entry.0;
+            }
+        }
+
+        let file_count = self.next_file_id.load(Ordering::Relaxed) as usize;
+        let mut files = vec![String::new(); file_count];
+        let mut file_map = HashMap::with_capacity(file_count);
+        for entry in self.files.into_iter() {
+            let idx = entry.1 as usize;
+            if idx < files.len() {
+                file_map.insert(entry.0.clone(), entry.1);
+                files[idx] = entry.0;
+            }
+        }
+
+        StringTables {
+            names,
+            name_map,
+            files,
+            file_map,
+        }
+    }
+}
+
 /// Sentinel value meaning "no file path". Used by `CallerInfo.file`,
 /// `CallTreeNode.file`, and `CrateCodePoint.file` to represent the absence
 /// of a file path without needing `Option<u16>`.
