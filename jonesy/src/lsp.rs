@@ -99,17 +99,17 @@ impl JonesyLspServer {
             )
         };
 
+        // LSP uses 0-based columns.
+        // Column 0 (DWARF "left edge") maps to LSP column 0.
+        let lsp_column = (point.column as u32).saturating_sub(1);
         let range = Range {
             start: Position {
                 line: (point.line as u32).saturating_sub(1), // LSP uses 0-based lines
-                character: ((if point.column == 0 { 1 } else { point.column }) as u32)
-                    .saturating_sub(1),
+                character: lsp_column,
             },
             end: Position {
                 line: (point.line as u32).saturating_sub(1),
-                character: ((if point.column == 0 { 1 } else { point.column }) as u32)
-                    .saturating_sub(1)
-                    + 10, // Approximate width
+                character: lsp_column + 10, // Approximate width
             },
         };
 

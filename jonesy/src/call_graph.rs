@@ -109,7 +109,7 @@ impl<'a> CallGraph<'a> {
                     caller_start_address: func_addr,
                     call_site_addr: data.address,
                     line: 0,
-                    column: 0,
+                    column: u16::MAX,
                 });
             }
         });
@@ -422,7 +422,7 @@ fn process_instruction_data_with_crate_table<'a>(
                 caller_start_address: func_addr,
                 call_site_addr: data.address,
                 line: 0,
-                column: 0,
+                column: u16::MAX,
             },
         ))
     } else {

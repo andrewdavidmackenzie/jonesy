@@ -394,21 +394,29 @@ fn parse_jones_output(output: &str) -> HashSet<PanicPoint> {
             // Strip the cause description for parsing file:line:col
             let location = location.split('[').next().unwrap_or(location).trim();
 
-            // Parse file:line:column format
+            // Parse file:line:column or file:line format.
+            // Use rsplitn(3, ':') first to try file:line:column.
+            // If that fails (middle part isn't a number), fall back to
+            // rsplitn(2, ':') for file:line (column 0 / DWARF left edge).
             let parts: Vec<&str> = location.rsplitn(3, ':').collect();
-            if parts.len() >= 2
-                && let Ok(line_num) = parts[1].parse::<u32>()
-            {
-                // parts[0] is the column, parts[1] is the line, parts[2] is the file path
-                let file = if parts.len() > 2 { parts[2] } else { "" };
-                let mut causes = causes;
-                causes.sort();
-                points.insert(PanicPoint {
-                    file: file.to_string(),
-                    line: line_num,
-                    causes,
-                });
-            }
+            let (file, line_num) = if parts.len() == 3 && parts[1].parse::<u32>().is_ok() {
+                // file:line:column — parts[2] is file, parts[1] is line
+                (parts[2], parts[1].parse::<u32>().unwrap())
+            } else {
+                // Try file:line (no column)
+                let parts2: Vec<&str> = location.rsplitn(2, ':').collect();
+                if parts2.len() == 2 && parts2[0].parse::<u32>().is_ok() {
+                    (parts2[1], parts2[0].parse::<u32>().unwrap())
+                } else {
+                    continue;
+                }
+            };
+            causes.sort();
+            points.insert(PanicPoint {
+                file: file.to_string(),
+                line: line_num,
+                causes,
+            });
         }
     }
 

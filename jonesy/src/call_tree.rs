@@ -59,7 +59,7 @@ impl CallTreeNode {
             name,
             file: None,
             line: 0,
-            column: 0,
+            column: u16::MAX,
             callers: Vec::new(),
         }
     }
@@ -635,8 +635,12 @@ pub fn collect_crate_code_points(
 
     filter_allowed_causes(&mut roots, config, project_context);
 
-    // Deduplicate roots by (file, line)
+    // Deduplicate roots by (file, line, column)
     dedupe_crate_points(&mut roots);
+
+    // Drop entries with column u16::MAX (no debug info sentinel) —
+    // these should never reach this point, but filter defensively.
+    roots.retain(|p| p.column != u16::MAX);
 
     // Sort roots by file then line number
     roots.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));

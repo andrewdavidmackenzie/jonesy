@@ -11,6 +11,16 @@ use std::io::{self, Write};
 use std::path::Path;
 use url::Url;
 
+/// Format a source location as `file:line:column`, omitting the column
+/// when it is 0 (DWARF "left edge" — column unspecified by the compiler).
+fn format_location(file: &str, line: u16, column: u16) -> String {
+    if column == 0 {
+        format!("{file}:{line}")
+    } else {
+        format!("{file}:{line}:{column}")
+    }
+}
+
 /// Generate text output from analysis results to stdout.
 ///
 /// When `summary_only` is true, only prints the summary statistics.
@@ -197,8 +207,7 @@ fn write_flat_point<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output (works with GitHub problem matchers)
     let display_path = get_relative_path(&point.file, project_root);
-    let column = point.column;
-    let location = format!("{}:{}:{}", display_path, point.line, column);
+    let location = format_location(&display_path, point.line, point.column);
 
     // Consider point a leaf if it has no children or we're not showing children
     let is_leaf = point.children.is_empty() || !include_children;
@@ -249,8 +258,7 @@ fn write_flat_child<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output
     let display_path = get_relative_path(&point.file, project_root);
-    let column = point.column;
-    let location = format!("{}:{}:{}", display_path, point.line, column);
+    let location = format_location(&display_path, point.line, point.column);
 
     let is_leaf = point.children.is_empty() || !include_children;
     let sorted_causes = get_sorted_causes(&point.causes);
@@ -310,18 +318,17 @@ fn write_file_entry<W: Write>(
 
     let absolute_path = make_absolute(&point.file, project_root);
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = point.column;
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
             file_url.set_fragment(Some(&format!("L{}", point.line)));
-            let display = format!("{}:{}:{}", filename, point.line, column);
+            let display = format_location(filename, point.line, point.column);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
-            format!("{}:{}:{}", absolute_path, point.line, column)
+            format_location(&absolute_path, point.line, point.column)
         }
     } else {
-        format!("{}:{}:{}", absolute_path, point.line, column)
+        format_location(&absolute_path, point.line, point.column)
     };
 
     let sorted_causes = get_sorted_causes(&point.causes);
@@ -418,18 +425,17 @@ fn write_crate_point<W: Write>(
     };
 
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = point.column;
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
             file_url.set_fragment(Some(&format!("L{}", point.line)));
-            let display = format!("{}:{}:{}", display_path, point.line, column);
+            let display = format_location(&display_path, point.line, point.column);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
-            format!("{}:{}:{}", absolute_path, point.line, column)
+            format_location(&absolute_path, point.line, point.column)
         }
     } else {
-        format!("{}:{}:{}", absolute_path, point.line, column)
+        format_location(&absolute_path, point.line, point.column)
     };
 
     let sorted_causes = get_sorted_causes(&point.causes);
