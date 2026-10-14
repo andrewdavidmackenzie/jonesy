@@ -15,6 +15,10 @@ use rustc_demangle::demangle;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
+/// Key for identifying a code point: (file, line, column).
+/// Two call sites at different columns on the same line are distinct points.
+pub type CodePointKey = (String, u16, u16);
+
 static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u16)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -209,10 +213,6 @@ pub struct CrateCodePoint {
     /// Used to show "This calls `foo` which may panic" in help messages
     pub called_function: Option<String>,
 }
-
-/// Key for identifying a code point: (file, line)
-/// Key for identifying a code point: (file, line, column)
-pub type CodePointKey = (String, u16, u16);
 
 /// Info stored for each code point: (function name, set of causes, set of child keys, is_direct_panic, called_function)
 pub type CodePointInfo = (
@@ -798,15 +798,15 @@ impl AnalysisResult {
 /// from multiple artifacts (e.g., multi-bin workspaces).
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisSummary {
-    /// Unique panic code points: (file, line, column)
-    points: HashSet<(String, u16, u16)>,
+    /// Unique panic code points
+    points: HashSet<CodePointKey>,
     /// Unique files with panic points
     files: HashSet<String>,
 }
 
 impl AnalysisSummary {
     /// Create a new summary from collected points
-    pub fn from_points(points: HashSet<(String, u16, u16)>, files: HashSet<String>) -> Self {
+    pub fn from_points(points: HashSet<CodePointKey>, files: HashSet<String>) -> Self {
         Self { points, files }
     }
 
@@ -841,7 +841,7 @@ fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
 /// Collect unique (file, line, column) keys and unique files from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
-    seen_points: &mut HashSet<(String, u16, u16)>,
+    seen_points: &mut HashSet<CodePointKey>,
     seen_files: &mut HashSet<String>,
 ) {
     for p in points {
@@ -854,7 +854,7 @@ fn collect_unique_point_keys_and_files(
 /// Deduplicate crate code points by (file, line, column), merging children
 fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
     // Group by (file, line, column)
-    let mut seen: HashMap<(String, u16, u16), usize> = HashMap::new();
+    let mut seen: HashMap<CodePointKey, usize> = HashMap::new();
     let mut result: Vec<CrateCodePoint> = Vec::new();
 
     for point in points.drain(..) {

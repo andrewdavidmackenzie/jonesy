@@ -4,7 +4,7 @@ use jonesy::sym::SymbolTable;
 
 // Cross-platform imports
 use jonesy::args::{Args, VERSION, WorkspaceMember, parse_args};
-use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CrateCodePoint};
+use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CodePointKey, CrateCodePoint};
 use jonesy::cargo::{detect_library_type, find_project_root, get_project_name};
 use jonesy::output::OutputFormat;
 use jonesy::project_context::ProjectContext;
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// When a duplicate is found, causes are merged into the existing entry.
 fn merge_code_points(
     result: &mut BinaryAnalysisResult,
-    seen: &mut HashSet<(String, u16, u16)>,
+    seen: &mut HashSet<CodePointKey>,
     accumulator: &mut Vec<CrateCodePoint>,
 ) {
     for point in result.code_points.drain(..) {
@@ -81,7 +81,7 @@ fn merge_code_points(
 fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut total_summary = AnalysisSummary::default();
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
-    let mut seen_code_points: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
 
@@ -322,7 +322,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         // Merge results sequentially
         let mut member_summary = AnalysisSummary::default();
         let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
-        let mut seen_code_points: HashSet<(String, u16, u16)> = HashSet::new();
+        let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
 
         for (binary_path, mut result) in binary_results {
             if args.output.show_progress() {

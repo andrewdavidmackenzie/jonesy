@@ -7,7 +7,7 @@ use crate::args::OutputFormat;
 use crate::binary_format::BinaryRef;
 use crate::call_tree::filter_allowed_causes;
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
+    AnalysisSummary, CallTreeNode, CodePointKey, CrateCodePoint, build_call_tree_parallel_filtered,
     collect_crate_code_points,
 };
 use crate::config::Config;
@@ -67,7 +67,7 @@ impl BinaryAnalysisResult {
         use std::collections::HashMap;
 
         // Build a map of existing code points by (file, line, column)
-        let mut points_map: HashMap<(String, u16, u16), CrateCodePoint> = self
+        let mut points_map: HashMap<CodePointKey, CrateCodePoint> = self
             .code_points
             .drain(..)
             .map(|cp| ((cp.file.clone(), cp.line, cp.column), cp))
@@ -602,8 +602,7 @@ pub fn analyze_archive(
     filter_allowed_causes(&mut code_points, config, project_context);
 
     // Deduplicate by (file, line, column)
-    let mut seen: std::collections::HashMap<(String, u16, u16), usize> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
     let mut deduped: Vec<CrateCodePoint> = Vec::new();
     for point in code_points {
         let key = (point.file.clone(), point.line, point.column);
@@ -621,7 +620,7 @@ pub fn analyze_archive(
     }
 
     // Build summary from code points
-    let mut points: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut points: HashSet<CodePointKey> = HashSet::new();
     let mut files_affected: HashSet<String> = HashSet::new();
     for point in &deduped {
         points.insert((point.file.clone(), point.line, point.column));
