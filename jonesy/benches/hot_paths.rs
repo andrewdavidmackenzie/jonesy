@@ -13,25 +13,17 @@ use std::process::Command;
 
 // macOS-only imports for micro-benchmarks
 #[cfg(target_os = "macos")]
-use dashmap::DashSet;
-#[cfg(target_os = "macos")]
 use goblin::mach::Mach::Binary;
 #[cfg(target_os = "macos")]
 use jonesy::analysis::analyze_binary_target;
 #[cfg(target_os = "macos")]
 use jonesy::binary_format::BinaryRef;
 #[cfg(target_os = "macos")]
-use jonesy::call_tree::{
-    CallTreeNode, CodePointMap, build_call_tree_parallel_filtered,
-    build_call_tree_sequential_filtered, build_shallow_callers_filtered,
-    collect_crate_relationships, filter_allowed_causes,
-};
+use jonesy::call_tree::filter_allowed_causes;
 #[cfg(target_os = "macos")]
 use jonesy::config::Config;
 #[cfg(target_os = "macos")]
 use jonesy::heuristics::detect_panic_cause;
-#[cfg(target_os = "macos")]
-use jonesy::heuristics::find_entry_points;
 #[cfg(target_os = "macos")]
 use jonesy::inline_allows::check_inline_allow;
 #[cfg(target_os = "macos")]
@@ -43,8 +35,6 @@ use jonesy::sym::{
 };
 #[cfg(target_os = "macos")]
 use std::fs;
-#[cfg(target_os = "macos")]
-use std::sync::Arc;
 
 /// Get the workspace root directory
 fn workspace_root() -> std::path::PathBuf {
@@ -194,61 +184,9 @@ fn bench_prune_call_tree(_c: &mut Criterion) {
 // ============================================================================
 // Hot Function #3: build_call_tree_sequential (92 samples)
 // ============================================================================
+// Benchmark #3 removed: build_call_tree_sequential_filtered is now private.
 #[cfg(target_os = "macos")]
-fn bench_build_call_tree_sequential_filtered(c: &mut Criterion) {
-    ensure_jonesy_debug_built();
-
-    let root = workspace_root();
-    let binary_path = root.join("target/debug/jonesy");
-
-    if !binary_path.exists() {
-        eprintln!("Skipping build_call_tree_sequential benchmark: jonesy binary not found");
-        return;
-    }
-
-    let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
-
-    if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let entry_points = find_entry_points(&symbols);
-        let panic_addr = entry_points.first().map(|(_, _, a)| *a).unwrap_or(0);
-
-        if panic_addr == 0 {
-            eprintln!("Skipping build_call_tree_sequential benchmark: no panic symbol found");
-            return;
-        }
-
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
-            .expect("Failed to create project context");
-        let symbol_index = SymbolIndex::new(macho);
-        let binary_ref = BinaryRef::MachO(macho);
-        let call_graph = CallGraph::build_with_debug_info(
-            &binary_ref,
-            &buffer,
-            &binary_ref,
-            &buffer,
-            false,
-            symbol_index.as_ref(),
-            &project_context,
-        )
-        .expect("Failed to build call graph");
-
-        let visited = Arc::new(DashSet::new());
-
-        c.bench_function("build_call_tree_sequential_jonesy", |b| {
-            b.iter(|| {
-                visited.clear();
-                let tree = build_call_tree_sequential_filtered(
-                    &call_graph,
-                    panic_addr,
-                    &visited,
-                    &project_context,
-                );
-                black_box(tree)
-            })
-        });
-    }
-}
+fn bench_build_call_tree_sequential_filtered(_c: &mut Criterion) {}
 
 // ============================================================================
 // Hot Function #4: is_crate_source (76 samples)
@@ -282,69 +220,11 @@ fn bench_is_crate_source(c: &mut Criterion) {
     });
 }
 
-// ============================================================================
-// Hot Function #5: collect_crate_relationships (69 samples)
-// ============================================================================
+// Benchmark #5 removed: collect_crate_relationships is now internal to
+// collect_crate_code_points_hierarchical (parallel DashMap version).
+// The sequential version was removed as dead code.
 #[cfg(target_os = "macos")]
-fn bench_collect_crate_relationships(c: &mut Criterion) {
-    ensure_jonesy_debug_built();
-
-    let root = workspace_root();
-    let binary_path = root.join("target/debug/jonesy");
-
-    if !binary_path.exists() {
-        eprintln!("Skipping collect_crate_relationships benchmark: jonesy binary not found");
-        return;
-    }
-
-    let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
-
-    if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let entry_points = find_entry_points(&symbols);
-        let Some((panic_name, _, panic_addr)) = entry_points.into_iter().next() else {
-            return;
-        };
-
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
-            .expect("Failed to create project context");
-        let symbol_index = SymbolIndex::new(macho);
-        let binary_ref = BinaryRef::MachO(macho);
-        let call_graph = CallGraph::build_with_debug_info(
-            &binary_ref,
-            &buffer,
-            &binary_ref,
-            &buffer,
-            false,
-            symbol_index.as_ref(),
-            &project_context,
-        )
-        .expect("Failed to build call graph");
-
-        let visited = Arc::new(DashSet::new());
-        let mut root_node = CallTreeNode::new_root(panic_name);
-        root_node.callers =
-            build_call_tree_parallel_filtered(&call_graph, panic_addr, &visited, &project_context);
-
-        c.bench_function("collect_crate_relationships_jonesy", |b| {
-            b.iter(|| {
-                let mut points: CodePointMap = std::collections::HashMap::new();
-                let mut source_cache = jonesy::inline_allows::SourceFileCache::new();
-                collect_crate_relationships(
-                    &root_node,
-                    &mut points,
-                    None,
-                    None,
-                    None,
-                    &project_context,
-                    Some(std::path::Path::new(project_context.project_root())),
-                    &mut source_cache,
-                );
-                black_box(points)
-            })
-        });
-    }
-}
+fn bench_collect_crate_relationships(_c: &mut Criterion) {}
 
 // ============================================================================
 // Hot Function #6: check_inline_allow (57 samples)
@@ -501,56 +381,9 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
     });
 }
 
-// ============================================================================
-// Hot Function #10: build_shallow_callers (15 samples)
-// ============================================================================
+// Benchmark #10 removed: build_shallow_callers_filtered is now private.
 #[cfg(target_os = "macos")]
-fn bench_build_shallow_callers_filtered(c: &mut Criterion) {
-    ensure_jonesy_debug_built();
-
-    let root = workspace_root();
-    let binary_path = root.join("target/debug/jonesy");
-
-    if !binary_path.exists() {
-        eprintln!("Skipping build_shallow_callers benchmark: jonesy binary not found");
-        return;
-    }
-
-    let buffer = fs::read(&binary_path).expect("Failed to read binary");
-    let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
-
-    if let SymbolTable::MachO(Binary(ref macho)) = symbols {
-        let entry_points = find_entry_points(&symbols);
-        let panic_addr = entry_points.first().map(|(_, _, a)| *a).unwrap_or(0);
-
-        if panic_addr == 0 {
-            return;
-        }
-
-        let project_context = ProjectContext::from_project_root(&root.join("jonesy"))
-            .expect("Failed to create project context");
-        let symbol_index = SymbolIndex::new(macho);
-        let binary_ref = BinaryRef::MachO(macho);
-        let call_graph = CallGraph::build_with_debug_info(
-            &binary_ref,
-            &buffer,
-            &binary_ref,
-            &buffer,
-            false,
-            symbol_index.as_ref(),
-            &project_context,
-        )
-        .expect("Failed to build call graph");
-
-        c.bench_function("build_shallow_callers_jonesy", |b| {
-            b.iter(|| {
-                let callers =
-                    build_shallow_callers_filtered(&call_graph, panic_addr, &project_context);
-                black_box(callers)
-            })
-        });
-    }
-}
+fn bench_build_shallow_callers_filtered(_c: &mut Criterion) {}
 
 // ============================================================================
 // Hot Function #13: SymbolIndex::new (6 samples)

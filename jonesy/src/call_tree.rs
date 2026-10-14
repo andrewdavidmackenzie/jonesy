@@ -15,6 +15,12 @@ use rustc_demangle::demangle;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
+/// Key for identifying a code point: (file, line, column).
+/// Two call sites at different columns on the same line are distinct points.
+/// Column 0 means "unspecified" and should not create a separate entry —
+/// use `make_code_point_key` to handle this correctly.
+pub type CodePointKey = (String, u16, u16);
+
 static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u16)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -53,7 +59,7 @@ impl CallTreeNode {
             name,
             file: None,
             line: 0,
-            column: 0,
+            column: u16::MAX,
             callers: Vec::new(),
         }
     }
@@ -112,7 +118,7 @@ pub fn build_call_tree_parallel_filtered(
 }
 
 /// Sequential version with early filtering during construction.
-pub fn build_call_tree_sequential_filtered(
+fn build_call_tree_sequential_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
@@ -160,7 +166,7 @@ pub fn build_call_tree_sequential_filtered(
 
 /// Build shallow caller nodes with filtering.
 /// Only creates nodes that are in the crate (leaves are filtered).
-pub fn build_shallow_callers_filtered(
+fn build_shallow_callers_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     project_context: &ProjectContext,
@@ -210,13 +216,9 @@ pub struct CrateCodePoint {
     pub called_function: Option<String>,
 }
 
-/// Key for identifying a code point: (file, line)
-pub type CodePointKey = (String, u16);
-
-/// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic, called_function)
+/// Info stored for each code point: (function name, set of causes, set of child keys, is_direct_panic, called_function)
 pub type CodePointInfo = (
     String,
-    u16,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
     bool,           // is_direct_panic
@@ -335,8 +337,7 @@ pub fn collect_crate_code_points_hierarchical(
 
         path.insert(key.clone());
 
-        let (name, column, causes, child_keys_set, is_direct_panic, called_function) =
-            points.get(key)?;
+        let (name, causes, child_keys_set, is_direct_panic, called_function) = points.get(key)?;
         // Sort child keys for deterministic output
         let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
@@ -344,14 +345,14 @@ pub fn collect_crate_code_points_hierarchical(
             .iter()
             .filter_map(|child_key| build_subtree(child_key, points, path, cache))
             .collect();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         path.remove(key);
 
         let point = CrateCodePoint {
             name: name.clone(),
             file: key.0.clone(),
             line: key.1,
-            column: *column,
+            column: key.2,
             causes: causes.clone(),
             children,
             is_direct_panic: *is_direct_panic,
@@ -370,130 +371,6 @@ pub fn collect_crate_code_points_hierarchical(
             build_subtree(root, &points, &mut HashSet::new(), &mut cache)
         })
         .collect()
-}
-
-/// Collect crate code point relationships by walking the call tree.
-/// For each crate code point, records which other crate code points it "calls"
-/// (i.e., are closer to panic in the call chain).
-///
-/// In the CallTreeNode tree, "callers" are functions that CALL this node.
-/// So if A.callers contains B, then B calls A.
-/// For our output hierarchy: B is the parent (entry point), A is the child (closer to panic).
-///
-/// Also detects panic causes from function names in the call path.
-/// Tracks `immediate_callee` to determine if panic is direct (calling unwrap/expect directly)
-/// or indirect (calling a function that eventually panics).
-#[allow(clippy::too_many_arguments)]
-pub fn collect_crate_relationships(
-    node: &CallTreeNode,
-    points: &mut CodePointMap,
-    child_crate_key: Option<CodePointKey>,
-    current_cause: Option<PanicCause>,
-    immediate_callee: Option<&str>,
-    project_context: &ProjectContext,
-    workspace_root: Option<&std::path::Path>,
-    source_cache: &mut crate::inline_allows::SourceFileCache,
-) {
-    // Try to detect panic cause from this node's function name
-    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
-
-    // Check if file matches any of the patterns
-    let file_matches = node
-        .file
-        .as_ref()
-        .is_some_and(|file| project_context.is_crate_source(file));
-
-    let node_key = if let Some(file) = &node.file
-        && file_matches
-        && node.line > 0
-    {
-        Some((file.clone(), node.line))
-    } else {
-        None
-    };
-
-    if let Some(key) = &node_key {
-        // Determine if this is a direct panic (immediate callee is a panic-triggering function)
-        let is_direct = immediate_callee
-            .map(is_panic_triggering_function)
-            .unwrap_or(false);
-
-        // For indirect panics, store the called function name for help messages
-        let called_fn = if !is_direct {
-            immediate_callee.map(extract_qualified_function_name)
-        } else {
-            None
-        };
-
-        // Ensure this point exists in the map and accumulate all causes
-        let entry = points.entry(key.clone()).or_insert_with(|| {
-            (
-                node.name.clone(),
-                node.column,
-                HashSet::new(),
-                HashSet::new(),
-                is_direct,
-                called_fn.clone(),
-            )
-        });
-
-        // Update is_direct_panic: true if ANY path through this point is direct
-        // (conservative: if one path is direct, user could be calling directly)
-        if is_direct {
-            entry.4 = true;
-            entry.5 = None; // Clear called_function for direct panics
-        } else if entry.5.is_none() && called_fn.is_some() {
-            // Store called function if not already set
-            entry.5 = called_fn;
-        }
-
-        // Add this path's cause to the set of causes (if detected)
-        if let Some(cause) = &detected_cause {
-            entry.2.insert(cause.clone());
-        }
-
-        // If there's a child crate code point (closer to panic), add it as a child of this node
-        if let Some(child_key) = &child_crate_key {
-            entry.3.insert(child_key.clone());
-        }
-    }
-
-    // When recursing to callers, the current node becomes the child
-    // (since callers are further from panic, they are parents in our hierarchy)
-    // If this crate code point has an inline allow for the detected cause,
-    // don't propagate that cause to callers — the allow at this point
-    // covers the entire call subtree within the same crate.
-    let propagated_cause = if let (Some(key), Some(cause)) = (&node_key, &detected_cause) {
-        let cause_id = cause.id();
-        if crate::inline_allows::check_inline_allow(
-            &key.0,
-            key.1,
-            cause_id,
-            workspace_root,
-            Some(source_cache),
-        ) {
-            None
-        } else {
-            detected_cause.clone()
-        }
-    } else {
-        detected_cause.clone()
-    };
-
-    let next_child = node_key.or(child_crate_key);
-
-    for caller in &node.callers {
-        collect_crate_relationships(
-            caller,
-            points,
-            next_child.clone(),
-            propagated_cause.clone(),
-            Some(&node.name),
-            project_context,
-            workspace_root,
-            source_cache,
-        );
-    }
 }
 
 /// Parallel version of `collect_crate_relationships` that uses `DashMap` for
@@ -527,7 +404,7 @@ fn collect_crate_relationships_parallel(
         && file_matches
         && node.line > 0
     {
-        Some((file.clone(), node.line))
+        Some((file.clone(), node.line, node.column))
     } else {
         None
     };
@@ -546,7 +423,6 @@ fn collect_crate_relationships_parallel(
         let mut entry = points.entry(key.clone()).or_insert_with(|| {
             (
                 node.name.clone(),
-                node.column,
                 HashSet::new(),
                 HashSet::new(),
                 is_direct,
@@ -555,18 +431,18 @@ fn collect_crate_relationships_parallel(
         });
 
         if is_direct {
-            entry.4 = true;
-            entry.5 = None;
-        } else if entry.5.is_none() && called_fn.is_some() {
-            entry.5 = called_fn;
+            entry.3 = true;
+            entry.4 = None;
+        } else if entry.4.is_none() && called_fn.is_some() {
+            entry.4 = called_fn;
         }
 
         if let Some(cause) = &detected_cause {
-            entry.2.insert(cause.clone());
+            entry.1.insert(cause.clone());
         }
 
         if let Some(child_key) = &child_crate_key {
-            entry.3.insert(child_key.clone());
+            entry.2.insert(child_key.clone());
         }
     }
 
@@ -636,11 +512,11 @@ pub fn collect_crate_code_points(
 
     filter_allowed_causes(&mut roots, config, project_context);
 
-    // Deduplicate roots by (file, line)
+    // Deduplicate roots by (file, line, column)
     dedupe_crate_points(&mut roots);
 
     // Sort roots by file then line number
-    roots.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    roots.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
     let summary = count_crate_points_and_files(&roots);
     (roots, summary)
@@ -801,15 +677,15 @@ impl AnalysisResult {
 /// from multiple artifacts (e.g., multi-bin workspaces).
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisSummary {
-    /// Unique panic code points: (file, line)
-    points: HashSet<(String, u16)>,
+    /// Unique panic code points
+    points: HashSet<CodePointKey>,
     /// Unique files with panic points
     files: HashSet<String>,
 }
 
 impl AnalysisSummary {
     /// Create a new summary from collected points
-    pub fn from_points(points: HashSet<(String, u16)>, files: HashSet<String>) -> Self {
+    pub fn from_points(points: HashSet<CodePointKey>, files: HashSet<String>) -> Self {
         Self { points, files }
     }
 
@@ -841,27 +717,27 @@ fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
     }
 }
 
-/// Collect unique (file, line) keys and unique files from the hierarchy
+/// Collect unique (file, line, column) keys and unique files from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
-    seen_points: &mut HashSet<(String, u16)>,
+    seen_points: &mut HashSet<CodePointKey>,
     seen_files: &mut HashSet<String>,
 ) {
     for p in points {
-        seen_points.insert((p.file.clone(), p.line));
+        seen_points.insert((p.file.clone(), p.line, p.column));
         seen_files.insert(p.file.clone());
         collect_unique_point_keys_and_files(&p.children, seen_points, seen_files);
     }
 }
 
-/// Deduplicate crate code points by (file, line), merging children
+/// Deduplicate crate code points by (file, line, column), merging children
 fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
-    // Group by (file, line)
-    let mut seen: HashMap<(String, u16), usize> = HashMap::new();
+    // Group by (file, line, column)
+    let mut seen: HashMap<CodePointKey, usize> = HashMap::new();
     let mut result: Vec<CrateCodePoint> = Vec::new();
 
     for point in points.drain(..) {
-        let key = (point.file.clone(), point.line);
+        let key = (point.file.clone(), point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge children into existing point
             result[idx].children.extend(point.children);

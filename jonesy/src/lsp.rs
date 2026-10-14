@@ -19,7 +19,7 @@ use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::call_tree::CrateCodePoint;
+use crate::call_tree::{CodePointKey, CrateCodePoint};
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
 use crate::project_context::ProjectContext;
@@ -99,17 +99,17 @@ impl JonesyLspServer {
             )
         };
 
+        // LSP uses 0-based columns.
+        // Column 0 (DWARF "left edge") maps to LSP column 0.
+        let lsp_column = (point.column as u32).saturating_sub(1);
         let range = Range {
             start: Position {
                 line: (point.line as u32).saturating_sub(1), // LSP uses 0-based lines
-                character: ((if point.column == 0 { 1 } else { point.column }) as u32)
-                    .saturating_sub(1),
+                character: lsp_column,
             },
             end: Position {
                 line: (point.line as u32).saturating_sub(1),
-                character: ((if point.column == 0 { 1 } else { point.column }) as u32)
-                    .saturating_sub(1)
-                    + 10, // Approximate width
+                character: lsp_column + 10, // Approximate width
             },
         };
 
@@ -474,8 +474,7 @@ impl JonesyLspServer {
 
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
-        let mut seen: std::collections::HashSet<(String, u16, u16)> =
-            std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<CodePointKey> = std::collections::HashSet::new();
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
@@ -1670,7 +1669,7 @@ async fn run_analysis_task(
 
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
-    let mut seen: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut seen: HashSet<CodePointKey> = HashSet::new();
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1864,7 +1863,7 @@ fn format_change_summary(
 /// targets report the same panic point from shared code.
 #[cfg(test)]
 fn deduplicate_code_points(points: Vec<CrateCodePoint>) -> Vec<CrateCodePoint> {
-    let mut seen: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut seen: HashSet<CodePointKey> = HashSet::new();
     points
         .into_iter()
         .filter(|p| {
@@ -1932,7 +1931,7 @@ fn analyze_workspace_targets(
     project_context: &ProjectContext,
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
-    let mut seen: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut seen: HashSet<CodePointKey> = HashSet::new();
 
     for target in targets {
         match analyze_single_target(target, project_context) {
@@ -3194,7 +3193,7 @@ mod tests {
         let point = make_code_point("src/main.rs", 100, 0);
         let diag = JonesyLspServer::code_point_to_diagnostic(&point);
 
-        // No column defaults to 1, then subtract 1 for 0-based = 0
+        // Column 0 (DWARF left edge): saturating_sub(1) = 0 (LSP start of line)
         assert_eq!(diag.range.start.character, 0);
     }
 

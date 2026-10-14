@@ -40,7 +40,7 @@ jobs:
 
       - name: Run jonesy analysis
         id: jonesy
-        uses: andrewdavidmackenzie/jonesy@v1
+        uses: andrewdavidmackenzie/jonesy@v2
         with:
           fail-on-panic: false  # Set to true to fail the build if panics found
 

@@ -7,7 +7,7 @@ use crate::args::OutputFormat;
 use crate::binary_format::BinaryRef;
 use crate::call_tree::filter_allowed_causes;
 use crate::call_tree::{
-    AnalysisSummary, CallTreeNode, CrateCodePoint, build_call_tree_parallel_filtered,
+    AnalysisSummary, CallTreeNode, CodePointKey, CrateCodePoint, build_call_tree_parallel_filtered,
     collect_crate_code_points,
 };
 use crate::config::Config;
@@ -66,16 +66,16 @@ impl BinaryAnalysisResult {
     fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
-        // Build a map of existing code points by (file, line)
-        let mut points_map: HashMap<(String, u16), CrateCodePoint> = self
+        // Build a map of existing code points by (file, line, column)
+        let mut points_map: HashMap<CodePointKey, CrateCodePoint> = self
             .code_points
             .drain(..)
-            .map(|cp| ((cp.file.clone(), cp.line), cp))
+            .map(|cp| ((cp.file.clone(), cp.line, cp.column), cp))
             .collect();
 
         // Merge other's code points
         for cp in other.code_points {
-            let key = (cp.file.clone(), cp.line);
+            let key = (cp.file.clone(), cp.line, cp.column);
             if let Some(existing) = points_map.get_mut(&key) {
                 // Merge causes (HashSet handles dedup)
                 existing.causes.extend(cp.causes);
@@ -86,14 +86,18 @@ impl BinaryAnalysisResult {
 
         // Collect back to vec and sort
         self.code_points = points_map.into_values().collect();
-        self.code_points
-            .sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+        self.code_points.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.column.cmp(&b.column))
+        });
 
         // Recalculate summary from merged code points
         let points: HashSet<_> = self
             .code_points
             .iter()
-            .map(|cp| (cp.file.clone(), cp.line))
+            .map(|cp| (cp.file.clone(), cp.line, cp.column))
             .collect();
         let files: HashSet<_> = self.code_points.iter().map(|cp| cp.file.clone()).collect();
         self.summary = AnalysisSummary::from_points(points, files);
@@ -559,7 +563,9 @@ pub fn analyze_archive(
     // Convert PanicCaller to CrateCodePoint
     // Sort for deterministic output
     let mut sorted_callers: Vec<_> = panic_callers.into_iter().collect();
-    sorted_callers.sort_by(|a, b| (&a.file, a.line, &a.name).cmp(&(&b.file, b.line, &b.name)));
+    sorted_callers.sort_by(|a, b| {
+        (&a.file, a.line, a.column, &a.name).cmp(&(&b.file, b.line, b.column, &b.name))
+    });
 
     // Convert to CrateCodePoint structures with panic cause detection
     let mut code_points: Vec<CrateCodePoint> = sorted_callers
@@ -595,12 +601,11 @@ pub fn analyze_archive(
     // including inline allow comments (e.g., `// jonesy:allow(overflow)`)
     filter_allowed_causes(&mut code_points, config, project_context);
 
-    // Deduplicate by (file, line)
-    let mut seen: std::collections::HashMap<(String, u16), usize> =
-        std::collections::HashMap::new();
+    // Deduplicate by (file, line, column)
+    let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
     let mut deduped: Vec<CrateCodePoint> = Vec::new();
     for point in code_points {
-        let key = (point.file.clone(), point.line);
+        let key = (point.file.clone(), point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge causes into existing point
             deduped[idx].causes.extend(point.causes);
@@ -615,10 +620,10 @@ pub fn analyze_archive(
     }
 
     // Build summary from code points
-    let mut points: HashSet<(String, u16)> = HashSet::new();
+    let mut points: HashSet<CodePointKey> = HashSet::new();
     let mut files_affected: HashSet<String> = HashSet::new();
     for point in &deduped {
-        points.insert((point.file.clone(), point.line));
+        points.insert((point.file.clone(), point.line, point.column));
         files_affected.insert(point.file.clone());
     }
 
@@ -739,5 +744,33 @@ mod tests {
         result1.merge(result2);
 
         assert_eq!(result1.code_points.len(), 1);
+    }
+
+    /// Verify that code points at the same (file, line) but different columns
+    /// are kept separate after merging.
+    #[test]
+    fn test_binary_analysis_result_merge_different_columns() {
+        let mut point_a = make_code_point("src/main.rs", 10, PanicCause::Unwrap);
+        point_a.column = 5;
+        let mut point_b = make_code_point("src/main.rs", 10, PanicCause::Expect);
+        point_b.column = 20;
+
+        let mut result1 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![point_a],
+        };
+        let result2 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![point_b],
+        };
+
+        result1.merge(result2);
+
+        // Different columns on the same line should remain separate
+        assert_eq!(
+            result1.code_points.len(),
+            2,
+            "Same file:line but different columns should not merge"
+        );
     }
 }

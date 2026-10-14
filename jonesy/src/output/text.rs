@@ -11,6 +11,16 @@ use std::io::{self, Write};
 use std::path::Path;
 use url::Url;
 
+/// Format a source location as `file:line:column`, omitting the column
+/// when it is 0 (DWARF "left edge" — column unspecified by the compiler).
+fn format_location(file: &str, line: u16, column: u16) -> String {
+    if column == 0 {
+        format!("{file}:{line}")
+    } else {
+        format!("{file}:{line}:{column}")
+    }
+}
+
 /// Generate text output from analysis results to stdout.
 ///
 /// When `summary_only` is true, only prints the summary statistics.
@@ -197,8 +207,7 @@ fn write_flat_point<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output (works with GitHub problem matchers)
     let display_path = get_relative_path(&point.file, project_root);
-    let column = if point.column == 0 { 1 } else { point.column };
-    let location = format!("{}:{}:{}", display_path, point.line, column);
+    let location = format_location(&display_path, point.line, point.column);
 
     // Consider point a leaf if it has no children or we're not showing children
     let is_leaf = point.children.is_empty() || !include_children;
@@ -231,7 +240,7 @@ fn write_flat_point<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         for child in &children {
             write_flat_child(w, child, project_root, "     ", include_children)?;
         }
@@ -249,8 +258,7 @@ fn write_flat_child<W: Write>(
 ) -> io::Result<()> {
     // Use relative paths for CI-friendly output
     let display_path = get_relative_path(&point.file, project_root);
-    let column = if point.column == 0 { 1 } else { point.column };
-    let location = format!("{}:{}:{}", display_path, point.line, column);
+    let location = format_location(&display_path, point.line, point.column);
 
     let is_leaf = point.children.is_empty() || !include_children;
     let sorted_causes = get_sorted_causes(&point.causes);
@@ -279,7 +287,7 @@ fn write_flat_child<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         let child_indent = format!("{}     ", indent);
         for child in &children {
             write_flat_child(w, child, project_root, &child_indent, include_children)?;
@@ -310,18 +318,17 @@ fn write_file_entry<W: Write>(
 
     let absolute_path = make_absolute(&point.file, project_root);
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = if point.column == 0 { 1 } else { point.column };
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
             file_url.set_fragment(Some(&format!("L{}", point.line)));
-            let display = format!("{}:{}:{}", filename, point.line, column);
+            let display = format_location(filename, point.line, point.column);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
-            format!("{}:{}:{}", absolute_path, point.line, column)
+            format_location(&absolute_path, point.line, point.column)
         }
     } else {
-        format!("{}:{}:{}", absolute_path, point.line, column)
+        format_location(&absolute_path, point.line, point.column)
     };
 
     let sorted_causes = get_sorted_causes(&point.causes);
@@ -362,7 +369,7 @@ fn write_file_entry<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
         let child_prefix = if is_root_level {
             "     ".to_string()
@@ -418,18 +425,17 @@ fn write_crate_point<W: Write>(
     };
 
     let use_hyperlinks = !no_hyperlinks && is_tty;
-    let column = if point.column == 0 { 1 } else { point.column };
 
     let location = if use_hyperlinks {
         if let Ok(mut file_url) = Url::from_file_path(&absolute_path) {
             file_url.set_fragment(Some(&format!("L{}", point.line)));
-            let display = format!("{}:{}:{}", display_path, point.line, column);
+            let display = format_location(&display_path, point.line, point.column);
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", file_url, display)
         } else {
-            format!("{}:{}:{}", absolute_path, point.line, column)
+            format_location(&absolute_path, point.line, point.column)
         }
     } else {
-        format!("{}:{}:{}", absolute_path, point.line, column)
+        format_location(&absolute_path, point.line, point.column)
     };
 
     let sorted_causes = get_sorted_causes(&point.causes);
@@ -470,7 +476,7 @@ fn write_crate_point<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
         let child_prefix = if is_root {
             "     ".to_string()
@@ -1090,5 +1096,22 @@ mod tests {
     fn test_make_absolute_relative_path() {
         let result = make_absolute("src/lib.rs", Some(Path::new("/project")));
         assert_eq!(result, "/project/src/lib.rs");
+    }
+
+    #[test]
+    fn test_format_location_with_column() {
+        assert_eq!(format_location("src/main.rs", 42, 10), "src/main.rs:42:10");
+    }
+
+    #[test]
+    fn test_format_location_column_zero() {
+        // DWARF "left edge" — column unspecified, omit from output
+        assert_eq!(format_location("src/main.rs", 42, 0), "src/main.rs:42");
+    }
+
+    #[test]
+    fn test_format_location_column_one() {
+        // Column 1 is a real column, include it
+        assert_eq!(format_location("src/main.rs", 42, 1), "src/main.rs:42:1");
     }
 }
