@@ -4,6 +4,7 @@ use crate::crate_line_table::CrateLineTable;
 use crate::full_line_table::FullLineTable;
 use crate::function_index::{FunctionIndex, get_functions_from_dwarf, load_dwarf_sections};
 use crate::project_context::ProjectContext;
+use crate::string_tables::{FILE_NONE, FilePathInterner};
 use crate::sym::SymbolIndex;
 use dashmap::DashMap;
 use goblin::mach::MachO;
@@ -14,21 +15,23 @@ use std::collections::HashMap;
 
 /// Compact information about a call site (64 bytes, 64-byte aligned).
 ///
-/// Uses `Cow<str>` for the function name (24 bytes), `Option<Box<str>>` for the
-/// file path (16 bytes), and `u16` for line/column numbers.
+/// Uses `Cow<str>` for the function name (24 bytes), a `u16` file index into
+/// a shared `FilePathInterner` (2 bytes), and `u16` for line/column numbers.
 ///
 /// The `file` field merges what was previously `caller_file` and `file`:
 /// at construction time, the more specific call-site file is preferred,
 /// falling back to the function declaration file.
 ///
 /// A value of 0 in `line` or `column` means the field is absent.
+/// A value of `FILE_NONE` in `file` means no file path is known.
 #[derive(Debug, Clone)]
 #[repr(C, align(64))]
 pub struct CallerInfo<'a> {
     /// Demangled name of the calling function
     pub caller_name: Cow<'a, str>,
-    /// Source file (merged: prefers call-site file, falls back to function declaration file)
-    pub file: Option<Box<str>>,
+    /// Source file index into a shared `FilePathInterner`.
+    /// `FILE_NONE` means no file path is known.
+    pub file: u16,
     /// Start address of the calling function
     pub caller_start_address: u64,
     /// Address of the calling instruction
@@ -105,7 +108,7 @@ impl<'a> CallGraph<'a> {
 
                 edges.entry(resolved_target).or_default().push(CallerInfo {
                     caller_name: Cow::Borrowed(func_name),
-                    file: None,
+                    file: FILE_NONE,
                     caller_start_address: func_addr,
                     call_site_addr: data.address,
                     line: 0,
@@ -125,6 +128,8 @@ impl<'a> CallGraph<'a> {
     /// Build a call graph with debug info enrichment.
     /// Uses parallel disassembly and parallel processing for faster analysis.
     /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
+    /// File paths from DWARF are interned into the shared `file_interner`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_with_debug_info(
         binary: &BinaryRef,
         binary_buffer: &[u8],
@@ -133,6 +138,7 @@ impl<'a> CallGraph<'a> {
         show_timings: bool,
         symbol_index: Option<&'a SymbolIndex>,
         project_context: &ProjectContext,
+        file_interner: &FilePathInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -223,6 +229,7 @@ impl<'a> CallGraph<'a> {
                     &crate_line_table,
                     symbol_index,
                     project_context,
+                    file_interner,
                 )
             {
                 // Resolve PLT stub to actual function address (for ELF dylib support)
@@ -271,6 +278,7 @@ fn process_instruction_data_with_crate_table<'a>(
     crate_line_table: &CrateLineTable,
     symbol_index: Option<&'a SymbolIndex>,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Option<(u64, CallerInfo<'a>)> {
     let call_target = data.call_target?;
 
@@ -279,40 +287,40 @@ fn process_instruction_data_with_crate_table<'a>(
     if let Some(func) = function_index.find_containing(data.address) {
         // Found in DWARF - use full debug info
         // Get source location using O(log n) binary search on pre-built table
-        let func_file = function_index.get_file(func).map(|s| s.to_string());
+        // All file paths are borrowed (&str) until final interning
+        let func_file: Option<&str> = function_index.get_file(func);
         let func_line = function_index.get_line(func);
-        // Keep a copy for fallback file resolution
-        let decl_file = func_file.clone();
-        let (mut file, mut line, mut column) = match (func_file, func_line) {
-            (Some(f), l) if l > 0 => {
-                // Fast path: use DWARF function info directly
-                // Look up column from the full line table at the function start address,
-                // but only use it if the line table entry matches our file and line
-                let (lt_file, lt_line, lt_column) =
-                    full_line_table.get_source_location(func.start_address);
-                let col = if lt_line == l && lt_file.as_deref() == Some(f.as_str()) {
-                    lt_column
-                } else {
-                    0 // DWARF left edge — column unspecified
-                };
-                (Some(f), l, col)
-            }
-            (func_file, func_line) => {
-                // Use pre-built full line table for O(log n) lookup
-                let (line_file, line_line, line_column) =
-                    full_line_table.get_source_location(func.start_address);
-                (
-                    func_file.or(line_file),
-                    if func_line > 0 { func_line } else { line_line },
-                    line_column,
-                )
-            }
-        };
+        // Keep a reference for fallback file resolution
+        let decl_file = func_file;
+        let (mut file, mut line, mut column): (Option<&str>, u16, u16) =
+            match (func_file, func_line) {
+                (Some(f), l) if l > 0 => {
+                    // Fast path: use DWARF function info directly
+                    // Look up column from the full line table at the function start address,
+                    // but only use it if the line table entry matches our file and line
+                    let (lt_file, lt_line, lt_column) =
+                        full_line_table.get_source_location(func.start_address);
+                    let col = if lt_line == l && lt_file == Some(f) {
+                        lt_column
+                    } else {
+                        0 // DWARF left edge — column unspecified
+                    };
+                    (Some(f), l, col)
+                }
+                (func_file, func_line) => {
+                    // Use pre-built full line table for O(log n) lookup
+                    let (line_file, line_line, line_column) =
+                        full_line_table.get_source_location(func.start_address);
+                    (
+                        func_file.or(line_file),
+                        if func_line > 0 { func_line } else { line_line },
+                        line_column,
+                    )
+                }
+            };
 
         // For functions in the crate source, find actual call line using pre-built table
-        let file_in_crate = file
-            .as_ref()
-            .is_some_and(|f| project_context.is_crate_source(f));
+        let file_in_crate = file.is_some_and(|f| project_context.is_crate_source(f));
         if file_in_crate {
             // Use pre-built crate line table for O(log n) lookup
             {
@@ -336,14 +344,6 @@ fn process_instruction_data_with_crate_table<'a>(
                             column = crate_column;
                         }
                     } else {
-                        // Got a specific line from crate table. Only consider
-                        // DWARF inline info when crate_line is in the function
-                        // prologue area (within a few lines of the declaration).
-                        // This is where the crate line table may return the
-                        // setup line before an inlined expansion (e.g.,
-                        // Option::unwrap) rather than the actual call site.
-                        // For lines deep inside the function body, the crate
-                        // line table result is already correct.
                         let near_prologue = if crate_line > 0 && func_line > 0 {
                             crate_line.saturating_sub(func_line) <= 5
                         } else {
@@ -357,19 +357,16 @@ fn process_instruction_data_with_crate_table<'a>(
                                     && call_line_num > 0
                                     && call_line_num != crate_line
                                 {
-                                    file = Some(call_file.to_string());
+                                    file = Some(call_file);
                                     line = call_line_num;
-                                    // Look up column from full line table at the call address,
-                                    // but only use it if the entry matches file and line
                                     let (lt_file, lt_line, lt_column) =
                                         full_line_table.get_source_location(data.address);
-                                    column = if lt_line == call_line_num
-                                        && lt_file.as_deref() == Some(call_file)
-                                    {
-                                        lt_column
-                                    } else {
-                                        0
-                                    };
+                                    column =
+                                        if lt_line == call_line_num && lt_file == Some(call_file) {
+                                            lt_column
+                                        } else {
+                                            0
+                                        };
                                 } else {
                                     line = crate_line;
                                     column = crate_column;
@@ -388,10 +385,8 @@ fn process_instruction_data_with_crate_table<'a>(
         }
 
         // Get function name - only do expensive inlined lookup for crate source functions
-        // For non-crate functions, use the containing function's name (fast path)
         let func_name = function_index.get_name(func);
         let display_name: Cow<'a, str> = if file_in_crate {
-            // Crate function: get the most specific name (checks inlined functions)
             Cow::Owned(
                 function_index
                     .find_function_name(data.address)
@@ -402,16 +397,12 @@ fn process_instruction_data_with_crate_table<'a>(
                     .unwrap_or_else(|| func_name.to_string()),
             )
         } else {
-            // Non-crate function: use containing function name directly (skip inlined search)
             Cow::Owned(func_name.to_string())
         };
 
-        // Note: We intentionally use the inlined function's name but keep the
-        // containing function's address range (start/end) for call graph building.
-        // The caller.file/line fields are the function *definition* location,
-        // while CallerInfo.file/line/column below are the actual *call site*.
-        // Merge file fields: prefer call-site file, fall back to declaration file
-        let merged_file = decl_file.or(file).map(|s| s.into_boxed_str());
+        // Merge file fields: prefer call-site file, fall back to declaration file.
+        // Intern the merged path into the shared interner (u32 index, no allocation).
+        let merged_file = file_interner.intern_option(decl_file.or(file));
 
         Some((
             call_target,
@@ -432,7 +423,7 @@ fn process_instruction_data_with_crate_table<'a>(
             call_target,
             CallerInfo {
                 caller_name: Cow::Borrowed(func_name),
-                file: None,
+                file: FILE_NONE,
                 caller_start_address: func_addr,
                 call_site_addr: data.address,
                 line: 0,
@@ -525,9 +516,11 @@ mod tests {
     // Tests for CallerInfo
     #[test]
     fn test_caller_info_construction() {
+        let interner = FilePathInterner::new();
+        let file_idx = interner.intern("src/main.rs");
         let info = CallerInfo {
             caller_name: Cow::Owned("my_function".to_string()),
-            file: Some("src/main.rs".into()),
+            file: file_idx,
             caller_start_address: 0x1000,
             call_site_addr: 0x1010,
             line: 42,
@@ -536,6 +529,7 @@ mod tests {
         assert_eq!(info.caller_start_address, 0x1000);
         assert_eq!(info.call_site_addr, 0x1010);
         assert_eq!(info.line, 42);
+        assert_ne!(info.file, FILE_NONE);
     }
 
     #[test]
@@ -543,14 +537,14 @@ mod tests {
         let name = "borrowed_function".to_string();
         let info = CallerInfo {
             caller_name: Cow::Borrowed(&name),
-            file: None,
+            file: FILE_NONE,
             caller_start_address: 0x2000,
             call_site_addr: 0x2020,
             line: 0,
             column: 0,
         };
         assert_eq!(&*info.caller_name, "borrowed_function");
-        assert!(info.file.is_none());
+        assert_eq!(info.file, FILE_NONE);
         assert_eq!(info.line, 0);
     }
 }

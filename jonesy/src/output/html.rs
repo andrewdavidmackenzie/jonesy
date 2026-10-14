@@ -6,6 +6,7 @@
 use super::json::WorkspaceResult;
 use crate::args::VERSION;
 use crate::call_tree::{AnalysisResult, CrateCodePoint};
+use crate::string_tables;
 
 /// Generate HTML output from analysis results.
 ///
@@ -25,6 +26,7 @@ pub fn generate_html_output(result: &AnalysisResult, tree: bool, summary_only: b
         summary.panic_points(),
         summary.files_affected(),
         code_points,
+        &result.file_paths,
         tree,
     )
 }
@@ -36,6 +38,7 @@ fn generate_html_report(
     panic_points: usize,
     files_affected: usize,
     code_points: &[CrateCodePoint],
+    file_paths: &[String],
     include_tree: bool,
 ) -> String {
     let mut html = String::new();
@@ -234,7 +237,7 @@ fn generate_html_report(
 "#,
         );
         for point in code_points {
-            render_panic_point(&mut html, point, project_root, include_tree, 0);
+            render_panic_point(&mut html, point, file_paths, project_root, include_tree, 0);
         }
         html.push_str("        </ul>\n");
     }
@@ -258,17 +261,19 @@ fn generate_html_report(
 fn render_panic_point(
     html: &mut String,
     point: &CrateCodePoint,
+    file_paths: &[String],
     project_root: &str,
     include_tree: bool,
     depth: usize,
 ) {
     let indent = "            ".repeat(depth + 1);
-    let absolute_path = make_absolute_path(&point.file, project_root);
+    let file_str = string_tables::resolve_file(file_paths, point.file).unwrap_or("");
+    let absolute_path = make_absolute_path(file_str, project_root);
     let file_url = escape_html(&format!("file://{}", absolute_path));
     let location = if point.column > 0 {
-        format!("{}:{}:{}", point.file, point.line, point.column)
+        format!("{}:{}:{}", file_str, point.line, point.column)
     } else {
-        format!("{}:{}", point.file, point.line)
+        format!("{}:{}", file_str, point.line)
     };
 
     // Get all causes sorted by error code
@@ -336,7 +341,7 @@ fn render_panic_point(
     if include_tree && !point.children.is_empty() {
         html.push_str(&format!("{}    <div class=\"children\">\n", indent));
         for child in &point.children {
-            render_child_point(html, child, project_root, depth + 1);
+            render_child_point(html, child, file_paths, project_root, depth + 1);
         }
         html.push_str(&format!("{}    </div>\n", indent));
     }
@@ -345,14 +350,21 @@ fn render_panic_point(
 }
 
 /// Render a child panic point (simplified view).
-fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &str, depth: usize) {
+fn render_child_point(
+    html: &mut String,
+    point: &CrateCodePoint,
+    file_paths: &[String],
+    project_root: &str,
+    depth: usize,
+) {
     let indent = "            ".repeat(depth + 1);
-    let absolute_path = make_absolute_path(&point.file, project_root);
+    let file_str = string_tables::resolve_file(file_paths, point.file).unwrap_or("");
+    let absolute_path = make_absolute_path(file_str, project_root);
     let file_url = escape_html(&format!("file://{}", absolute_path));
     let location = if point.column > 0 {
-        format!("{}:{}:{}", point.file, point.line, point.column)
+        format!("{}:{}:{}", file_str, point.line, point.column)
     } else {
-        format!("{}:{}", point.file, point.line)
+        format!("{}:{}", file_str, point.line)
     };
 
     // Get all causes sorted by error code
@@ -393,7 +405,7 @@ fn render_child_point(html: &mut String, point: &CrateCodePoint, project_root: &
     if !point.children.is_empty() {
         html.push_str(&format!("{}    <div class=\"children\">\n", indent));
         for child in &point.children {
-            render_child_point(html, child, project_root, depth + 1);
+            render_child_point(html, child, file_paths, project_root, depth + 1);
         }
         html.push_str(&format!("{}    </div>\n", indent));
     }
@@ -726,7 +738,7 @@ pub fn generate_workspace_html_output(
 "#,
             );
             for point in code_points {
-                render_panic_point(&mut html, point, &result.root, tree, 1);
+                render_panic_point(&mut html, point, &member.file_paths, &result.root, tree, 1);
             }
             html.push_str(
                 r#"                </ul>
@@ -763,13 +775,13 @@ mod tests {
 
     fn make_test_point(
         name: &str,
-        file: &str,
+        file: u16,
         line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
             name: name.to_string(),
-            file: file.to_string(),
+            file,
             line,
             column: 1,
             causes: causes.into_iter().collect(),
@@ -779,17 +791,21 @@ mod tests {
         }
     }
 
-    fn make_test_result(code_points: Vec<CrateCodePoint>) -> AnalysisResult {
+    fn make_test_result(
+        code_points: Vec<CrateCodePoint>,
+        file_paths: Vec<String>,
+    ) -> AnalysisResult {
         AnalysisResult {
             project_name: "test_project".to_string(),
             project_root: "/test".to_string(),
             code_points,
+            file_paths,
         }
     }
 
     #[test]
     fn test_generate_html_output_empty() {
-        let result = make_test_result(vec![]);
+        let result = make_test_result(vec![], vec![]);
         let html = generate_html_output(&result, false, false);
 
         assert!(html.contains("<!DOCTYPE html>"));
@@ -800,12 +816,16 @@ mod tests {
 
     #[test]
     fn test_generate_html_output_with_panic_points() {
-        let result = make_test_result(vec![make_test_point(
-            "test_func",
-            "src/main.rs",
-            42,
-            vec![PanicCause::Unwrap],
-        )]);
+        let file_paths = vec!["src/main.rs".to_string()];
+        let result = make_test_result(
+            vec![make_test_point(
+                "test_func",
+                0,
+                42,
+                vec![PanicCause::Unwrap],
+            )],
+            file_paths,
+        );
         let html = generate_html_output(&result, false, false);
 
         assert!(html.contains("src/main.rs"));
@@ -817,12 +837,16 @@ mod tests {
 
     #[test]
     fn test_generate_html_output_summary_only() {
-        let result = make_test_result(vec![make_test_point(
-            "test_func",
-            "src/main.rs",
-            42,
-            vec![PanicCause::Unwrap],
-        )]);
+        let file_paths = vec!["src/main.rs".to_string()];
+        let result = make_test_result(
+            vec![make_test_point(
+                "test_func",
+                0,
+                42,
+                vec![PanicCause::Unwrap],
+            )],
+            file_paths,
+        );
         let html = generate_html_output(&result, false, true);
 
         // Summary-only should have empty panic points list
@@ -833,9 +857,10 @@ mod tests {
 
     #[test]
     fn test_generate_html_output_with_tree() {
+        let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let child = CrateCodePoint {
             name: "child_func".to_string(),
-            file: "src/lib.rs".to_string(),
+            file: 1,
             line: 20,
             column: 5,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
@@ -845,7 +870,7 @@ mod tests {
         };
         let parent = CrateCodePoint {
             name: "parent_func".to_string(),
-            file: "src/main.rs".to_string(),
+            file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
@@ -853,7 +878,7 @@ mod tests {
             is_direct_panic: false,
             called_function: Some("child_func".to_string()),
         };
-        let result = make_test_result(vec![parent]);
+        let result = make_test_result(vec![parent], file_paths);
         let html = generate_html_output(&result, true, false);
 
         // Both parent and child should appear
@@ -869,6 +894,7 @@ mod tests {
             project_name: "test<script>alert('xss')</script>".to_string(),
             project_root: "/test".to_string(),
             code_points: vec![],
+            file_paths: vec![],
         };
         let html = generate_html_output(&result, false, false);
 
@@ -879,6 +905,7 @@ mod tests {
 
     #[test]
     fn test_generate_workspace_html_output() {
+        let member_file_paths = vec!["crate_a/src/lib.rs".to_string()];
         let member = WorkspaceMemberResult {
             name: "crate_a".to_string(),
             path: "crate_a".to_string(),
@@ -886,12 +913,8 @@ mod tests {
                 vec![("file".to_string(), 1, 1)].into_iter().collect(),
                 vec!["file".to_string()].into_iter().collect(),
             ),
-            code_points: vec![make_test_point(
-                "func",
-                "crate_a/src/lib.rs",
-                5,
-                vec![PanicCause::Todo],
-            )],
+            code_points: vec![make_test_point("func", 0, 5, vec![PanicCause::Todo])],
+            file_paths: member_file_paths,
         };
         let workspace = WorkspaceResult {
             root: "/workspace".to_string(),
@@ -920,7 +943,7 @@ mod tests {
 
     #[test]
     fn test_html_structure() {
-        let result = make_test_result(vec![]);
+        let result = make_test_result(vec![], vec![]);
         let html = generate_html_output(&result, false, false);
 
         // Check HTML structure
@@ -935,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_html_includes_version() {
-        let result = make_test_result(vec![]);
+        let result = make_test_result(vec![], vec![]);
         let html = generate_html_output(&result, false, false);
 
         assert!(html.contains(VERSION));

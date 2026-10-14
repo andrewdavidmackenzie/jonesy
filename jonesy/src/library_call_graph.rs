@@ -6,6 +6,7 @@ use crate::call_graph::CallerInfo;
 use crate::function_index::load_dwarf_sections;
 use crate::object_line_table::ObjectLineTable;
 use crate::project_context::ProjectContext;
+use crate::string_tables::FilePathInterner;
 use crate::sym::SymbolIndex;
 use goblin::container::{Container, Ctx, Endian};
 use goblin::elf::Elf;
@@ -36,12 +37,15 @@ impl LibraryCallGraph {
         binary: &BinaryRef,
         buffer: &[u8],
         project_context: &ProjectContext,
+        file_interner: &FilePathInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         match binary {
             BinaryRef::MachO(macho) => {
-                Self::build_from_macho_object(macho, buffer, project_context)
+                Self::build_from_macho_object(macho, buffer, project_context, file_interner)
             }
-            BinaryRef::Elf(elf) => Self::build_from_elf_object(elf, buffer, project_context),
+            BinaryRef::Elf(elf) => {
+                Self::build_from_elf_object(elf, buffer, project_context, file_interner)
+            }
         }
     }
 
@@ -50,6 +54,7 @@ impl LibraryCallGraph {
         macho: &MachO,
         buffer: &[u8],
         project_context: &ProjectContext,
+        file_interner: &FilePathInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
 
@@ -180,7 +185,7 @@ impl LibraryCallGraph {
                         // Record the call: target_symbol -> caller
                         edges.entry(target_demangled).or_default().push(CallerInfo {
                             caller_name: Cow::Owned(func_name),
-                            file: file.map(|s| s.into_boxed_str()),
+                            file: file_interner.intern_option(file.as_deref()),
                             caller_start_address: func_addr,
                             call_site_addr,
                             line,
@@ -199,6 +204,7 @@ impl LibraryCallGraph {
         elf: &Elf,
         buffer: &[u8],
         project_context: &ProjectContext,
+        file_interner: &FilePathInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
 
@@ -413,7 +419,7 @@ impl LibraryCallGraph {
                 // Record the call: target_symbol -> caller
                 edges.entry(target_demangled).or_default().push(CallerInfo {
                     caller_name: Cow::Owned(func_name),
-                    file: file.map(|s| s.into_boxed_str()),
+                    file: file_interner.intern_option(file.as_deref()),
                     caller_start_address: func_addr,
                     call_site_addr,
                     line,

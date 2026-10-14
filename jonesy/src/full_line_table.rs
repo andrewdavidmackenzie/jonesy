@@ -6,9 +6,6 @@ use crate::sym::resolve_line_file_path;
 use gimli::{ColumnType, Dwarf, Reader};
 use rayon::prelude::*;
 
-/// Source location tuple: (file, line, column)
-type SourceLocation = (Option<String>, u16, u16);
-
 /// A line entry for full source location lookups.
 /// Uses file_id for string interning to reduce memory pressure.
 /// Uses `u16` for line/column with 0 meaning absent (saves space vs `Option<u16>`).
@@ -37,8 +34,9 @@ impl FullLineTable {
     /// Get source location for an address using binary search.
     /// Returns the entry whose address is <= the query address.
     /// For entries with the same address, returns the first one (from earliest unit,
-    /// matching original get_source_location behavior).
-    pub fn get_source_location(&self, addr: u64) -> SourceLocation {
+    /// matching original get_source_location behaviour).
+    /// Returns a borrowed `&str` from the internal file pool to avoid cloning.
+    pub fn get_source_location(&self, addr: u64) -> (Option<&str>, u16, u16) {
         // Find the first entry with address > addr
         let idx = self.entries.partition_point(|e| e.address <= addr);
 
@@ -48,8 +46,11 @@ impl FullLineTable {
             let target_addr = self.entries[idx - 1].address;
             let first_idx = self.entries[..idx].partition_point(|e| e.address < target_addr);
             let entry = &self.entries[first_idx];
-            // Look up file path from the interned pool
-            let file = self.file_pool.get(entry.file_id as usize).cloned();
+            // Look up file path from the interned pool (borrow, no clone)
+            let file = self
+                .file_pool
+                .get(entry.file_id as usize)
+                .map(|s| s.as_str());
             (file, entry.line, entry.column)
         } else {
             (None, 0, 0)
