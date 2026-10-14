@@ -13,6 +13,7 @@ use crate::call_tree::{
 use crate::config::Config;
 use crate::heuristics::{find_entry_points, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
+use crate::string_tables::FilePathInterner;
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, load_debug_info,
 };
@@ -66,16 +67,21 @@ impl BinaryAnalysisResult {
     fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
-        // Build a map of existing code points by (file, line, column)
+        let interner = FilePathInterner::new();
+
+        // Build a map of existing code points by (file_idx, line, column)
         let mut points_map: HashMap<CodePointKey, CrateCodePoint> = self
             .code_points
             .drain(..)
-            .map(|cp| ((cp.file.clone(), cp.line, cp.column), cp))
+            .map(|cp| {
+                let key = (interner.intern(&cp.file), cp.line, cp.column);
+                (key, cp)
+            })
             .collect();
 
         // Merge other's code points
         for cp in other.code_points {
-            let key = (cp.file.clone(), cp.line, cp.column);
+            let key = (interner.intern(&cp.file), cp.line, cp.column);
             if let Some(existing) = points_map.get_mut(&key) {
                 // Merge causes (HashSet handles dedup)
                 existing.causes.extend(cp.causes);
@@ -94,10 +100,11 @@ impl BinaryAnalysisResult {
         });
 
         // Recalculate summary from merged code points
+        let interner = FilePathInterner::new();
         let points: HashSet<_> = self
             .code_points
             .iter()
-            .map(|cp| (cp.file.clone(), cp.line, cp.column))
+            .map(|cp| (interner.intern(&cp.file), cp.line, cp.column))
             .collect();
         let files: HashSet<_> = self.code_points.iter().map(|cp| cp.file.clone()).collect();
         self.summary = AnalysisSummary::from_points(points, files);
@@ -602,10 +609,11 @@ pub fn analyze_archive(
     filter_allowed_causes(&mut code_points, config, project_context);
 
     // Deduplicate by (file, line, column)
+    let interner = FilePathInterner::new();
     let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
     let mut deduped: Vec<CrateCodePoint> = Vec::new();
     for point in code_points {
-        let key = (point.file.clone(), point.line, point.column);
+        let key = (interner.intern(&point.file), point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge causes into existing point
             deduped[idx].causes.extend(point.causes);
@@ -623,7 +631,7 @@ pub fn analyze_archive(
     let mut points: HashSet<CodePointKey> = HashSet::new();
     let mut files_affected: HashSet<String> = HashSet::new();
     for point in &deduped {
-        points.insert((point.file.clone(), point.line, point.column));
+        points.insert((interner.intern(&point.file), point.line, point.column));
         files_affected.insert(point.file.clone());
     }
 

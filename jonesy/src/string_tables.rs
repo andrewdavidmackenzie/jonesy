@@ -1,8 +1,15 @@
 //! Interned string tables for function names and file paths.
 //!
 //! Reduces memory by deduplicating strings and enables compact FunctionInfo.
+//!
+//! `FilePathInterner` provides a thread-safe file path interning table for use
+//! during code point collection, where file paths are frequently cloned as part
+//! of `CodePointKey` tuples. By interning to a `u32` index, we eliminate string
+//! cloning in hot paths and make hashing/comparison of keys much cheaper.
 
+use dashmap::DashMap;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Interned string tables for function names and file paths.
 /// Reduces memory by deduplicating strings and enables compact FunctionInfo.
@@ -69,6 +76,102 @@ impl StringTables {
         } else {
             Some(&self.files[(idx - 1) as usize])
         }
+    }
+}
+
+/// Thread-safe file path interner for use during code point collection.
+///
+/// Uses a `DashMap` for concurrent interning (safe with `par_iter`) and an
+/// `AtomicU32` counter for allocating new indices. After the parallel phase,
+/// call `into_vec()` to get a `Vec<String>` for index-to-path resolution.
+///
+/// The index `0` is valid (unlike `StringTables::intern_file` which uses 0 as
+/// a sentinel for `None`). Every interned path gets a non-negative index.
+#[derive(Debug)]
+pub struct FilePathInterner {
+    map: DashMap<String, u32>,
+    next_id: AtomicU32,
+}
+
+impl Default for FilePathInterner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FilePathInterner {
+    /// Create a new empty interner.
+    pub fn new() -> Self {
+        Self {
+            map: DashMap::new(),
+            next_id: AtomicU32::new(0),
+        }
+    }
+
+    /// Intern a file path, returning its index.
+    /// Thread-safe: can be called concurrently from multiple rayon threads.
+    /// If the path is already interned, returns the existing index without allocating.
+    pub fn intern(&self, path: &str) -> u32 {
+        // Fast path: check if already interned
+        if let Some(entry) = self.map.get(path) {
+            return *entry.value();
+        }
+
+        // Slow path: allocate a new ID and insert
+        // Use entry API to handle races -- two threads may both reach here for the same path.
+        // The `or_insert_with` closure runs at most once per unique key.
+        *self
+            .map
+            .entry(path.to_string())
+            .or_insert_with(|| self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Intern an owned String, avoiding a clone if not yet interned.
+    pub fn intern_owned(&self, path: String) -> u32 {
+        if let Some(entry) = self.map.get(&path) {
+            return *entry.value();
+        }
+
+        *self
+            .map
+            .entry(path)
+            .or_insert_with(|| self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Resolve an index back to its file path string.
+    /// Returns `None` if the index is out of bounds.
+    ///
+    /// **Note:** This performs a linear scan of the DashMap. For bulk resolution,
+    /// prefer converting to a `Vec<String>` with `into_vec()` first.
+    pub fn resolve(&self, idx: u32) -> Option<String> {
+        self.map
+            .iter()
+            .find(|entry| *entry.value() == idx)
+            .map(|entry| entry.key().clone())
+    }
+
+    /// Consume the interner and produce a `Vec<String>` indexed by the interned IDs.
+    /// This is the efficient way to do bulk index-to-path resolution after the parallel phase.
+    pub fn into_vec(self) -> Vec<String> {
+        let count = self.next_id.load(Ordering::Relaxed) as usize;
+        let mut result = vec![String::new(); count];
+        for entry in self.map.into_iter() {
+            let idx = entry.1 as usize;
+            if idx < result.len() {
+                result[idx] = entry.0;
+            }
+        }
+        result
+    }
+
+    /// Get the number of interned paths.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Check if the interner is empty.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 }
 
@@ -144,5 +247,46 @@ mod tests {
         assert_ne!(idx_some, 0);
         assert_eq!(tables.get_file(idx_none), None);
         assert_eq!(tables.get_file(idx_some), Some("/file.rs"));
+    }
+
+    #[test]
+    fn test_file_path_interner_basic() {
+        let interner = FilePathInterner::new();
+        let idx1 = interner.intern("src/main.rs");
+        let idx2 = interner.intern("src/main.rs");
+        let idx3 = interner.intern("src/lib.rs");
+        assert_eq!(idx1, idx2, "same path should return same index");
+        assert_ne!(
+            idx1, idx3,
+            "different paths should return different indices"
+        );
+        assert_eq!(interner.len(), 2);
+    }
+
+    #[test]
+    fn test_file_path_interner_intern_owned() {
+        let interner = FilePathInterner::new();
+        let idx1 = interner.intern_owned("src/main.rs".to_string());
+        let idx2 = interner.intern("src/main.rs");
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_file_path_interner_resolve() {
+        let interner = FilePathInterner::new();
+        let idx = interner.intern("src/main.rs");
+        assert_eq!(interner.resolve(idx), Some("src/main.rs".to_string()));
+        assert_eq!(interner.resolve(999), None);
+    }
+
+    #[test]
+    fn test_file_path_interner_into_vec() {
+        let interner = FilePathInterner::new();
+        let idx_a = interner.intern("aaa.rs");
+        let idx_b = interner.intern("bbb.rs");
+        let vec = interner.into_vec();
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[idx_a as usize], "aaa.rs");
+        assert_eq!(vec[idx_b as usize], "bbb.rs");
     }
 }

@@ -372,9 +372,7 @@ mod tests {
             name: "crate_a".to_string(),
             path: "crate_a".to_string(),
             summary: AnalysisSummary::from_points(
-                vec![("file1".to_string(), 1, 1), ("file1".to_string(), 2, 1)]
-                    .into_iter()
-                    .collect(),
+                vec![(0u32, 1, 1), (0u32, 2, 1)].into_iter().collect(),
                 vec!["file1".to_string()].into_iter().collect(),
             ),
             code_points: vec![make_test_code_point(
@@ -389,9 +387,7 @@ mod tests {
             root: "/workspace".to_string(),
             members: vec![member],
             total_summary: AnalysisSummary::from_points(
-                vec![("file1".to_string(), 1, 1), ("file1".to_string(), 2, 1)]
-                    .into_iter()
-                    .collect(),
+                vec![(0u32, 1, 1), (0u32, 2, 1)].into_iter().collect(),
                 vec!["file1".to_string()].into_iter().collect(),
             ),
         };
@@ -415,7 +411,7 @@ mod tests {
             name: "crate_a".to_string(),
             path: "crate_a".to_string(),
             summary: AnalysisSummary::from_points(
-                vec![("file".to_string(), 1, 1)].into_iter().collect(),
+                vec![(0u32, 1, 1)].into_iter().collect(),
                 vec!["file".to_string()].into_iter().collect(),
             ),
             code_points: vec![make_test_code_point(
@@ -430,7 +426,7 @@ mod tests {
             root: "/workspace".to_string(),
             members: vec![member],
             total_summary: AnalysisSummary::from_points(
-                vec![("file".to_string(), 1, 1)].into_iter().collect(),
+                vec![(0u32, 1, 1)].into_iter().collect(),
                 vec!["file".to_string()].into_iter().collect(),
             ),
         };

@@ -8,6 +8,7 @@ use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CodePointKey, CrateCode
 use jonesy::cargo::{detect_library_type, find_project_root, get_project_name};
 use jonesy::output::OutputFormat;
 use jonesy::project_context::ProjectContext;
+use jonesy::string_tables::FilePathInterner;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -62,10 +63,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn merge_code_points(
     result: &mut BinaryAnalysisResult,
     seen: &mut HashSet<CodePointKey>,
+    interner: &FilePathInterner,
     accumulator: &mut Vec<CrateCodePoint>,
 ) {
     for point in result.code_points.drain(..) {
-        let key = (point.file.clone(), point.line, point.column);
+        let key = (interner.intern(&point.file), point.line, point.column);
         if seen.insert(key) {
             accumulator.push(point);
         } else if let Some(existing) = accumulator
@@ -82,6 +84,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut total_summary = AnalysisSummary::default();
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
+    let file_interner = FilePathInterner::new();
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
 
@@ -146,7 +149,12 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             &project_context,
         )? {
             total_summary.add(&result.summary);
-            merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
+            merge_code_points(
+                &mut result,
+                &mut seen_code_points,
+                &file_interner,
+                &mut all_code_points,
+            );
         }
 
         if parsed_args.output.show_progress() {
@@ -323,13 +331,19 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         let mut member_summary = AnalysisSummary::default();
         let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
         let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
+        let member_interner = FilePathInterner::new();
 
         for (binary_path, mut result) in binary_results {
             if args.output.show_progress() {
                 println!("Processed {}", binary_path.display());
             }
             member_summary.add(&result.summary);
-            merge_code_points(&mut result, &mut seen_code_points, &mut member_code_points);
+            merge_code_points(
+                &mut result,
+                &mut seen_code_points,
+                &member_interner,
+                &mut member_code_points,
+            );
         }
 
         if args.direct_only {

@@ -23,6 +23,7 @@ use crate::call_tree::{CodePointKey, CrateCodePoint};
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
 use crate::project_context::ProjectContext;
+use crate::string_tables::FilePathInterner;
 use notify::RecommendedWatcher;
 
 /// Counter for generating unique progress tokens
@@ -475,6 +476,7 @@ impl JonesyLspServer {
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         let mut seen: std::collections::HashSet<CodePointKey> = std::collections::HashSet::new();
+        let file_interner = FilePathInterner::new();
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
@@ -516,7 +518,7 @@ impl JonesyLspServer {
                     let new_points: Vec<_> = points
                         .into_iter()
                         .filter(|p| {
-                            let key = (p.file.clone(), p.line, p.column);
+                            let key = (file_interner.intern(&p.file), p.line, p.column);
                             seen.insert(key)
                         })
                         .collect();
@@ -1670,6 +1672,7 @@ async fn run_analysis_task(
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
+    let file_interner = FilePathInterner::new();
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1698,7 +1701,7 @@ async fn run_analysis_task(
             let new_points: Vec<_> = points
                 .into_iter()
                 .filter(|p| {
-                    let key = (p.file.clone(), p.line, p.column);
+                    let key = (file_interner.intern(&p.file), p.line, p.column);
                     seen.insert(key)
                 })
                 .collect();
@@ -1864,10 +1867,11 @@ fn format_change_summary(
 #[cfg(test)]
 fn deduplicate_code_points(points: Vec<CrateCodePoint>) -> Vec<CrateCodePoint> {
     let mut seen: HashSet<CodePointKey> = HashSet::new();
+    let interner = FilePathInterner::new();
     points
         .into_iter()
         .filter(|p| {
-            let key = (p.file.clone(), p.line, p.column);
+            let key = (interner.intern(&p.file), p.line, p.column);
             seen.insert(key)
         })
         .collect()
@@ -1932,6 +1936,7 @@ fn analyze_workspace_targets(
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
+    let interner = FilePathInterner::new();
 
     for target in targets {
         match analyze_single_target(target, project_context) {
@@ -1944,7 +1949,7 @@ fn analyze_workspace_targets(
                 let new_points: Vec<_> = points
                     .into_iter()
                     .filter(|p| {
-                        let key = (p.file.clone(), p.line, p.column);
+                        let key = (interner.intern(&p.file), p.line, p.column);
                         seen.insert(key)
                     })
                     .collect();

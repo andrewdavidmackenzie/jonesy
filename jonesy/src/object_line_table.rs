@@ -1,4 +1,3 @@
-use crate::call_tree::CodePointKey;
 use crate::project_context::ProjectContext;
 use crate::sym::resolve_line_file_path;
 use gimli::{AttributeValue, ColumnType, Dwarf, Reader};
@@ -392,7 +391,7 @@ impl ObjectLineTable {
         func_start: u64,
         call_site_addr: u64,
         project_context: &ProjectContext,
-    ) -> Option<CodePointKey> {
+    ) -> Option<(String, u16, u16)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -428,7 +427,7 @@ impl ObjectLineTable {
         function_name: &str,
         section_name: Option<&str>,
         project_context: &ProjectContext,
-    ) -> Option<CodePointKey> {
+    ) -> Option<(String, u16, u16)> {
         if self.entries.is_empty() {
             return None;
         }

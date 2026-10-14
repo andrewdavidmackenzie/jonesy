@@ -8,6 +8,7 @@ use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
 use crate::project_context::ProjectContext;
+use crate::string_tables::FilePathInterner;
 use crate::sym::CallGraph;
 use dashmap::{DashMap, DashSet};
 use rayon::prelude::*;
@@ -15,11 +16,14 @@ use rustc_demangle::demangle;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
-/// Key for identifying a code point: (file, line, column).
+/// Key for identifying a code point: (file_idx, line, column).
+/// The `file_idx` is a `u32` index into a `FilePathInterner`, avoiding
+/// expensive string cloning in hot paths (DashMap keys, HashSet lookups,
+/// deduplication, merging). The file path string is resolved from the
+/// interner only at the output boundary.
 /// Two call sites at different columns on the same line are distinct points.
-/// Column 0 means "unspecified" and should not create a separate entry —
-/// use `make_code_point_key` to handle this correctly.
-pub type CodePointKey = (String, u16, u16);
+/// Column 0 means "unspecified".
+pub type CodePointKey = (u32, u16, u16);
 
 static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u16)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -282,12 +286,14 @@ pub fn collect_crate_code_points_hierarchical(
     project_context: &ProjectContext,
 ) -> Vec<CrateCodePoint> {
     let points: DashMap<CodePointKey, CodePointInfo> = DashMap::new();
+    let interner = FilePathInterner::new();
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
     let source_cache = crate::inline_allows::ConcurrentSourceFileCache::new();
 
     collect_crate_relationships_parallel(
         node,
         &points,
+        &interner,
         None,
         None,
         None,
@@ -299,11 +305,14 @@ pub fn collect_crate_code_points_hierarchical(
     // Convert DashMap to HashMap for the subtree builder
     let points: CodePointMap = points.into_iter().collect();
 
+    // Build the file path resolution table from the interner
+    let file_paths = interner.into_vec();
+
     // All crate code points should be reported as roots.
     // Each point that can lead to a panic deserves its own entry,
     // regardless of whether it's also called by another crate function.
     // Children show what each function calls (toward the panic).
-    let mut roots: Vec<CodePointKey> = points.keys().cloned().collect();
+    let mut roots: Vec<CodePointKey> = points.keys().copied().collect();
     roots.sort(); // Deterministic ordering
 
     // Build each root with its own cache so each top-level root keeps a full subtree.
@@ -311,6 +320,7 @@ pub fn collect_crate_code_points_hierarchical(
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,
+        file_paths: &[String],
         path: &mut HashSet<CodePointKey>,
         cache: &mut HashMap<CodePointKey, CrateCodePoint>,
     ) -> Option<CrateCodePoint> {
@@ -335,22 +345,25 @@ pub fn collect_crate_code_points_hierarchical(
             });
         }
 
-        path.insert(key.clone());
+        path.insert(*key);
 
         let (name, causes, child_keys_set, is_direct_panic, called_function) = points.get(key)?;
         // Sort child keys for deterministic output
-        let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
+        let mut child_keys: Vec<_> = child_keys_set.iter().copied().collect();
         child_keys.sort();
         let mut children: Vec<CrateCodePoint> = child_keys
             .iter()
-            .filter_map(|child_key| build_subtree(child_key, points, path, cache))
+            .filter_map(|child_key| build_subtree(child_key, points, file_paths, path, cache))
             .collect();
         children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         path.remove(key);
 
+        // Resolve file path from index
+        let file = file_paths.get(key.0 as usize).cloned().unwrap_or_default();
+
         let point = CrateCodePoint {
             name: name.clone(),
-            file: key.0.clone(),
+            file,
             line: key.1,
             column: key.2,
             causes: causes.clone(),
@@ -360,7 +373,7 @@ pub fn collect_crate_code_points_hierarchical(
         };
 
         // Cache for reuse by other parents
-        cache.insert(key.clone(), point.clone());
+        cache.insert(*key, point.clone());
         Some(point)
     }
 
@@ -368,7 +381,7 @@ pub fn collect_crate_code_points_hierarchical(
         .iter()
         .filter_map(|root| {
             let mut cache: HashMap<CodePointKey, CrateCodePoint> = HashMap::new();
-            build_subtree(root, &points, &mut HashSet::new(), &mut cache)
+            build_subtree(root, &points, &file_paths, &mut HashSet::new(), &mut cache)
         })
         .collect()
 }
@@ -384,6 +397,7 @@ pub fn collect_crate_code_points_hierarchical(
 fn collect_crate_relationships_parallel(
     node: &CallTreeNode,
     points: &DashMap<CodePointKey, CodePointInfo>,
+    interner: &FilePathInterner,
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
     immediate_callee: Option<&str>,
@@ -404,7 +418,7 @@ fn collect_crate_relationships_parallel(
         && file_matches
         && node.line > 0
     {
-        Some((file.clone(), node.line, node.column))
+        Some((interner.intern(file), node.line, node.column))
     } else {
         None
     };
@@ -420,7 +434,7 @@ fn collect_crate_relationships_parallel(
             None
         };
 
-        let mut entry = points.entry(key.clone()).or_insert_with(|| {
+        let mut entry = points.entry(*key).or_insert_with(|| {
             (
                 node.name.clone(),
                 HashSet::new(),
@@ -442,14 +456,16 @@ fn collect_crate_relationships_parallel(
         }
 
         if let Some(child_key) = &child_crate_key {
-            entry.2.insert(child_key.clone());
+            entry.2.insert(*child_key);
         }
     }
 
     let propagated_cause = if let (Some(key), Some(cause)) = (&node_key, &detected_cause) {
+        // Resolve file path from interner for inline allow check
+        let file_path = interner.resolve(key.0).unwrap_or_default();
         let cause_id = cause.id();
         if crate::inline_allows::check_inline_allow_concurrent(
-            &key.0,
+            &file_path,
             key.1,
             cause_id,
             workspace_root,
@@ -470,7 +486,8 @@ fn collect_crate_relationships_parallel(
             collect_crate_relationships_parallel(
                 caller,
                 points,
-                next_child.clone(),
+                interner,
+                next_child,
                 propagated_cause.clone(),
                 Some(&node.name),
                 project_context,
@@ -483,7 +500,8 @@ fn collect_crate_relationships_parallel(
             collect_crate_relationships_parallel(
                 caller,
                 points,
-                next_child.clone(),
+                interner,
+                next_child,
                 propagated_cause.clone(),
                 Some(&node.name),
                 project_context,
@@ -677,21 +695,22 @@ impl AnalysisResult {
 /// from multiple artifacts (e.g., multi-bin workspaces).
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisSummary {
-    /// Unique panic code points
+    /// Unique panic code points (file_idx, line, column)
     points: HashSet<CodePointKey>,
-    /// Unique files with panic points
+    /// Unique files with panic points (counted by unique file path strings
+    /// to remain correct across different interners/binaries)
     files: HashSet<String>,
 }
 
 impl AnalysisSummary {
-    /// Create a new summary from collected points
+    /// Create a new summary from collected points and file paths
     pub fn from_points(points: HashSet<CodePointKey>, files: HashSet<String>) -> Self {
         Self { points, files }
     }
 
     /// Merge another summary into this one (union of sets, no double-counting)
     pub fn add(&mut self, other: &AnalysisSummary) {
-        self.points.extend(other.points.iter().cloned());
+        self.points.extend(other.points.iter().copied());
         self.files.extend(other.files.iter().cloned());
     }
 
@@ -706,38 +725,48 @@ impl AnalysisSummary {
     }
 }
 
-/// Count unique crate code points and files in the hierarchy
+/// Count unique crate code points and files in the hierarchy.
+/// Uses a local `FilePathInterner` to produce `CodePointKey` values from file
+/// path strings, so the summary's `points` set uses compact `(u32, u16, u16)` keys.
 fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
+    let interner = FilePathInterner::new();
     let mut seen_points = HashSet::new();
     let mut seen_files = HashSet::new();
-    collect_unique_point_keys_and_files(points, &mut seen_points, &mut seen_files);
+    collect_unique_point_keys_and_files(points, &interner, &mut seen_points, &mut seen_files);
     AnalysisSummary {
         points: seen_points,
         files: seen_files,
     }
 }
 
-/// Collect unique (file, line, column) keys and unique files from the hierarchy
+/// Collect unique (file_idx, line, column) keys and unique files from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
+    interner: &FilePathInterner,
     seen_points: &mut HashSet<CodePointKey>,
     seen_files: &mut HashSet<String>,
 ) {
     for p in points {
-        seen_points.insert((p.file.clone(), p.line, p.column));
+        seen_points.insert((interner.intern(&p.file), p.line, p.column));
         seen_files.insert(p.file.clone());
-        collect_unique_point_keys_and_files(&p.children, seen_points, seen_files);
+        collect_unique_point_keys_and_files(&p.children, interner, seen_points, seen_files);
     }
 }
 
-/// Deduplicate crate code points by (file, line, column), merging children
+/// Deduplicate crate code points by (file, line, column), merging children.
+/// Uses a local `FilePathInterner` to produce compact dedup keys.
 fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
-    // Group by (file, line, column)
+    let interner = FilePathInterner::new();
+    dedupe_crate_points_inner(points, &interner);
+}
+
+fn dedupe_crate_points_inner(points: &mut Vec<CrateCodePoint>, interner: &FilePathInterner) {
+    // Group by (file_idx, line, column)
     let mut seen: HashMap<CodePointKey, usize> = HashMap::new();
     let mut result: Vec<CrateCodePoint> = Vec::new();
 
     for point in points.drain(..) {
-        let key = (point.file.clone(), point.line, point.column);
+        let key = (interner.intern(&point.file), point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge children into existing point
             result[idx].children.extend(point.children);
@@ -749,7 +778,7 @@ fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
 
     // Recursively dedupe children
     for point in &mut result {
-        dedupe_crate_points(&mut point.children);
+        dedupe_crate_points_inner(&mut point.children, interner);
     }
 
     *points = result;
