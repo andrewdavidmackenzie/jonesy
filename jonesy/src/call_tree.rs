@@ -211,12 +211,12 @@ pub struct CrateCodePoint {
 }
 
 /// Key for identifying a code point: (file, line)
-pub type CodePointKey = (String, u16);
+/// Key for identifying a code point: (file, line, column)
+pub type CodePointKey = (String, u16, u16);
 
-/// Info stored for each code point: (function name, column, set of causes, set of child keys, is_direct_panic, called_function)
+/// Info stored for each code point: (function name, set of causes, set of child keys, is_direct_panic, called_function)
 pub type CodePointInfo = (
     String,
-    u16,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
     bool,           // is_direct_panic
@@ -335,8 +335,7 @@ pub fn collect_crate_code_points_hierarchical(
 
         path.insert(key.clone());
 
-        let (name, column, causes, child_keys_set, is_direct_panic, called_function) =
-            points.get(key)?;
+        let (name, causes, child_keys_set, is_direct_panic, called_function) = points.get(key)?;
         // Sort child keys for deterministic output
         let mut child_keys: Vec<_> = child_keys_set.iter().cloned().collect();
         child_keys.sort();
@@ -351,7 +350,7 @@ pub fn collect_crate_code_points_hierarchical(
             name: name.clone(),
             file: key.0.clone(),
             line: key.1,
-            column: *column,
+            column: key.2,
             causes: causes.clone(),
             children,
             is_direct_panic: *is_direct_panic,
@@ -407,7 +406,7 @@ pub fn collect_crate_relationships(
         && file_matches
         && node.line > 0
     {
-        Some((file.clone(), node.line))
+        Some((file.clone(), node.line, node.column))
     } else {
         None
     };
@@ -429,7 +428,6 @@ pub fn collect_crate_relationships(
         let entry = points.entry(key.clone()).or_insert_with(|| {
             (
                 node.name.clone(),
-                node.column,
                 HashSet::new(),
                 HashSet::new(),
                 is_direct,
@@ -440,21 +438,21 @@ pub fn collect_crate_relationships(
         // Update is_direct_panic: true if ANY path through this point is direct
         // (conservative: if one path is direct, user could be calling directly)
         if is_direct {
-            entry.4 = true;
-            entry.5 = None; // Clear called_function for direct panics
-        } else if entry.5.is_none() && called_fn.is_some() {
+            entry.3 = true;
+            entry.4 = None; // Clear called_function for direct panics
+        } else if entry.4.is_none() && called_fn.is_some() {
             // Store called function if not already set
-            entry.5 = called_fn;
+            entry.4 = called_fn;
         }
 
         // Add this path's cause to the set of causes (if detected)
         if let Some(cause) = &detected_cause {
-            entry.2.insert(cause.clone());
+            entry.1.insert(cause.clone());
         }
 
         // If there's a child crate code point (closer to panic), add it as a child of this node
         if let Some(child_key) = &child_crate_key {
-            entry.3.insert(child_key.clone());
+            entry.2.insert(child_key.clone());
         }
     }
 
@@ -527,7 +525,7 @@ fn collect_crate_relationships_parallel(
         && file_matches
         && node.line > 0
     {
-        Some((file.clone(), node.line))
+        Some((file.clone(), node.line, node.column))
     } else {
         None
     };
@@ -546,7 +544,6 @@ fn collect_crate_relationships_parallel(
         let mut entry = points.entry(key.clone()).or_insert_with(|| {
             (
                 node.name.clone(),
-                node.column,
                 HashSet::new(),
                 HashSet::new(),
                 is_direct,
@@ -555,18 +552,18 @@ fn collect_crate_relationships_parallel(
         });
 
         if is_direct {
-            entry.4 = true;
-            entry.5 = None;
-        } else if entry.5.is_none() && called_fn.is_some() {
-            entry.5 = called_fn;
+            entry.3 = true;
+            entry.4 = None;
+        } else if entry.4.is_none() && called_fn.is_some() {
+            entry.4 = called_fn;
         }
 
         if let Some(cause) = &detected_cause {
-            entry.2.insert(cause.clone());
+            entry.1.insert(cause.clone());
         }
 
         if let Some(child_key) = &child_crate_key {
-            entry.3.insert(child_key.clone());
+            entry.2.insert(child_key.clone());
         }
     }
 
@@ -801,15 +798,15 @@ impl AnalysisResult {
 /// from multiple artifacts (e.g., multi-bin workspaces).
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisSummary {
-    /// Unique panic code points: (file, line)
-    points: HashSet<(String, u16)>,
+    /// Unique panic code points: (file, line, column)
+    points: HashSet<(String, u16, u16)>,
     /// Unique files with panic points
     files: HashSet<String>,
 }
 
 impl AnalysisSummary {
     /// Create a new summary from collected points
-    pub fn from_points(points: HashSet<(String, u16)>, files: HashSet<String>) -> Self {
+    pub fn from_points(points: HashSet<(String, u16, u16)>, files: HashSet<String>) -> Self {
         Self { points, files }
     }
 
@@ -841,27 +838,27 @@ fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
     }
 }
 
-/// Collect unique (file, line) keys and unique files from the hierarchy
+/// Collect unique (file, line, column) keys and unique files from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
-    seen_points: &mut HashSet<(String, u16)>,
+    seen_points: &mut HashSet<(String, u16, u16)>,
     seen_files: &mut HashSet<String>,
 ) {
     for p in points {
-        seen_points.insert((p.file.clone(), p.line));
+        seen_points.insert((p.file.clone(), p.line, p.column));
         seen_files.insert(p.file.clone());
         collect_unique_point_keys_and_files(&p.children, seen_points, seen_files);
     }
 }
 
-/// Deduplicate crate code points by (file, line), merging children
+/// Deduplicate crate code points by (file, line, column), merging children
 fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
-    // Group by (file, line)
-    let mut seen: HashMap<(String, u16), usize> = HashMap::new();
+    // Group by (file, line, column)
+    let mut seen: HashMap<(String, u16, u16), usize> = HashMap::new();
     let mut result: Vec<CrateCodePoint> = Vec::new();
 
     for point in points.drain(..) {
-        let key = (point.file.clone(), point.line);
+        let key = (point.file.clone(), point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge children into existing point
             result[idx].children.extend(point.children);
