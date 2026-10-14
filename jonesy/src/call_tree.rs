@@ -118,7 +118,7 @@ pub fn build_call_tree_parallel_filtered(
 }
 
 /// Sequential version with early filtering during construction.
-pub fn build_call_tree_sequential_filtered(
+fn build_call_tree_sequential_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
@@ -166,7 +166,7 @@ pub fn build_call_tree_sequential_filtered(
 
 /// Build shallow caller nodes with filtering.
 /// Only creates nodes that are in the crate (leaves are filtered).
-pub fn build_shallow_callers_filtered(
+fn build_shallow_callers_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     project_context: &ProjectContext,
@@ -371,129 +371,6 @@ pub fn collect_crate_code_points_hierarchical(
             build_subtree(root, &points, &mut HashSet::new(), &mut cache)
         })
         .collect()
-}
-
-/// Collect crate code point relationships by walking the call tree.
-/// For each crate code point, records which other crate code points it "calls"
-/// (i.e., are closer to panic in the call chain).
-///
-/// In the CallTreeNode tree, "callers" are functions that CALL this node.
-/// So if A.callers contains B, then B calls A.
-/// For our output hierarchy: B is the parent (entry point), A is the child (closer to panic).
-///
-/// Also detects panic causes from function names in the call path.
-/// Tracks `immediate_callee` to determine if panic is direct (calling unwrap/expect directly)
-/// or indirect (calling a function that eventually panics).
-#[allow(clippy::too_many_arguments)]
-pub fn collect_crate_relationships(
-    node: &CallTreeNode,
-    points: &mut CodePointMap,
-    child_crate_key: Option<CodePointKey>,
-    current_cause: Option<PanicCause>,
-    immediate_callee: Option<&str>,
-    project_context: &ProjectContext,
-    workspace_root: Option<&std::path::Path>,
-    source_cache: &mut crate::inline_allows::SourceFileCache,
-) {
-    // Try to detect panic cause from this node's function name
-    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
-
-    // Check if file matches any of the patterns
-    let file_matches = node
-        .file
-        .as_ref()
-        .is_some_and(|file| project_context.is_crate_source(file));
-
-    let node_key = if let Some(file) = &node.file
-        && file_matches
-        && node.line > 0
-    {
-        Some((file.clone(), node.line, node.column))
-    } else {
-        None
-    };
-
-    if let Some(key) = &node_key {
-        // Determine if this is a direct panic (immediate callee is a panic-triggering function)
-        let is_direct = immediate_callee
-            .map(is_panic_triggering_function)
-            .unwrap_or(false);
-
-        // For indirect panics, store the called function name for help messages
-        let called_fn = if !is_direct {
-            immediate_callee.map(extract_qualified_function_name)
-        } else {
-            None
-        };
-
-        // Ensure this point exists in the map and accumulate all causes
-        let entry = points.entry(key.clone()).or_insert_with(|| {
-            (
-                node.name.clone(),
-                HashSet::new(),
-                HashSet::new(),
-                is_direct,
-                called_fn.clone(),
-            )
-        });
-
-        // Update is_direct_panic: true if ANY path through this point is direct
-        // (conservative: if one path is direct, user could be calling directly)
-        if is_direct {
-            entry.3 = true;
-            entry.4 = None; // Clear called_function for direct panics
-        } else if entry.4.is_none() && called_fn.is_some() {
-            // Store called function if not already set
-            entry.4 = called_fn;
-        }
-
-        // Add this path's cause to the set of causes (if detected)
-        if let Some(cause) = &detected_cause {
-            entry.1.insert(cause.clone());
-        }
-
-        // If there's a child crate code point (closer to panic), add it as a child of this node
-        if let Some(child_key) = &child_crate_key {
-            entry.2.insert(child_key.clone());
-        }
-    }
-
-    // When recursing to callers, the current node becomes the child
-    // (since callers are further from panic, they are parents in our hierarchy)
-    // If this crate code point has an inline allow for the detected cause,
-    // don't propagate that cause to callers — the allow at this point
-    // covers the entire call subtree within the same crate.
-    let propagated_cause = if let (Some(key), Some(cause)) = (&node_key, &detected_cause) {
-        let cause_id = cause.id();
-        if crate::inline_allows::check_inline_allow(
-            &key.0,
-            key.1,
-            cause_id,
-            workspace_root,
-            Some(source_cache),
-        ) {
-            None
-        } else {
-            detected_cause.clone()
-        }
-    } else {
-        detected_cause.clone()
-    };
-
-    let next_child = node_key.or(child_crate_key);
-
-    for caller in &node.callers {
-        collect_crate_relationships(
-            caller,
-            points,
-            next_child.clone(),
-            propagated_cause.clone(),
-            Some(&node.name),
-            project_context,
-            workspace_root,
-            source_cache,
-        );
-    }
 }
 
 /// Parallel version of `collect_crate_relationships` that uses `DashMap` for
