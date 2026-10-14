@@ -407,6 +407,7 @@ pub fn collect_crate_relationships(
     let node_key = if let Some(file) = &node.file
         && file_matches
         && node.line > 0
+        && node.column != u16::MAX
     {
         Some((file.clone(), node.line, node.column))
     } else {
@@ -526,6 +527,7 @@ fn collect_crate_relationships_parallel(
     let node_key = if let Some(file) = &node.file
         && file_matches
         && node.line > 0
+        && node.column != u16::MAX
     {
         Some((file.clone(), node.line, node.column))
     } else {
@@ -637,10 +639,6 @@ pub fn collect_crate_code_points(
 
     // Deduplicate roots by (file, line, column)
     dedupe_crate_points(&mut roots);
-
-    // Drop entries with column u16::MAX (no debug info sentinel) —
-    // these should never reach this point, but filter defensively.
-    roots.retain(|p| p.column != u16::MAX);
 
     // Sort roots by file then line number
     roots.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
