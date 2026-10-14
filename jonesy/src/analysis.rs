@@ -97,13 +97,21 @@ impl BinaryAnalysisResult {
                 .then_with(|| a.column.cmp(&b.column))
         });
 
-        // Recalculate summary from merged code points
+        // Recalculate summary from merged code points.
+        // Resolve file indices to path strings for cross-interner safety.
         let points: HashSet<_> = self
             .code_points
             .iter()
-            .map(|cp| (cp.file, cp.line, cp.column))
+            .map(|cp| {
+                let file = crate::string_tables::resolve_file_owned(&self.file_paths, cp.file);
+                (file, cp.line, cp.column)
+            })
             .collect();
-        let files: HashSet<_> = self.code_points.iter().map(|cp| cp.file).collect();
+        let files: HashSet<_> = self
+            .code_points
+            .iter()
+            .map(|cp| crate::string_tables::resolve_file_owned(&self.file_paths, cp.file))
+            .collect();
         self.summary = AnalysisSummary::from_points(points, files);
     }
 }
@@ -637,12 +645,13 @@ pub fn analyze_archive(
         eprintln!("  [timing] TOTAL: {:?}", total_start.elapsed());
     }
 
-    // Build summary from code points
-    let mut points: HashSet<CodePointKey> = HashSet::new();
-    let mut files_affected: HashSet<u16> = HashSet::new();
+    // Build summary from code points (resolve file indices for cross-interner safety)
+    let mut points: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut files_affected: HashSet<String> = HashSet::new();
     for point in &deduped {
-        points.insert((point.file, point.line, point.column));
-        files_affected.insert(point.file);
+        let file = file_interner.resolve(point.file).unwrap_or_default();
+        files_affected.insert(file.clone());
+        points.insert((file, point.line, point.column));
     }
 
     Ok(BinaryAnalysisResult {
@@ -684,18 +693,26 @@ mod tests {
         }
     }
 
+    fn test_file_paths() -> Vec<String> {
+        vec![
+            "src/a.rs".to_string(),
+            "src/b.rs".to_string(),
+            "src/z.rs".to_string(),
+        ]
+    }
+
     #[test]
     fn test_binary_analysis_result_merge_disjoint() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(1, 20, PanicCause::Unwrap)],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         result1.merge(result2);
@@ -710,13 +727,13 @@ mod tests {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Expect)],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         result1.merge(result2);
@@ -734,7 +751,7 @@ mod tests {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(2, 100, PanicCause::Unwrap)],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         let result2 = BinaryAnalysisResult {
@@ -743,7 +760,7 @@ mod tests {
                 make_code_point(0, 10, PanicCause::Unwrap),
                 make_code_point(0, 5, PanicCause::ExplicitPanic),
             ],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         result1.merge(result2);
@@ -763,7 +780,7 @@ mod tests {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         let result2 = BinaryAnalysisResult::new();
@@ -785,12 +802,12 @@ mod tests {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![point_a],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![point_b],
-            file_paths: Vec::new(),
+            file_paths: test_file_paths(),
         };
 
         result1.merge(result2);

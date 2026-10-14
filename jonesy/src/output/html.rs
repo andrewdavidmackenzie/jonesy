@@ -910,8 +910,8 @@ mod tests {
             name: "crate_a".to_string(),
             path: "crate_a".to_string(),
             summary: AnalysisSummary::from_points(
-                vec![(0u16, 1, 1)].into_iter().collect(),
-                vec![0u16].into_iter().collect(),
+                vec![("file".to_string(), 1, 1)].into_iter().collect(),
+                vec!["file".to_string()].into_iter().collect(),
             ),
             code_points: vec![make_test_point("func", 0, 5, vec![PanicCause::Todo])],
             file_paths: member_file_paths,
@@ -920,8 +920,8 @@ mod tests {
             root: "/workspace".to_string(),
             members: vec![member],
             total_summary: AnalysisSummary::from_points(
-                vec![(0u16, 1, 1)].into_iter().collect(),
-                vec![0u16].into_iter().collect(),
+                vec![("file".to_string(), 1, 1)].into_iter().collect(),
+                vec!["file".to_string()].into_iter().collect(),
             ),
         };
 

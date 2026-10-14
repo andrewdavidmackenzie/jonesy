@@ -561,7 +561,7 @@ pub fn collect_crate_code_points(
     // Sort roots by file then line number
     roots.sort_by_key(|a| (a.file, a.line, a.column));
 
-    let summary = count_crate_points_and_files(&roots);
+    let summary = count_crate_points_and_files(&roots, file_interner);
     (roots, summary)
 }
 
@@ -732,9 +732,35 @@ impl AnalysisResult {
         }
     }
 
-    /// Compute the summary from the code points
+    /// Compute the summary from the code points.
+    /// Resolves file indices from `self.file_paths` for cross-interner safety.
     pub fn summary(&self) -> AnalysisSummary {
-        count_crate_points_and_files(&self.code_points)
+        let mut seen_points = HashSet::new();
+        let mut seen_files = HashSet::new();
+        Self::collect_summary_points(
+            &self.code_points,
+            &self.file_paths,
+            &mut seen_points,
+            &mut seen_files,
+        );
+        AnalysisSummary {
+            points: seen_points,
+            files: seen_files,
+        }
+    }
+
+    fn collect_summary_points(
+        points: &[CrateCodePoint],
+        file_paths: &[String],
+        seen_points: &mut HashSet<(String, u16, u16)>,
+        seen_files: &mut HashSet<String>,
+    ) {
+        for p in points {
+            let file = crate::string_tables::resolve_file_owned(file_paths, p.file);
+            seen_files.insert(file.clone());
+            seen_points.insert((file, p.line, p.column));
+            Self::collect_summary_points(&p.children, file_paths, seen_points, seen_files);
+        }
     }
 
     /// Get the number of panic points
@@ -748,22 +774,24 @@ impl AnalysisResult {
 /// from multiple artifacts (e.g., multi-bin workspaces).
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisSummary {
-    /// Unique panic code points (file_idx, line, column)
-    points: HashSet<CodePointKey>,
-    /// Unique files with panic points (by file index)
-    files: HashSet<u16>,
+    /// Unique panic code points (file_path, line, column).
+    /// Uses owned path strings (not interned indices) so that summaries from
+    /// different `FilePathInterner` instances can be merged without collision.
+    points: HashSet<(String, u16, u16)>,
+    /// Unique files with panic points
+    files: HashSet<String>,
 }
 
 impl AnalysisSummary {
-    /// Create a new summary from collected points and file indices
-    pub fn from_points(points: HashSet<CodePointKey>, files: HashSet<u16>) -> Self {
+    /// Create a new summary from collected points and files
+    pub fn from_points(points: HashSet<(String, u16, u16)>, files: HashSet<String>) -> Self {
         Self { points, files }
     }
 
     /// Merge another summary into this one (union of sets, no double-counting)
     pub fn add(&mut self, other: &AnalysisSummary) {
-        self.points.extend(other.points.iter().copied());
-        self.files.extend(other.files.iter().copied());
+        self.points.extend(other.points.iter().cloned());
+        self.files.extend(other.files.iter().cloned());
     }
 
     /// Get the number of unique panic code points
@@ -778,26 +806,33 @@ impl AnalysisSummary {
 }
 
 /// Count unique crate code points and files in the hierarchy.
-fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
+/// Resolves file indices to path strings so summaries can be safely merged
+/// across different `FilePathInterner` instances.
+fn count_crate_points_and_files(
+    points: &[CrateCodePoint],
+    interner: &FilePathInterner,
+) -> AnalysisSummary {
     let mut seen_points = HashSet::new();
     let mut seen_files = HashSet::new();
-    collect_unique_point_keys_and_files(points, &mut seen_points, &mut seen_files);
+    collect_unique_point_keys_and_files(points, interner, &mut seen_points, &mut seen_files);
     AnalysisSummary {
         points: seen_points,
         files: seen_files,
     }
 }
 
-/// Collect unique (file_idx, line, column) keys and unique file indices from the hierarchy
+/// Collect unique (file_path, line, column) keys and unique file paths from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
-    seen_points: &mut HashSet<CodePointKey>,
-    seen_files: &mut HashSet<u16>,
+    interner: &FilePathInterner,
+    seen_points: &mut HashSet<(String, u16, u16)>,
+    seen_files: &mut HashSet<String>,
 ) {
     for p in points {
-        seen_points.insert((p.file, p.line, p.column));
-        seen_files.insert(p.file);
-        collect_unique_point_keys_and_files(&p.children, seen_points, seen_files);
+        let file = interner.resolve(p.file).unwrap_or_default();
+        seen_files.insert(file.clone());
+        seen_points.insert((file, p.line, p.column));
+        collect_unique_point_keys_and_files(&p.children, interner, seen_points, seen_files);
     }
 }
 

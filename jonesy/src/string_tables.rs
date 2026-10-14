@@ -182,7 +182,7 @@ impl FilePathInterner {
     /// Resolve an index back to its file path string.
     /// Returns `None` for `FILE_NONE` or if the index is not found.
     /// Uses the reverse index for O(1) lookup.
-    pub fn resolve(&self, idx: u16) -> Option<String> {
+    pub(crate) fn resolve(&self, idx: u16) -> Option<String> {
         if idx == FILE_NONE {
             return None;
         }
@@ -205,13 +205,9 @@ impl FilePathInterner {
     }
 
     /// Get the number of interned paths.
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.map.len()
-    }
-
-    /// Check if the interner is empty.
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
     }
 }
 
