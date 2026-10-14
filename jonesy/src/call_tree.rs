@@ -1151,4 +1151,155 @@ mod tests {
             "Point with Unknown cause should be filtered out by allow = [\"unknown\"]"
         );
     }
+
+    #[test]
+    fn test_analysis_result_resolve_file() {
+        let result = AnalysisResult::new(
+            "test",
+            "/project",
+            Vec::new(),
+            vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+        );
+        assert_eq!(result.resolve_file(0), "src/main.rs");
+        assert_eq!(result.resolve_file(1), "src/lib.rs");
+        assert_eq!(result.resolve_file(2), ""); // out of bounds
+        assert_eq!(result.resolve_file(FILE_NONE), ""); // sentinel
+    }
+
+    #[test]
+    fn test_analysis_result_summary_counts() {
+        let interner = FilePathInterner::new();
+        let file_a = interner.intern("src/a.rs");
+        let file_b = interner.intern("src/b.rs");
+
+        let result = AnalysisResult::new(
+            "test",
+            "/project",
+            vec![
+                CrateCodePoint {
+                    name: "fn_a".to_string(),
+                    file: file_a,
+                    line: 10,
+                    column: 5,
+                    causes: vec![PanicCause::Unwrap].into_iter().collect(),
+                    children: vec![],
+                    is_direct_panic: true,
+                    called_function: None,
+                },
+                CrateCodePoint {
+                    name: "fn_b".to_string(),
+                    file: file_b,
+                    line: 20,
+                    column: 3,
+                    causes: vec![PanicCause::Expect].into_iter().collect(),
+                    children: vec![],
+                    is_direct_panic: true,
+                    called_function: None,
+                },
+                CrateCodePoint {
+                    name: "fn_a2".to_string(),
+                    file: file_a,
+                    line: 15,
+                    column: 1,
+                    causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
+                    children: vec![],
+                    is_direct_panic: true,
+                    called_function: None,
+                },
+            ],
+            interner.into_vec(),
+        );
+
+        let summary = result.summary();
+        assert_eq!(summary.panic_points(), 3);
+        assert_eq!(summary.files_affected(), 2);
+    }
+
+    #[test]
+    fn test_analysis_result_summary_with_children() {
+        let interner = FilePathInterner::new();
+        let file_idx = interner.intern("src/main.rs");
+
+        let result = AnalysisResult::new(
+            "test",
+            "/project",
+            vec![CrateCodePoint {
+                name: "parent".to_string(),
+                file: file_idx,
+                line: 10,
+                column: 0,
+                causes: vec![PanicCause::Unknown].into_iter().collect(),
+                children: vec![CrateCodePoint {
+                    name: "child".to_string(),
+                    file: file_idx,
+                    line: 20,
+                    column: 0,
+                    causes: vec![PanicCause::Unwrap].into_iter().collect(),
+                    children: vec![],
+                    is_direct_panic: true,
+                    called_function: None,
+                }],
+                is_direct_panic: false,
+                called_function: None,
+            }],
+            interner.into_vec(),
+        );
+
+        let summary = result.summary();
+        assert_eq!(summary.panic_points(), 2); // parent + child
+        assert_eq!(summary.files_affected(), 1); // same file
+    }
+
+    #[test]
+    fn test_dedupe_crate_points_merges_same_location() {
+        let interner = FilePathInterner::new();
+        let file_idx = interner.intern("src/main.rs");
+
+        let mut points = vec![
+            CrateCodePoint {
+                name: "fn1".to_string(),
+                file: file_idx,
+                line: 10,
+                column: 5,
+                causes: vec![PanicCause::Unwrap].into_iter().collect(),
+                children: vec![],
+                is_direct_panic: true,
+                called_function: None,
+            },
+            CrateCodePoint {
+                name: "fn1".to_string(),
+                file: file_idx,
+                line: 10,
+                column: 5,
+                causes: vec![PanicCause::Expect].into_iter().collect(),
+                children: vec![],
+                is_direct_panic: true,
+                called_function: None,
+            },
+        ];
+
+        dedupe_crate_points(&mut points);
+        assert_eq!(points.len(), 1);
+        // Children from the duplicate should be merged
+    }
+
+    #[test]
+    fn test_analysis_summary_add_cross_interner() {
+        // Simulate two interners with index 0 mapping to different files
+        let mut summary_a = AnalysisSummary::from_points(
+            vec![("src/a.rs".to_string(), 10, 5)].into_iter().collect(),
+            vec!["src/a.rs".to_string()].into_iter().collect(),
+        );
+
+        let summary_b = AnalysisSummary::from_points(
+            vec![("src/b.rs".to_string(), 10, 5)].into_iter().collect(),
+            vec!["src/b.rs".to_string()].into_iter().collect(),
+        );
+
+        summary_a.add(&summary_b);
+
+        // Even though both had the same line:column, different files => 2 points
+        assert_eq!(summary_a.panic_points(), 2);
+        assert_eq!(summary_a.files_affected(), 2);
+    }
 }

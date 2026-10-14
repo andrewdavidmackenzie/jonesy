@@ -347,4 +347,80 @@ mod tests {
         assert_eq!(vec[idx_a as usize], "aaa.rs");
         assert_eq!(vec[idx_b as usize], "bbb.rs");
     }
+
+    #[test]
+    fn test_file_path_interner_intern_option() {
+        let interner = FilePathInterner::new();
+        let idx_some = interner.intern_option(Some("src/main.rs"));
+        let idx_none = interner.intern_option(None);
+        assert_ne!(idx_some, FILE_NONE);
+        assert_eq!(idx_none, FILE_NONE);
+        assert_eq!(interner.resolve(idx_some), Some("src/main.rs".to_string()));
+        assert_eq!(interner.resolve(idx_none), None);
+    }
+
+    #[test]
+    fn test_file_path_interner_resolve_file_none() {
+        let interner = FilePathInterner::new();
+        assert_eq!(interner.resolve(FILE_NONE), None);
+    }
+
+    #[test]
+    fn test_file_path_interner_default() {
+        let interner = FilePathInterner::default();
+        assert_eq!(interner.len(), 0);
+    }
+
+    #[test]
+    fn test_file_path_interner_concurrent() {
+        use rayon::prelude::*;
+
+        let interner = FilePathInterner::new();
+        let paths: Vec<String> = (0..100).map(|i| format!("src/file_{i}.rs")).collect();
+
+        // Intern all paths concurrently
+        let indices: Vec<u16> = paths.par_iter().map(|p| interner.intern(p)).collect();
+
+        // Verify all paths were interned with unique indices
+        assert_eq!(interner.len(), 100);
+
+        // Re-interning the same paths should return the same indices
+        let indices2: Vec<u16> = paths.par_iter().map(|p| interner.intern(p)).collect();
+        assert_eq!(indices, indices2);
+
+        // Resolve should return the correct path for each index
+        for (i, idx) in indices.iter().enumerate() {
+            assert_eq!(
+                interner.resolve(*idx),
+                Some(paths[i].clone()),
+                "index {idx} should resolve to {}",
+                paths[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_file_function() {
+        let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
+        assert_eq!(resolve_file(&file_paths, 0), Some("src/main.rs"));
+        assert_eq!(resolve_file(&file_paths, 1), Some("src/lib.rs"));
+        assert_eq!(resolve_file(&file_paths, 2), None); // out of bounds
+        assert_eq!(resolve_file(&file_paths, FILE_NONE), None);
+    }
+
+    #[test]
+    fn test_resolve_file_owned_function() {
+        let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
+        assert_eq!(resolve_file_owned(&file_paths, 0), "src/main.rs");
+        assert_eq!(resolve_file_owned(&file_paths, 1), "src/lib.rs");
+        assert_eq!(resolve_file_owned(&file_paths, 2), ""); // out of bounds
+        assert_eq!(resolve_file_owned(&file_paths, FILE_NONE), ""); // sentinel
+    }
+
+    #[test]
+    fn test_resolve_file_empty_table() {
+        let file_paths: Vec<String> = Vec::new();
+        assert_eq!(resolve_file(&file_paths, 0), None);
+        assert_eq!(resolve_file_owned(&file_paths, 0), "");
+    }
 }
