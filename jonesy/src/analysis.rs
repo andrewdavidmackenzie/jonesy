@@ -66,6 +66,7 @@ impl BinaryAnalysisResult {
 
     /// Merge another result into this one, combining code points.
     /// Code points at the same location have their causes merged.
+    #[cfg(test)]
     fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
@@ -252,8 +253,8 @@ pub fn analyze_binary_target(
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
-    // Build call trees for all entry points and merge results
-    let mut final_result = BinaryAnalysisResult::new();
+    // Build call trees for all entry points, accumulating code points
+    let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
 
     // Track visited addresses across all entry points to avoid redundant work
     let visited = Arc::new(DashSet::new());
@@ -279,16 +280,39 @@ pub fn analyze_binary_target(
             file_interner,
         );
 
-        // Collect code points from this tree
+        // Collect code points from this tree and accumulate
         let (code_points, _summary) =
             collect_crate_code_points(&root, config, project_context, file_interner);
-        let entry_result = BinaryAnalysisResult {
-            summary: AnalysisSummary::default(),
-            code_points,
-            file_paths: Vec::new(),
-        };
-        final_result.merge(entry_result);
+        all_code_points.extend(code_points);
     }
+
+    // Single dedup pass across all entry points: merge causes and children
+    // for code points at the same (file, line, column). This replaces the
+    // previous per-entry-point merge() which rebuilt a HashMap on every iteration.
+    let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
+    let mut deduped: Vec<CrateCodePoint> = Vec::new();
+    for point in all_code_points {
+        let key = (point.file, point.line, point.column);
+        if let Some(&idx) = seen.get(&key) {
+            deduped[idx].causes.extend(point.causes);
+            deduped[idx].children.extend(point.children);
+        } else {
+            seen.insert(key, deduped.len());
+            deduped.push(point);
+        }
+    }
+    deduped.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.column.cmp(&b.column))
+    });
+
+    let final_result = BinaryAnalysisResult {
+        summary: AnalysisSummary::default(),
+        code_points: deduped,
+        file_paths: Vec::new(),
+    };
 
     let total_nodes = visited.len();
     finish_spinner(

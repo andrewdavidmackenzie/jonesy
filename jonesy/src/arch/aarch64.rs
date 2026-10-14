@@ -129,14 +129,11 @@ pub(crate) fn parallel_disassemble(text_data: &[u8], text_addr: u64) -> Vec<Insn
         })
         .collect();
 
-    // Scan chunks in parallel for BL and B instructions
-    let results: Vec<Vec<InsnData>> = chunks
+    // Scan chunks in parallel for BL and B instructions, flattened into a single vec
+    chunks
         .par_iter()
-        .map(|(_i, chunk, chunk_addr)| scan_branch_instructions(chunk, *chunk_addr))
-        .collect();
-
-    // Flatten results from all chunks
-    results.into_iter().flatten().collect()
+        .flat_map(|(_i, chunk, chunk_addr)| scan_branch_instructions(chunk, *chunk_addr))
+        .collect()
 }
 
 /// PLT (Procedure Linkage Table) resolution for ELF shared libraries.
@@ -490,5 +487,39 @@ mod tests {
     fn test_parallel_disassemble_empty() {
         let results = parallel_disassemble(&[], 0x1000);
         assert!(results.is_empty());
+    }
+
+    /// Test parallel_disassemble with a large enough buffer to trigger multi-chunk
+    /// processing via flat_map. Verifies that results from all chunks are correctly
+    /// collected without the intermediate Vec<Vec> flatten.
+    #[test]
+    fn test_parallel_disassemble_large_buffer() {
+        // Create a buffer large enough to exceed MIN_CHUNK_SIZE (64KB)
+        // Fill with BL instructions (one per 4 bytes) to maximise result density
+        let num_instructions = 20_000; // 80KB > 64KB minimum chunk size
+        let mut code = Vec::with_capacity(num_instructions * 4);
+        for i in 0..num_instructions {
+            // BL +4 (each instruction branches to the next)
+            let offset = 1_u32; // imm26 = 1 => target = pc + 4
+            let insn = 0x94000000 | (offset & 0x03FFFFFF);
+            code.extend_from_slice(&insn.to_le_bytes());
+            let _ = i; // suppress unused warning
+        }
+
+        let results = parallel_disassemble(&code, 0x1000);
+
+        // Every instruction should be found
+        assert_eq!(results.len(), num_instructions);
+
+        // Addresses should be contiguous starting from base
+        for (i, data) in results.iter().enumerate() {
+            assert_eq!(
+                data.address,
+                0x1000 + (i as u64) * 4,
+                "instruction {i} should be at address {}",
+                0x1000 + (i as u64) * 4
+            );
+            assert!(data.call_target.is_some());
+        }
     }
 }
