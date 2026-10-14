@@ -86,8 +86,12 @@ impl BinaryAnalysisResult {
 
         // Collect back to vec and sort
         self.code_points = points_map.into_values().collect();
-        self.code_points
-            .sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+        self.code_points.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.column.cmp(&b.column))
+        });
 
         // Recalculate summary from merged code points
         let points: HashSet<_> = self
@@ -559,7 +563,9 @@ pub fn analyze_archive(
     // Convert PanicCaller to CrateCodePoint
     // Sort for deterministic output
     let mut sorted_callers: Vec<_> = panic_callers.into_iter().collect();
-    sorted_callers.sort_by(|a, b| (&a.file, a.line, &a.name).cmp(&(&b.file, b.line, &b.name)));
+    sorted_callers.sort_by(|a, b| {
+        (&a.file, a.line, a.column, &a.name).cmp(&(&b.file, b.line, b.column, &b.name))
+    });
 
     // Convert to CrateCodePoint structures with panic cause detection
     let mut code_points: Vec<CrateCodePoint> = sorted_callers

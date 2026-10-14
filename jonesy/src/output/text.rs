@@ -231,7 +231,7 @@ fn write_flat_point<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         for child in &children {
             write_flat_child(w, child, project_root, "     ", include_children)?;
         }
@@ -279,7 +279,7 @@ fn write_flat_child<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         let child_indent = format!("{}     ", indent);
         for child in &children {
             write_flat_child(w, child, project_root, &child_indent, include_children)?;
@@ -362,7 +362,7 @@ fn write_file_entry<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
         let child_prefix = if is_root_level {
             "     ".to_string()
@@ -470,7 +470,7 @@ fn write_crate_point<W: Write>(
 
     if include_children && !point.children.is_empty() {
         let mut children = point.children.clone();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
         let child_prefix = if is_root {
             "     ".to_string()

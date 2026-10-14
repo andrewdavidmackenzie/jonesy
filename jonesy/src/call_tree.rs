@@ -343,7 +343,7 @@ pub fn collect_crate_code_points_hierarchical(
             .iter()
             .filter_map(|child_key| build_subtree(child_key, points, path, cache))
             .collect();
-        children.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         path.remove(key);
 
         let point = CrateCodePoint {
@@ -637,7 +637,7 @@ pub fn collect_crate_code_points(
     dedupe_crate_points(&mut roots);
 
     // Sort roots by file then line number
-    roots.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    roots.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
     let summary = count_crate_points_and_files(&roots);
     (roots, summary)
