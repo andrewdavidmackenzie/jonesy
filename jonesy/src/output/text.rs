@@ -1097,4 +1097,21 @@ mod tests {
         let result = make_absolute("src/lib.rs", Some(Path::new("/project")));
         assert_eq!(result, "/project/src/lib.rs");
     }
+
+    #[test]
+    fn test_format_location_with_column() {
+        assert_eq!(format_location("src/main.rs", 42, 10), "src/main.rs:42:10");
+    }
+
+    #[test]
+    fn test_format_location_column_zero() {
+        // DWARF "left edge" — column unspecified, omit from output
+        assert_eq!(format_location("src/main.rs", 42, 0), "src/main.rs:42");
+    }
+
+    #[test]
+    fn test_format_location_column_one() {
+        // Column 1 is a real column, include it
+        assert_eq!(format_location("src/main.rs", 42, 1), "src/main.rs:42:1");
+    }
 }
