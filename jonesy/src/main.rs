@@ -63,11 +63,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn merge_code_points(
     result: &mut BinaryAnalysisResult,
     seen: &mut HashSet<CodePointKey>,
-    interner: &FilePathInterner,
     accumulator: &mut Vec<CrateCodePoint>,
 ) {
     for point in result.code_points.drain(..) {
-        let key = (interner.intern(&point.file), point.line, point.column);
+        // CrateCodePoint.file is already a u16 index -- use it directly as the key
+        let key = (point.file, point.line, point.column);
         if seen.insert(key) {
             accumulator.push(point);
         } else if let Some(existing) = accumulator
@@ -147,14 +147,10 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             &config,
             &parsed_args.output,
             &project_context,
+            &file_interner,
         )? {
             total_summary.add(&result.summary);
-            merge_code_points(
-                &mut result,
-                &mut seen_code_points,
-                &file_interner,
-                &mut all_code_points,
-            );
+            merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
         }
 
         if parsed_args.output.show_progress() {
@@ -171,6 +167,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         project_name.unwrap_or_else(|| "unknown".to_string()),
         project_root_path.unwrap_or_else(|| ".".to_string()),
         all_code_points,
+        file_interner.into_vec(),
     );
 
     // Output results based on format
@@ -219,6 +216,7 @@ fn analyze_binary(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Result<Option<BinaryAnalysisResult>, String> {
     match symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
@@ -229,6 +227,7 @@ fn analyze_binary(
             config,
             output,
             project_context,
+            file_interner,
         )
         .map(Some),
         SymbolTable::MachO(Fat(_)) => Ok(None),
@@ -240,6 +239,7 @@ fn analyze_binary(
             config,
             output,
             project_context,
+            file_interner,
         )
         .map(Some),
         SymbolTable::Archive(archive) => analyze_archive(
@@ -250,6 +250,7 @@ fn analyze_binary(
             config,
             output,
             project_context,
+            file_interner,
         )
         .map(Some),
     }
@@ -302,6 +303,9 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             );
         }
 
+        // Shared file path interner for all binaries in this member
+        let member_interner = FilePathInterner::new();
+
         // Parallel analysis of all binaries in this member
         let binary_results: Vec<(PathBuf, BinaryAnalysisResult)> = member
             .binaries
@@ -321,6 +325,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     &config,
                     &args.output,
                     &project_context,
+                    &member_interner,
                 )
                 .ok()??;
                 Some((binary_path, result))
@@ -331,20 +336,15 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
         let mut member_summary = AnalysisSummary::default();
         let mut member_code_points: Vec<CrateCodePoint> = Vec::new();
         let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
-        let member_interner = FilePathInterner::new();
 
         for (binary_path, mut result) in binary_results {
             if args.output.show_progress() {
                 println!("Processed {}", binary_path.display());
             }
             member_summary.add(&result.summary);
-            merge_code_points(
-                &mut result,
-                &mut seen_code_points,
-                &member_interner,
-                &mut member_code_points,
-            );
+            merge_code_points(&mut result, &mut seen_code_points, &mut member_code_points);
         }
+        let member_file_paths = member_interner.into_vec();
 
         if args.direct_only {
             member_code_points.retain(|p| p.is_direct_panic);
@@ -357,6 +357,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     member.name.clone(),
                     workspace_root.to_string_lossy().to_string(),
                     member_code_points.clone(),
+                    member_file_paths.clone(),
                 );
                 let no_hyperlinks = !args.output.use_hyperlinks();
                 generate_text_output(
@@ -380,6 +381,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             path: member.path.to_string_lossy().to_string(),
             summary: member_summary.clone(),
             code_points: member_code_points,
+            file_paths: member_file_paths,
         });
         workspace_summary.add(&member_summary);
     }

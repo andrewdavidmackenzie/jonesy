@@ -79,18 +79,36 @@ impl StringTables {
     }
 }
 
+/// Sentinel value meaning "no file path". Used by `CallerInfo.file`,
+/// `CallTreeNode.file`, and `CrateCodePoint.file` to represent the absence
+/// of a file path without needing `Option<u16>`.
+/// The maximum valid index is 65534, supporting up to 65535 unique file paths
+/// which is sufficient for any realistic project.
+pub const FILE_NONE: u16 = u16::MAX;
+
 /// Thread-safe file path interner for use during code point collection.
 ///
 /// Uses a `DashMap` for concurrent interning (safe with `par_iter`) and an
-/// `AtomicU32` counter for allocating new indices. After the parallel phase,
-/// call `into_vec()` to get a `Vec<String>` for index-to-path resolution.
+/// `AtomicU32` counter for lock-free ID allocation. Valid indices are `u16`,
+/// supporting up to 65535 unique file paths (more than any realistic project).
+/// After the parallel phase, call `into_vec()` to produce a `Vec<String>` for
+/// index-to-path resolution.
 ///
-/// The index `0` is valid (unlike `StringTables::intern_file` which uses 0 as
-/// a sentinel for `None`). Every interned path gets a non-negative index.
+/// Valid indices start at 0. The sentinel `FILE_NONE` (`u16::MAX`) represents
+/// the absence of a file path.
+///
+/// A concurrent reverse index (`RwLock<Vec<String>>`) is maintained for O(1)
+/// index-to-path resolution during the parallel phase, avoiding expensive
+/// `DashMap` linear scans.
 #[derive(Debug)]
 pub struct FilePathInterner {
-    map: DashMap<String, u32>,
+    map: DashMap<String, u16>,
+    /// Atomic counter for allocating new indices. Uses `AtomicU32` internally
+    /// and saturates at `u16::MAX - 1` to avoid colliding with `FILE_NONE`.
     next_id: AtomicU32,
+    /// Reverse index: id -> path string. Grown under a write lock on insertion,
+    /// read without contention during lookups.
+    reverse: std::sync::RwLock<Vec<String>>,
 }
 
 impl Default for FilePathInterner {
@@ -105,49 +123,71 @@ impl FilePathInterner {
         Self {
             map: DashMap::new(),
             next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::new()),
         }
     }
 
-    /// Intern a file path, returning its index.
+    /// Intern a file path, returning its `u16` index.
     /// Thread-safe: can be called concurrently from multiple rayon threads.
     /// If the path is already interned, returns the existing index without allocating.
-    pub fn intern(&self, path: &str) -> u32 {
+    /// Saturates at `FILE_NONE - 1` if more than 65534 unique paths are interned.
+    pub fn intern(&self, path: &str) -> u16 {
         // Fast path: check if already interned
         if let Some(entry) = self.map.get(path) {
             return *entry.value();
         }
 
         // Slow path: allocate a new ID and insert
-        // Use entry API to handle races -- two threads may both reach here for the same path.
-        // The `or_insert_with` closure runs at most once per unique key.
-        *self
-            .map
-            .entry(path.to_string())
-            .or_insert_with(|| self.next_id.fetch_add(1, Ordering::Relaxed))
+        let path_owned = path.to_string();
+        *self.map.entry(path_owned.clone()).or_insert_with(|| {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let idx = id.min((FILE_NONE - 1) as u32) as u16;
+            // Maintain reverse index for O(1) resolve
+            let mut rev = self.reverse.write().unwrap();
+            if (idx as usize) >= rev.len() {
+                rev.resize(idx as usize + 1, String::new());
+            }
+            rev[idx as usize] = path_owned;
+            idx
+        })
     }
 
     /// Intern an owned String, avoiding a clone if not yet interned.
-    pub fn intern_owned(&self, path: String) -> u32 {
+    pub fn intern_owned(&self, path: String) -> u16 {
         if let Some(entry) = self.map.get(&path) {
             return *entry.value();
         }
 
-        *self
-            .map
-            .entry(path)
-            .or_insert_with(|| self.next_id.fetch_add(1, Ordering::Relaxed))
+        let path_clone = path.clone();
+        *self.map.entry(path).or_insert_with(|| {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let idx = id.min((FILE_NONE - 1) as u32) as u16;
+            let mut rev = self.reverse.write().unwrap();
+            if (idx as usize) >= rev.len() {
+                rev.resize(idx as usize + 1, String::new());
+            }
+            rev[idx as usize] = path_clone;
+            idx
+        })
+    }
+
+    /// Intern an optional file path. Returns `FILE_NONE` for `None`.
+    pub fn intern_option(&self, path: Option<&str>) -> u16 {
+        match path {
+            Some(p) => self.intern(p),
+            None => FILE_NONE,
+        }
     }
 
     /// Resolve an index back to its file path string.
-    /// Returns `None` if the index is out of bounds.
-    ///
-    /// **Note:** This performs a linear scan of the DashMap. For bulk resolution,
-    /// prefer converting to a `Vec<String>` with `into_vec()` first.
-    pub fn resolve(&self, idx: u32) -> Option<String> {
-        self.map
-            .iter()
-            .find(|entry| *entry.value() == idx)
-            .map(|entry| entry.key().clone())
+    /// Returns `None` for `FILE_NONE` or if the index is not found.
+    /// Uses the reverse index for O(1) lookup.
+    pub fn resolve(&self, idx: u16) -> Option<String> {
+        if idx == FILE_NONE {
+            return None;
+        }
+        let rev = self.reverse.read().unwrap();
+        rev.get(idx as usize).filter(|s| !s.is_empty()).cloned()
     }
 
     /// Consume the interner and produce a `Vec<String>` indexed by the interned IDs.
@@ -172,6 +212,28 @@ impl FilePathInterner {
     /// Check if the interner is empty.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+}
+
+/// Resolve a file index to a path string from a resolved file path table.
+/// Returns `None` for `FILE_NONE` or out-of-bounds indices.
+#[inline]
+pub fn resolve_file(file_paths: &[String], idx: u16) -> Option<&str> {
+    if idx == FILE_NONE {
+        None
+    } else {
+        file_paths.get(idx as usize).map(|s| s.as_str())
+    }
+}
+
+/// Resolve a file index to an owned path string from a resolved file path table.
+/// Returns an empty string for `FILE_NONE` or out-of-bounds indices.
+#[inline]
+pub fn resolve_file_owned(file_paths: &[String], idx: u16) -> String {
+    if idx == FILE_NONE {
+        String::new()
+    } else {
+        file_paths.get(idx as usize).cloned().unwrap_or_default()
     }
 }
 

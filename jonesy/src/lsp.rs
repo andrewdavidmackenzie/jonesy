@@ -19,11 +19,11 @@ use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use crate::analysis::BinaryAnalysisResult;
 use crate::call_tree::{CodePointKey, CrateCodePoint};
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
 use crate::project_context::ProjectContext;
-use crate::string_tables::FilePathInterner;
 use notify::RecommendedWatcher;
 
 /// Counter for generating unique progress tokens
@@ -35,6 +35,9 @@ struct ServerState {
     workspace_root: Option<PathBuf>,
     /// Cached panic points by file URI
     panic_points: HashMap<Url, Vec<CrateCodePoint>>,
+    /// Resolved file path table for `CrateCodePoint.file` index resolution.
+    /// Accumulated across all analysed targets.
+    file_paths: Vec<String>,
     /// Files that have been opened (for re-publishing after analysis)
     opened_files: HashSet<Url>,
 }
@@ -44,6 +47,7 @@ impl ServerState {
         Self {
             workspace_root: None,
             panic_points: HashMap::new(),
+            file_paths: Vec::new(),
             opened_files: HashSet::new(),
         }
     }
@@ -71,8 +75,9 @@ impl JonesyLspServer {
         }
     }
 
-    /// Convert a CrateCodePoint to an LSP Diagnostic
-    fn code_point_to_diagnostic(point: &CrateCodePoint) -> Diagnostic {
+    /// Convert a CrateCodePoint to an LSP Diagnostic.
+    /// `file_paths` is the resolved file path table from `BinaryAnalysisResult`.
+    fn code_point_to_diagnostic(point: &CrateCodePoint, file_paths: &[String]) -> Diagnostic {
         // Get all causes sorted by error code for determinism
         let sorted_causes: Vec<_> = {
             let mut causes: Vec<_> = point.causes.iter().collect();
@@ -117,10 +122,14 @@ impl JonesyLspServer {
         // Store cause info in data field for use by code actions
         // Use sorted_causes for consistency with the displayed message
         let cause_ids: Vec<String> = sorted_causes.iter().map(|c| c.id().to_string()).collect();
+        let resolved_file = file_paths
+            .get(point.file as usize)
+            .cloned()
+            .unwrap_or_default();
         let data = serde_json::json!({
             "causes": cause_ids,
             "function": &point.name,
-            "file": &point.file,
+            "file": &resolved_file,
             "called_function": &point.called_function,
             "is_direct_panic": point.is_direct_panic,
         });
@@ -476,7 +485,7 @@ impl JonesyLspServer {
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         let mut seen: std::collections::HashSet<CodePointKey> = std::collections::HashSet::new();
-        let file_interner = FilePathInterner::new();
+        let mut all_file_paths: Vec<String> = Vec::new();
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
@@ -513,12 +522,25 @@ impl JonesyLspServer {
             };
 
             match analysis_result {
-                Ok(Ok(points)) => {
+                Ok(Ok(analysis)) => {
+                    let file_paths = &analysis.file_paths;
+                    // Merge file_paths into the accumulated table
+                    if all_file_paths.len() < file_paths.len() {
+                        all_file_paths.resize(file_paths.len(), String::new());
+                    }
+                    for (i, fp) in file_paths.iter().enumerate() {
+                        if !fp.is_empty() {
+                            all_file_paths[i] = fp.clone();
+                        }
+                    }
+
                     // Filter to new points only (dedup across targets)
-                    let new_points: Vec<_> = points
+                    // CrateCodePoint.file is already a u16 index
+                    let new_points: Vec<_> = analysis
+                        .code_points
                         .into_iter()
                         .filter(|p| {
-                            let key = (file_interner.intern(&p.file), p.line, p.column);
+                            let key = (p.file, p.line, p.column);
                             seen.insert(key)
                         })
                         .collect();
@@ -538,12 +560,18 @@ impl JonesyLspServer {
                         std::collections::HashSet::new();
 
                     for point in new_points {
+                        // Resolve file index to path string
+                        let resolved_file = file_paths
+                            .get(point.file as usize)
+                            .cloned()
+                            .unwrap_or_default();
+
                         // Skip files in target/ directory
-                        if point.file.starts_with(&target_dir) {
+                        if resolved_file.starts_with(&target_dir) {
                             continue;
                         }
 
-                        let raw_path = PathBuf::from(&point.file);
+                        let raw_path = PathBuf::from(&resolved_file);
                         let file_path = if raw_path.is_absolute() {
                             raw_path
                         } else {
@@ -559,8 +587,10 @@ impl JonesyLspServer {
                     // Publish updated diagnostics for files that changed
                     for uri in files_updated {
                         if let Some(points) = points_by_file.get(&uri) {
-                            let diagnostics: Vec<Diagnostic> =
-                                points.iter().map(Self::code_point_to_diagnostic).collect();
+                            let diagnostics: Vec<Diagnostic> = points
+                                .iter()
+                                .map(|p| Self::code_point_to_diagnostic(p, &all_file_paths))
+                                .collect();
 
                             self.client
                                 .publish_diagnostics(uri.clone(), diagnostics, None)
@@ -592,6 +622,7 @@ impl JonesyLspServer {
         let old_files: std::collections::HashSet<_> = state.panic_points.keys().cloned().collect();
         let new_files: std::collections::HashSet<_> = points_by_file.keys().cloned().collect();
         state.panic_points = points_by_file;
+        state.file_paths = all_file_paths;
         drop(state);
 
         // Clear diagnostics for files that no longer have panic points
@@ -629,13 +660,16 @@ impl JonesyLspServer {
         // Snapshot all data while holding the lock once, then publish outside the lock
         let republish: Vec<(Url, Vec<Diagnostic>)> = {
             let state = self.state.read().await;
+            let file_paths = &state.file_paths;
             state
                 .opened_files
                 .iter()
                 .filter_map(|uri| {
                     state.panic_points.get(uri).map(|points| {
-                        let diagnostics =
-                            points.iter().map(Self::code_point_to_diagnostic).collect();
+                        let diagnostics = points
+                            .iter()
+                            .map(|p| Self::code_point_to_diagnostic(p, file_paths))
+                            .collect();
                         (uri.clone(), diagnostics)
                     })
                 })
@@ -1316,8 +1350,11 @@ impl LanguageServer for JonesyLspServer {
         // If we have cached diagnostics for this file, publish them now
         let state = self.state.read().await;
         if let Some(points) = state.panic_points.get(&uri) {
-            let diagnostics: Vec<Diagnostic> =
-                points.iter().map(Self::code_point_to_diagnostic).collect();
+            let file_paths = &state.file_paths;
+            let diagnostics: Vec<Diagnostic> = points
+                .iter()
+                .map(|p| Self::code_point_to_diagnostic(p, file_paths))
+                .collect();
             drop(state); // Release lock before async call
 
             if !diagnostics.is_empty() {
@@ -1672,7 +1709,7 @@ async fn run_analysis_task(
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
-    let file_interner = FilePathInterner::new();
+    let mut all_file_paths: Vec<String> = Vec::new();
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1696,12 +1733,25 @@ async fn run_analysis_task(
                 .await
         };
 
-        if let Ok(Ok(points)) = analysis_result {
-            let point_count = points.len();
-            let new_points: Vec<_> = points
+        if let Ok(Ok(analysis)) = analysis_result {
+            let file_paths = &analysis.file_paths;
+            // Merge file_paths into the accumulated table
+            if all_file_paths.len() < file_paths.len() {
+                all_file_paths.resize(file_paths.len(), String::new());
+            }
+            for (i, fp) in file_paths.iter().enumerate() {
+                if !fp.is_empty() {
+                    all_file_paths[i] = fp.clone();
+                }
+            }
+
+            let point_count = analysis.code_points.len();
+            // CrateCodePoint.file is already a u16 index
+            let new_points: Vec<_> = analysis
+                .code_points
                 .into_iter()
                 .filter(|p| {
-                    let key = (file_interner.intern(&p.file), p.line, p.column);
+                    let key = (p.file, p.line, p.column);
                     seen.insert(key)
                 })
                 .collect();
@@ -1711,11 +1761,17 @@ async fn run_analysis_task(
 
             // Group by file
             for point in new_points {
-                if point.file.starts_with(&target_dir) {
+                // Resolve file index to path string
+                let resolved_file = file_paths
+                    .get(point.file as usize)
+                    .cloned()
+                    .unwrap_or_default();
+
+                if resolved_file.starts_with(&target_dir) {
                     continue;
                 }
 
-                let raw_path = PathBuf::from(&point.file);
+                let raw_path = PathBuf::from(&resolved_file);
                 let file_path = if raw_path.is_absolute() {
                     raw_path
                 } else {
@@ -1777,9 +1833,19 @@ async fn run_analysis_task(
             for (uri, points) in points_by_file.clone() {
                 state.panic_points.insert(uri, points);
             }
+            // Merge file_paths: extend if new table is larger
+            if all_file_paths.len() > state.file_paths.len() {
+                state.file_paths.resize(all_file_paths.len(), String::new());
+            }
+            for (i, fp) in all_file_paths.iter().enumerate() {
+                if !fp.is_empty() {
+                    state.file_paths[i] = fp.clone();
+                }
+            }
         } else {
             // Full analysis: replace entirely
             state.panic_points = points_by_file.clone();
+            state.file_paths = all_file_paths.clone();
         }
     }
 
@@ -1787,7 +1853,7 @@ async fn run_analysis_task(
     for (uri, points) in &points_by_file {
         let diagnostics: Vec<Diagnostic> = points
             .iter()
-            .map(JonesyLspServer::code_point_to_diagnostic)
+            .map(|p| JonesyLspServer::code_point_to_diagnostic(p, &all_file_paths))
             .collect();
         client
             .publish_diagnostics(uri.clone(), diagnostics, None)
@@ -1861,17 +1927,17 @@ fn format_change_summary(
 
 /// Deduplicate code points by (file, line, column).
 ///
-/// Points are considered duplicates if they have the same file path, line number,
+/// Points are considered duplicates if they have the same file path index, line number,
 /// and column (or both have no column). This handles the case where multiple
 /// targets report the same panic point from shared code.
 #[cfg(test)]
 fn deduplicate_code_points(points: Vec<CrateCodePoint>) -> Vec<CrateCodePoint> {
     let mut seen: HashSet<CodePointKey> = HashSet::new();
-    let interner = FilePathInterner::new();
     points
         .into_iter()
         .filter(|p| {
-            let key = (interner.intern(&p.file), p.line, p.column);
+            // CrateCodePoint.file is already a u16 index
+            let key = (p.file, p.line, p.column);
             seen.insert(key)
         })
         .collect()
@@ -1881,21 +1947,29 @@ fn deduplicate_code_points(points: Vec<CrateCodePoint>) -> Vec<CrateCodePoint> {
 ///
 /// Returns a HashMap where keys are file URIs and values are the code points
 /// found in that file. Points with paths inside the target directory are excluded.
+/// `file_paths` is the resolved file path table for index resolution.
 #[cfg(test)]
 fn group_points_by_uri(
     points: Vec<CrateCodePoint>,
     workspace_root: &Path,
     target_dir: &str,
+    file_paths: &[String],
 ) -> HashMap<Url, Vec<CrateCodePoint>> {
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
 
     for point in points {
+        // Resolve file index to path string
+        let resolved_file = file_paths
+            .get(point.file as usize)
+            .cloned()
+            .unwrap_or_default();
+
         // Skip files in target/ directory
-        if point.file.starts_with(target_dir) {
+        if resolved_file.starts_with(target_dir) {
             continue;
         }
 
-        let raw_path = PathBuf::from(&point.file);
+        let raw_path = PathBuf::from(&resolved_file);
         let file_path = if raw_path.is_absolute() {
             raw_path
         } else {
@@ -1916,6 +1990,8 @@ fn group_points_by_uri(
 struct AnalysisResult {
     /// All code points found, deduplicated across targets
     points: Vec<CrateCodePoint>,
+    /// Resolved file path table for index resolution
+    file_paths: Vec<String>,
     /// Total number of panic points found (before deduplication)
     total_count: usize,
     /// Number of targets that were successfully analyzed
@@ -1936,20 +2012,33 @@ fn analyze_workspace_targets(
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
-    let interner = FilePathInterner::new();
 
     for target in targets {
         match analyze_single_target(target, project_context) {
-            Ok(points) => {
+            Ok(analysis) => {
                 result.analyzed_count += 1;
-                let point_count = points.len();
+                let point_count = analysis.code_points.len();
                 result.total_count += point_count;
 
+                // Merge file_paths
+                if result.file_paths.len() < analysis.file_paths.len() {
+                    result
+                        .file_paths
+                        .resize(analysis.file_paths.len(), String::new());
+                }
+                for (i, fp) in analysis.file_paths.iter().enumerate() {
+                    if !fp.is_empty() {
+                        result.file_paths[i] = fp.clone();
+                    }
+                }
+
                 // Filter to new points only (dedup across targets)
-                let new_points: Vec<_> = points
+                // CrateCodePoint.file is already a u16 index
+                let new_points: Vec<_> = analysis
+                    .code_points
                     .into_iter()
                     .filter(|p| {
-                        let key = (interner.intern(&p.file), p.line, p.column);
+                        let key = (p.file, p.line, p.column);
                         seen.insert(key)
                     })
                     .collect();
@@ -2004,12 +2093,13 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
     Some(WorkspaceInfo { members, targets })
 }
 
-/// Analyze a single target (binary or library) and return panic points.
+/// Analyze a single target (binary or library) and return the analysis result
+/// including panic points and the file path resolution table.
 /// This reuses the same analysis functions as the CLI for consistency.
 fn analyze_single_target(
     target_path: &Path,
     project_context: &ProjectContext,
-) -> std::result::Result<Vec<CrateCodePoint>, String> {
+) -> std::result::Result<BinaryAnalysisResult, String> {
     use crate::analysis::{analyze_archive, analyze_binary_target};
     use crate::args::OutputFormat;
     use crate::config::Config;
@@ -2030,29 +2120,28 @@ fn analyze_single_target(
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
 
-    match &symbols {
-        SymbolTable::MachO(Binary(_)) => {
-            let result = analyze_binary_target(
-                &symbols,
-                &binary_buffer,
-                target_path,
-                false, // show_timings
-                &config,
-                &output,
-                project_context,
-            )?;
-            Ok(result.code_points)
-        }
+    // Each target gets its own file path interner
+    let interner = crate::string_tables::FilePathInterner::new();
+
+    let mut result = match &symbols {
+        SymbolTable::MachO(Binary(_)) => analyze_binary_target(
+            &symbols,
+            &binary_buffer,
+            target_path,
+            false, // show_timings
+            &config,
+            &output,
+            project_context,
+            &interner,
+        ),
         SymbolTable::MachO(Fat(fat)) => {
             // Fat binary - find native architecture slice and analyze it
-            // Prefer slice matching the current host architecture
             let preferred_cputype = match std::env::consts::ARCH {
                 "aarch64" => Some(CPU_TYPE_ARM64),
                 "x86_64" => Some(CPU_TYPE_X86_64),
                 _ => None,
             };
 
-            // Find host-native slice, or fall back to first available
             let mut selected_macho = None;
             for entry in fat.into_iter() {
                 match entry {
@@ -2064,60 +2153,58 @@ fn analyze_single_target(
                             selected_macho = Some(macho);
                             break;
                         }
-                        // Keep first as fallback
                         if selected_macho.is_none() {
                             selected_macho = Some(macho);
                         }
                     }
-                    Ok(SingleArch::Archive(_)) => continue, // Skip archive slices
+                    Ok(SingleArch::Archive(_)) => continue,
                     Err(_) => continue,
                 }
             }
 
             match selected_macho {
                 Some(_macho) => {
-                    // Fat binary: re-parse buffer to get SymbolTable for selected arch
                     let fat_symbols = SymbolTable::from(&binary_buffer)
                         .map_err(|e| format!("Failed to parse fat binary: {e}"))?;
-                    let result = analyze_binary_target(
+                    analyze_binary_target(
                         &fat_symbols,
                         &binary_buffer,
                         target_path,
-                        false, // show_timings
+                        false,
                         &config,
                         &output,
                         project_context,
-                    )?;
-                    Ok(result.code_points)
+                        &interner,
+                    )
                 }
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
             }
         }
-        SymbolTable::Elf(_) => {
-            let result = analyze_binary_target(
-                &symbols,
-                &binary_buffer,
-                target_path,
-                false, // show_timings
-                &config,
-                &output,
-                project_context,
-            )?;
-            Ok(result.code_points)
-        }
-        SymbolTable::Archive(archive) => {
-            let result = analyze_archive(
-                archive,
-                &binary_buffer,
-                target_path,
-                false, // show_timings
-                &config,
-                &output,
-                project_context,
-            )?;
-            Ok(result.code_points)
-        }
-    }
+        SymbolTable::Elf(_) => analyze_binary_target(
+            &symbols,
+            &binary_buffer,
+            target_path,
+            false,
+            &config,
+            &output,
+            project_context,
+            &interner,
+        ),
+        SymbolTable::Archive(archive) => analyze_archive(
+            archive,
+            &binary_buffer,
+            target_path,
+            false,
+            &config,
+            &output,
+            project_context,
+            &interner,
+        ),
+    }?;
+
+    // Resolve the interner to a file_paths table for downstream use
+    result.file_paths = interner.into_vec();
+    Ok(result)
 }
 
 /// Find all config files that affect jonesy analysis.
@@ -2500,14 +2587,16 @@ mod tests {
 
         for target in &targets {
             let result = analyze_single_target(target, &project_context);
-            if let Ok(points) = result {
-                for point in points {
+            if let Ok(analysis) = result {
+                for point in &analysis.code_points {
+                    // Resolve file index to path string using this analysis's file_paths
+                    let resolved_file =
+                        crate::string_tables::resolve_file_owned(&analysis.file_paths, point.file);
                     // Normalize path
-                    let file = point
-                        .file
+                    let file = resolved_file
                         .rsplit("workspace_test/")
                         .next()
-                        .unwrap_or(&point.file)
+                        .unwrap_or(&resolved_file)
                         .to_string();
                     lsp_points.insert((file, point.line));
                 }
@@ -2915,9 +3004,9 @@ mod tests {
     // Unit tests for pure helper functions
     // ========================================================================
 
-    fn make_code_point(file: &str, line: u16, column: u16) -> CrateCodePoint {
+    fn make_code_point(file_idx: u16, line: u16, column: u16) -> CrateCodePoint {
         CrateCodePoint {
-            file: file.to_string(),
+            file: file_idx,
             line,
             column,
             name: "test_func".to_string(),
@@ -2937,10 +3026,11 @@ mod tests {
 
     #[test]
     fn test_deduplicate_code_points_no_duplicates() {
+        // file indices: 0 = "src/main.rs", 1 = "src/lib.rs"
         let points = vec![
-            make_code_point("src/main.rs", 10, 5),
-            make_code_point("src/main.rs", 20, 10),
-            make_code_point("src/lib.rs", 10, 5),
+            make_code_point(0, 10, 5),
+            make_code_point(0, 20, 10),
+            make_code_point(1, 10, 5),
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 3);
@@ -2949,10 +3039,10 @@ mod tests {
     #[test]
     fn test_deduplicate_code_points_with_duplicates() {
         let points = vec![
-            make_code_point("src/main.rs", 10, 5),
-            make_code_point("src/main.rs", 10, 5), // duplicate
-            make_code_point("src/main.rs", 20, 10),
-            make_code_point("src/main.rs", 10, 5), // duplicate
+            make_code_point(0, 10, 5),
+            make_code_point(0, 10, 5), // duplicate
+            make_code_point(0, 20, 10),
+            make_code_point(0, 10, 5), // duplicate
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 2);
@@ -2963,10 +3053,7 @@ mod tests {
     #[test]
     fn test_deduplicate_code_points_column_matters() {
         // Same file and line, different columns - NOT duplicates
-        let points = vec![
-            make_code_point("src/main.rs", 10, 5),
-            make_code_point("src/main.rs", 10, 15),
-        ];
+        let points = vec![make_code_point(0, 10, 5), make_code_point(0, 10, 15)];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 2);
     }
@@ -2975,9 +3062,9 @@ mod tests {
     fn test_deduplicate_code_points_none_column() {
         // None columns are treated as 0 for deduplication
         let points = vec![
-            make_code_point("src/main.rs", 10, 0),
-            make_code_point("src/main.rs", 10, 0), // duplicate
-            make_code_point("src/main.rs", 10, 0), // also duplicate (None -> 0)
+            make_code_point(0, 10, 0),
+            make_code_point(0, 10, 0), // duplicate
+            make_code_point(0, 10, 0), // also duplicate (None -> 0)
         ];
         let result = deduplicate_code_points(points);
         assert_eq!(result.len(), 1);
@@ -2986,20 +3073,26 @@ mod tests {
     #[test]
     fn test_group_points_by_uri_empty() {
         let points: Vec<CrateCodePoint> = vec![];
+        let file_paths: Vec<String> = vec![];
         let workspace_root = PathBuf::from("/workspace");
-        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target", &file_paths);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_group_points_by_uri_filters_target_dir() {
+        let file_paths = vec![
+            "/workspace/src/main.rs".to_string(),
+            "/workspace/target/debug/build/foo.rs".to_string(),
+            "/workspace/src/lib.rs".to_string(),
+        ];
         let points = vec![
-            make_code_point("/workspace/src/main.rs", 10, 5),
-            make_code_point("/workspace/target/debug/build/foo.rs", 20, 10), // filtered
-            make_code_point("/workspace/src/lib.rs", 30, 15),
+            make_code_point(0, 10, 5),
+            make_code_point(1, 20, 10), // filtered (target dir)
+            make_code_point(2, 30, 15),
         ];
         let workspace_root = PathBuf::from("/workspace");
-        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target", &file_paths);
 
         assert_eq!(result.len(), 2);
         assert!(result.keys().all(|uri| !uri.path().contains("/target/")));
@@ -3007,13 +3100,17 @@ mod tests {
 
     #[test]
     fn test_group_points_by_uri_groups_by_file() {
+        let file_paths = vec![
+            "/workspace/src/main.rs".to_string(),
+            "/workspace/src/lib.rs".to_string(),
+        ];
         let points = vec![
-            make_code_point("/workspace/src/main.rs", 10, 5),
-            make_code_point("/workspace/src/main.rs", 20, 10),
-            make_code_point("/workspace/src/lib.rs", 30, 15),
+            make_code_point(0, 10, 5),
+            make_code_point(0, 20, 10),
+            make_code_point(1, 30, 15),
         ];
         let workspace_root = PathBuf::from("/workspace");
-        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target", &file_paths);
 
         assert_eq!(result.len(), 2);
 
@@ -3027,12 +3124,10 @@ mod tests {
     #[test]
     fn test_group_points_by_uri_relative_paths() {
         // Relative paths should be joined with workspace_root
-        let points = vec![
-            make_code_point("src/main.rs", 10, 5),
-            make_code_point("src/lib.rs", 20, 10),
-        ];
+        let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
+        let points = vec![make_code_point(0, 10, 5), make_code_point(1, 20, 10)];
         let workspace_root = PathBuf::from("/workspace");
-        let result = group_points_by_uri(points, &workspace_root, "/workspace/target");
+        let result = group_points_by_uri(points, &workspace_root, "/workspace/target", &file_paths);
 
         assert_eq!(result.len(), 2);
 
@@ -3117,8 +3212,9 @@ mod tests {
 
     #[test]
     fn test_code_point_to_diagnostic_empty_causes() {
-        let point = make_code_point("src/main.rs", 42, 10);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+        let file_paths = vec!["src/main.rs".to_string()];
+        let point = make_code_point(0, 42, 10);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
 
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(diag.source, Some("jonesy".to_string()));
@@ -3134,11 +3230,12 @@ mod tests {
     fn test_code_point_to_diagnostic_single_cause() {
         use crate::panic_cause::PanicCause;
 
+        let file_paths = vec!["src/main.rs".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
 
         let point = CrateCodePoint {
-            file: "src/main.rs".to_string(),
+            file: 0,
             line: 10,
             column: 5,
             name: "my_func".to_string(),
@@ -3148,7 +3245,7 @@ mod tests {
             called_function: None,
         };
 
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
 
         assert!(diag.message.contains("unwrap"));
         // Single cause should also show JP code in message (consistent with multi-cause)
@@ -3167,12 +3264,13 @@ mod tests {
     fn test_code_point_to_diagnostic_multiple_causes() {
         use crate::panic_cause::PanicCause;
 
+        let file_paths = vec!["src/main.rs".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::Expect);
 
         let point = CrateCodePoint {
-            file: "src/main.rs".to_string(),
+            file: 0,
             line: 10,
             column: 5,
             name: "my_func".to_string(),
@@ -3182,7 +3280,7 @@ mod tests {
             called_function: Some("risky_fn".to_string()),
         };
 
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
 
         // Multiple causes shown in message
         assert!(diag.message.contains("JP"));
@@ -3195,8 +3293,9 @@ mod tests {
 
     #[test]
     fn test_code_point_to_diagnostic_no_column() {
-        let point = make_code_point("src/main.rs", 100, 0);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+        let file_paths = vec!["src/main.rs".to_string()];
+        let point = make_code_point(0, 100, 0);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
 
         // Column 0 (DWARF left edge): saturating_sub(1) = 0 (LSP start of line)
         assert_eq!(diag.range.start.character, 0);
@@ -3205,8 +3304,9 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_line_1() {
         // Edge case: line 1 should not underflow
-        let point = make_code_point("src/main.rs", 1, 1);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point);
+        let file_paths = vec!["src/main.rs".to_string()];
+        let point = make_code_point(0, 1, 1);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
 
         assert_eq!(diag.range.start.line, 0);
         assert_eq!(diag.range.start.character, 0);

@@ -8,7 +8,7 @@ use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
 use crate::project_context::ProjectContext;
-use crate::string_tables::FilePathInterner;
+use crate::string_tables::{FILE_NONE, FilePathInterner};
 use crate::sym::CallGraph;
 use dashmap::{DashMap, DashSet};
 use rayon::prelude::*;
@@ -17,13 +17,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 /// Key for identifying a code point: (file_idx, line, column).
-/// The `file_idx` is a `u32` index into a `FilePathInterner`, avoiding
+/// The `file_idx` is a `u16` index into a `FilePathInterner`, avoiding
 /// expensive string cloning in hot paths (DashMap keys, HashSet lookups,
 /// deduplication, merging). The file path string is resolved from the
 /// interner only at the output boundary.
 /// Two call sites at different columns on the same line are distinct points.
 /// Column 0 means "unspecified".
-pub type CodePointKey = (u32, u16, u16);
+pub type CodePointKey = (u16, u16, u16);
 
 static PRE_FILTER_LOCATIONS: LazyLock<Mutex<HashSet<(String, u16)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -33,10 +33,15 @@ pub fn take_pre_filter_locations() -> HashSet<(String, u16)> {
     std::mem::take(&mut *PRE_FILTER_LOCATIONS.lock().unwrap())
 }
 
-fn collect_locations(points: &[CrateCodePoint], locations: &mut HashSet<(String, u16)>) {
+fn collect_locations(
+    points: &[CrateCodePoint],
+    interner: &FilePathInterner,
+    locations: &mut HashSet<(String, u16)>,
+) {
     for p in points {
-        locations.insert((p.file.clone(), p.line));
-        collect_locations(&p.children, locations);
+        let file = interner.resolve(p.file).unwrap_or_default();
+        locations.insert((file, p.line));
+        collect_locations(&p.children, interner, locations);
     }
 }
 use std::sync::Arc;
@@ -46,8 +51,9 @@ use std::sync::Arc;
 pub struct CallTreeNode {
     /// Symbol/function name
     pub name: String,
-    /// Source file (if available from debug info)
-    pub file: Option<String>,
+    /// Source file index into a shared `FilePathInterner`.
+    /// `FILE_NONE` means no file path is known.
+    pub file: u16,
     /// Line number (0 = absent)
     pub line: u16,
     /// Column number (0 = absent)
@@ -61,7 +67,7 @@ impl CallTreeNode {
     pub fn new_root(name: String) -> Self {
         CallTreeNode {
             name,
-            file: None,
+            file: FILE_NONE,
             line: 0,
             column: u16::MAX,
             callers: Vec::new(),
@@ -80,6 +86,7 @@ pub fn build_call_tree_parallel_filtered(
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
@@ -89,21 +96,28 @@ pub fn build_call_tree_parallel_filtered(
             let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
 
-            let file = caller_info.file.as_deref().map(String::from);
+            let file = caller_info.file;
             let child_callers = if should_recurse {
                 build_call_tree_sequential_filtered(
                     call_graph,
                     caller_addr,
                     visited,
                     project_context,
+                    file_interner,
                 )
             } else {
-                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
+                build_shallow_callers_filtered(
+                    call_graph,
+                    caller_addr,
+                    project_context,
+                    file_interner,
+                )
             };
 
             // Early pruning: skip leaf nodes that aren't in crate source
+            let file_path = file_interner.resolve(file);
             if child_callers.is_empty()
-                && !file
+                && !file_path
                     .as_ref()
                     .is_some_and(|f| project_context.is_crate_source(f))
             {
@@ -127,6 +141,7 @@ fn build_call_tree_sequential_filtered(
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Vec<CallTreeNode> {
     let callers = call_graph.get_callers(target_addr);
 
@@ -136,21 +151,28 @@ fn build_call_tree_sequential_filtered(
             let caller_addr = caller_info.caller_start_address;
             let should_recurse = visited.insert(caller_addr);
 
-            let file = caller_info.file.as_deref().map(String::from);
+            let file = caller_info.file;
             let child_callers = if should_recurse {
                 build_call_tree_sequential_filtered(
                     call_graph,
                     caller_addr,
                     visited,
                     project_context,
+                    file_interner,
                 )
             } else {
-                build_shallow_callers_filtered(call_graph, caller_addr, project_context)
+                build_shallow_callers_filtered(
+                    call_graph,
+                    caller_addr,
+                    project_context,
+                    file_interner,
+                )
             };
 
             // Early pruning: skip leaf nodes that aren't in crate source
+            let file_path = file_interner.resolve(file);
             if child_callers.is_empty()
-                && !file
+                && !file_path
                     .as_ref()
                     .is_some_and(|f| project_context.is_crate_source(f))
             {
@@ -174,15 +196,17 @@ fn build_shallow_callers_filtered(
     call_graph: &CallGraph<'_>,
     target_addr: u64,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Vec<CallTreeNode> {
     call_graph
         .get_callers(target_addr)
         .iter()
         .filter_map(|caller_info| {
-            let file = caller_info.file.as_deref().map(String::from);
+            let file = caller_info.file;
 
             // Shallow callers are leaves — only keep if in crate source
-            if !file
+            let file_path = file_interner.resolve(file);
+            if !file_path
                 .as_ref()
                 .is_some_and(|f| project_context.is_crate_source(f))
             {
@@ -200,11 +224,15 @@ fn build_shallow_callers_filtered(
         .collect()
 }
 
-/// A crate code point with its hierarchical children (code points it calls toward panic)
+/// A crate code point with its hierarchical children (code points it calls toward panic).
+/// The `file` field is a `u16` index into a shared `FilePathInterner`.
+/// Use `resolve_file()` from `string_tables` to get the actual path string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateCodePoint {
     pub name: String,
-    pub file: String,
+    /// File path index into a shared `FilePathInterner`.
+    /// `FILE_NONE` means no file path is known.
+    pub file: u16,
     pub line: u16,
     /// Column number of the call site (0 = absent)
     pub column: u16,
@@ -281,19 +309,20 @@ fn extract_qualified_function_name(full_name: &str) -> String {
 
 /// Collect crate code points with hierarchy.
 /// Returns a list of "root" code points (entry points) with their children.
+/// The `file_interner` is the shared interner used for all file path indices.
 pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Vec<CrateCodePoint> {
     let points: DashMap<CodePointKey, CodePointInfo> = DashMap::new();
-    let interner = FilePathInterner::new();
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
     let source_cache = crate::inline_allows::ConcurrentSourceFileCache::new();
 
     collect_crate_relationships_parallel(
         node,
         &points,
-        &interner,
+        file_interner,
         None,
         None,
         None,
@@ -304,9 +333,6 @@ pub fn collect_crate_code_points_hierarchical(
 
     // Convert DashMap to HashMap for the subtree builder
     let points: CodePointMap = points.into_iter().collect();
-
-    // Build the file path resolution table from the interner
-    let file_paths = interner.into_vec();
 
     // All crate code points should be reported as roots.
     // Each point that can lead to a panic deserves its own entry,
@@ -320,7 +346,6 @@ pub fn collect_crate_code_points_hierarchical(
     fn build_subtree(
         key: &CodePointKey,
         points: &CodePointMap,
-        file_paths: &[String],
         path: &mut HashSet<CodePointKey>,
         cache: &mut HashMap<CodePointKey, CrateCodePoint>,
     ) -> Option<CrateCodePoint> {
@@ -335,7 +360,7 @@ pub fn collect_crate_code_points_hierarchical(
         if let Some(cached) = cache.get(key) {
             return Some(CrateCodePoint {
                 name: cached.name.clone(),
-                file: cached.file.clone(),
+                file: cached.file,
                 line: cached.line,
                 column: cached.column,
                 causes: cached.causes.clone(),
@@ -353,17 +378,14 @@ pub fn collect_crate_code_points_hierarchical(
         child_keys.sort();
         let mut children: Vec<CrateCodePoint> = child_keys
             .iter()
-            .filter_map(|child_key| build_subtree(child_key, points, file_paths, path, cache))
+            .filter_map(|child_key| build_subtree(child_key, points, path, cache))
             .collect();
-        children.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
+        children.sort_by_key(|a| (a.file, a.line, a.column));
         path.remove(key);
-
-        // Resolve file path from index
-        let file = file_paths.get(key.0 as usize).cloned().unwrap_or_default();
 
         let point = CrateCodePoint {
             name: name.clone(),
-            file,
+            file: key.0,
             line: key.1,
             column: key.2,
             causes: causes.clone(),
@@ -381,7 +403,7 @@ pub fn collect_crate_code_points_hierarchical(
         .iter()
         .filter_map(|root| {
             let mut cache: HashMap<CodePointKey, CrateCodePoint> = HashMap::new();
-            build_subtree(root, &points, &file_paths, &mut HashSet::new(), &mut cache)
+            build_subtree(root, &points, &mut HashSet::new(), &mut cache)
         })
         .collect()
 }
@@ -409,16 +431,13 @@ fn collect_crate_relationships_parallel(
     let detected_cause = detect_panic_cause(&node.name).or(current_cause);
 
     // Check if file matches any of the patterns
-    let file_matches = node
-        .file
+    let file_path = interner.resolve(node.file);
+    let file_matches = file_path
         .as_ref()
-        .is_some_and(|file| project_context.is_crate_source(file));
+        .is_some_and(|f| project_context.is_crate_source(f));
 
-    let node_key = if let Some(file) = &node.file
-        && file_matches
-        && node.line > 0
-    {
-        Some((interner.intern(file), node.line, node.column))
+    let node_key = if node.file != FILE_NONE && file_matches && node.line > 0 {
+        Some((node.file, node.line, node.column))
     } else {
         None
     };
@@ -461,16 +480,17 @@ fn collect_crate_relationships_parallel(
     }
 
     let propagated_cause = if let (Some(key), Some(cause)) = (&node_key, &detected_cause) {
-        // Resolve file path from interner for inline allow check
-        let file_path = interner.resolve(key.0).unwrap_or_default();
+        // Use the already-resolved file path for inline allow check
         let cause_id = cause.id();
-        if crate::inline_allows::check_inline_allow_concurrent(
-            &file_path,
-            key.1,
-            cause_id,
-            workspace_root,
-            source_cache,
-        ) {
+        if let Some(ref fp) = file_path
+            && crate::inline_allows::check_inline_allow_concurrent(
+                fp,
+                key.1,
+                cause_id,
+                workspace_root,
+                source_cache,
+            )
+        {
             None
         } else {
             detected_cause.clone()
@@ -520,21 +540,26 @@ pub fn collect_crate_code_points(
     node: &CallTreeNode,
     config: &Config,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
-    let mut roots = collect_crate_code_points_hierarchical(node, project_context);
+    let mut roots = collect_crate_code_points_hierarchical(node, project_context, file_interner);
 
     assign_unknown_causes(&mut roots);
 
     // Collect pre-filter locations for unused-rule detection
-    collect_locations(&roots, &mut PRE_FILTER_LOCATIONS.lock().unwrap());
+    collect_locations(
+        &roots,
+        file_interner,
+        &mut PRE_FILTER_LOCATIONS.lock().unwrap(),
+    );
 
-    filter_allowed_causes(&mut roots, config, project_context);
+    filter_allowed_causes(&mut roots, config, project_context, file_interner);
 
     // Deduplicate roots by (file, line, column)
     dedupe_crate_points(&mut roots);
 
     // Sort roots by file then line number
-    roots.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
+    roots.sort_by_key(|a| (a.file, a.line, a.column));
 
     let summary = count_crate_points_and_files(&roots);
     (roots, summary)
@@ -572,9 +597,10 @@ pub fn filter_allowed_causes(
     points: &mut Vec<CrateCodePoint>,
     config: &Config,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) {
     let mut cache = crate::inline_allows::SourceFileCache::new();
-    filter_allowed_causes_cached(points, config, project_context, &mut cache);
+    filter_allowed_causes_cached(points, config, project_context, file_interner, &mut cache);
 }
 
 /// Inner implementation of `filter_allowed_causes` that threads a source file cache
@@ -583,6 +609,7 @@ fn filter_allowed_causes_cached(
     points: &mut Vec<CrateCodePoint>,
     config: &Config,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
     cache: &mut crate::inline_allows::SourceFileCache,
 ) {
     use crate::inline_allows::check_inline_allow;
@@ -590,11 +617,13 @@ fn filter_allowed_causes_cached(
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
 
     points.retain_mut(|point| {
+        let file_path = file_interner.resolve(point.file).unwrap_or_default();
+
         point.causes.retain(|cause| {
             let cause_id = cause.id();
 
             if check_inline_allow(
-                &point.file,
+                &file_path,
                 point.line,
                 cause_id,
                 workspace_root,
@@ -607,11 +636,9 @@ fn filter_allowed_causes_cached(
             // - Safe arithmetic methods like checked_add, saturating_mul (issue #267)
             // - Const-only expressions that are provably safe (issue #266)
             if cause.is_debug_only() {
-                if let Some(source_lines) = crate::inline_allows::read_source_lines(
-                    &point.file,
-                    workspace_root,
-                    Some(cache),
-                ) {
+                if let Some(source_lines) =
+                    crate::inline_allows::read_source_lines(&file_path, workspace_root, Some(cache))
+                {
                     // Check if the source line uses a safe arithmetic method
                     if let Some(source_line) =
                         source_lines.get((point.line as usize).saturating_sub(1))
@@ -630,12 +657,12 @@ fn filter_allowed_causes_cached(
                 }
             }
 
-            if !config.is_denied_at(cause, Some(&point.file), Some(&point.name)) {
+            if !config.is_denied_at(cause, Some(&file_path), Some(&point.name)) {
                 return false;
             }
 
             if let Some(ref called_fn) = point.called_function {
-                if !config.is_denied_at(cause, Some(&point.file), Some(called_fn)) {
+                if !config.is_denied_at(cause, Some(&file_path), Some(called_fn)) {
                     return false;
                 }
             }
@@ -646,7 +673,13 @@ fn filter_allowed_causes_cached(
         let should_keep = !point.causes.is_empty();
 
         if should_keep {
-            filter_allowed_causes_cached(&mut point.children, config, project_context, cache);
+            filter_allowed_causes_cached(
+                &mut point.children,
+                config,
+                project_context,
+                file_interner,
+                cache,
+            );
         }
 
         should_keep
@@ -655,6 +688,8 @@ fn filter_allowed_causes_cached(
 
 /// Complete analysis results ready for output rendering.
 /// This is the shared structure used by all output formats (text, JSON, HTML).
+/// Contains a `file_paths` table for resolving `u16` file indices in
+/// `CrateCodePoint.file` back to path strings at the output boundary.
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
     /// Name of the project/crate
@@ -663,6 +698,9 @@ pub struct AnalysisResult {
     pub project_root: String,
     /// All panic code points found (filtered and deduplicated)
     pub code_points: Vec<CrateCodePoint>,
+    /// Resolved file path table for `CrateCodePoint.file` index resolution.
+    /// Index `i` maps to the file path string for `CrateCodePoint.file == i`.
+    pub file_paths: Vec<String>,
 }
 
 impl AnalysisResult {
@@ -671,11 +709,26 @@ impl AnalysisResult {
         project_name: impl Into<String>,
         project_root: impl Into<String>,
         code_points: Vec<CrateCodePoint>,
+        file_paths: Vec<String>,
     ) -> Self {
         Self {
             project_name: project_name.into(),
             project_root: project_root.into(),
             code_points,
+            file_paths,
+        }
+    }
+
+    /// Resolve a file index to a path string.
+    /// Returns an empty string for `FILE_NONE` or out-of-bounds indices.
+    pub fn resolve_file(&self, idx: u16) -> &str {
+        if idx == FILE_NONE {
+            ""
+        } else {
+            self.file_paths
+                .get(idx as usize)
+                .map(|s| s.as_str())
+                .unwrap_or("")
         }
     }
 
@@ -697,21 +750,20 @@ impl AnalysisResult {
 pub struct AnalysisSummary {
     /// Unique panic code points (file_idx, line, column)
     points: HashSet<CodePointKey>,
-    /// Unique files with panic points (counted by unique file path strings
-    /// to remain correct across different interners/binaries)
-    files: HashSet<String>,
+    /// Unique files with panic points (by file index)
+    files: HashSet<u16>,
 }
 
 impl AnalysisSummary {
-    /// Create a new summary from collected points and file paths
-    pub fn from_points(points: HashSet<CodePointKey>, files: HashSet<String>) -> Self {
+    /// Create a new summary from collected points and file indices
+    pub fn from_points(points: HashSet<CodePointKey>, files: HashSet<u16>) -> Self {
         Self { points, files }
     }
 
     /// Merge another summary into this one (union of sets, no double-counting)
     pub fn add(&mut self, other: &AnalysisSummary) {
         self.points.extend(other.points.iter().copied());
-        self.files.extend(other.files.iter().cloned());
+        self.files.extend(other.files.iter().copied());
     }
 
     /// Get the number of unique panic code points
@@ -726,47 +778,37 @@ impl AnalysisSummary {
 }
 
 /// Count unique crate code points and files in the hierarchy.
-/// Uses a local `FilePathInterner` to produce `CodePointKey` values from file
-/// path strings, so the summary's `points` set uses compact `(u32, u16, u16)` keys.
 fn count_crate_points_and_files(points: &[CrateCodePoint]) -> AnalysisSummary {
-    let interner = FilePathInterner::new();
     let mut seen_points = HashSet::new();
     let mut seen_files = HashSet::new();
-    collect_unique_point_keys_and_files(points, &interner, &mut seen_points, &mut seen_files);
+    collect_unique_point_keys_and_files(points, &mut seen_points, &mut seen_files);
     AnalysisSummary {
         points: seen_points,
         files: seen_files,
     }
 }
 
-/// Collect unique (file_idx, line, column) keys and unique files from the hierarchy
+/// Collect unique (file_idx, line, column) keys and unique file indices from the hierarchy
 fn collect_unique_point_keys_and_files(
     points: &[CrateCodePoint],
-    interner: &FilePathInterner,
     seen_points: &mut HashSet<CodePointKey>,
-    seen_files: &mut HashSet<String>,
+    seen_files: &mut HashSet<u16>,
 ) {
     for p in points {
-        seen_points.insert((interner.intern(&p.file), p.line, p.column));
-        seen_files.insert(p.file.clone());
-        collect_unique_point_keys_and_files(&p.children, interner, seen_points, seen_files);
+        seen_points.insert((p.file, p.line, p.column));
+        seen_files.insert(p.file);
+        collect_unique_point_keys_and_files(&p.children, seen_points, seen_files);
     }
 }
 
 /// Deduplicate crate code points by (file, line, column), merging children.
-/// Uses a local `FilePathInterner` to produce compact dedup keys.
 fn dedupe_crate_points(points: &mut Vec<CrateCodePoint>) {
-    let interner = FilePathInterner::new();
-    dedupe_crate_points_inner(points, &interner);
-}
-
-fn dedupe_crate_points_inner(points: &mut Vec<CrateCodePoint>, interner: &FilePathInterner) {
-    // Group by (file_idx, line, column)
+    // Group by (file_idx, line, column) -- file is already a u32 index
     let mut seen: HashMap<CodePointKey, usize> = HashMap::new();
     let mut result: Vec<CrateCodePoint> = Vec::new();
 
     for point in points.drain(..) {
-        let key = (interner.intern(&point.file), point.line, point.column);
+        let key = (point.file, point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge children into existing point
             result[idx].children.extend(point.children);
@@ -778,7 +820,7 @@ fn dedupe_crate_points_inner(points: &mut Vec<CrateCodePoint>, interner: &FilePa
 
     // Recursively dedupe children
     for point in &mut result {
-        dedupe_crate_points_inner(&mut point.children, interner);
+        dedupe_crate_points(&mut point.children);
     }
 
     *points = result;
@@ -845,10 +887,13 @@ mod tests {
         let mut config = Config::with_defaults();
         config.load_from_jones_toml(&toml_path);
 
+        let interner = FilePathInterner::new();
+        let main_rs = interner.intern("src/main.rs");
+
         // Code point in "app::run" that calls "my_crate::time::TimeStamp::now" which may unwrap
         let mut points = vec![CrateCodePoint {
             name: "app::run".to_string(),
-            file: "src/main.rs".to_string(),
+            file: main_rs,
             line: 42,
             column: 5,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
@@ -858,7 +903,7 @@ mod tests {
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner);
 
         // The point should be filtered out because the rule allows unwrap on that function
         assert!(
@@ -881,10 +926,13 @@ mod tests {
         let mut config = Config::with_defaults();
         config.load_from_jones_toml(&toml_path);
 
+        let interner = FilePathInterner::new();
+        let device_rs = interner.intern("src/device.rs");
+
         // Code point with only CapacityOverflow cause
         let mut points = vec![CrateCodePoint {
             name: "meshchat::device::DeviceIdentifier::hash".to_string(),
-            file: "src/device.rs".to_string(),
+            file: device_rs,
             line: 74,
             column: 22,
             causes: vec![PanicCause::CapacityOverflow].into_iter().collect(),
@@ -894,7 +942,7 @@ mod tests {
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner);
 
         // The point should be filtered out because capacity is globally allowed
         assert!(
@@ -917,11 +965,14 @@ mod tests {
         let mut config = Config::with_defaults();
         config.load_from_jones_toml(&toml_path);
 
+        let interner = FilePathInterner::new();
+        let device_rs = interner.intern("src/device.rs");
+
         // Code point with BOTH CapacityOverflow and Unknown causes
         // (simulates multiple panic paths through the same code point)
         let mut points = vec![CrateCodePoint {
             name: "meshchat::device::DeviceIdentifier::hash".to_string(),
-            file: "src/device.rs".to_string(),
+            file: device_rs,
             line: 74,
             column: 22,
             causes: vec![PanicCause::CapacityOverflow, PanicCause::Unknown]
@@ -933,7 +984,7 @@ mod tests {
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner);
 
         // The point should remain because Unknown is NOT allowed
         assert_eq!(
@@ -970,10 +1021,13 @@ mod tests {
         let mut config = Config::with_defaults();
         config.load_from_jones_toml(&toml_path);
 
+        let interner = FilePathInterner::new();
+        let main_rs = interner.intern("src/main.rs");
+
         // Code point calling a DIFFERENT function - should NOT be filtered
         let mut points = vec![CrateCodePoint {
             name: "app::run".to_string(),
-            file: "src/main.rs".to_string(),
+            file: main_rs,
             line: 42,
             column: 5,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
@@ -983,7 +1037,7 @@ mod tests {
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner);
 
         // The point should be kept because the rule doesn't match Config::parse
         assert_eq!(
@@ -997,13 +1051,13 @@ mod tests {
     fn test_assign_unknown_causes_non_leaf() {
         let mut points = vec![CrateCodePoint {
             name: "app::run".to_string(),
-            file: "src/main.rs".to_string(),
+            file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![CrateCodePoint {
                 name: "app::helper".to_string(),
-                file: "src/main.rs".to_string(),
+                file: 0,
                 line: 20,
                 column: 1,
                 causes: HashSet::new(),
@@ -1040,9 +1094,12 @@ mod tests {
         let mut config = Config::with_defaults();
         config.load_from_jones_toml(&toml_path);
 
+        let interner = FilePathInterner::new();
+        let main_rs = interner.intern("src/main.rs");
+
         let mut points = vec![CrateCodePoint {
             name: "app::run".to_string(),
-            file: "src/main.rs".to_string(),
+            file: main_rs,
             line: 42,
             column: 5,
             causes: vec![PanicCause::Unknown].into_iter().collect(),
@@ -1052,7 +1109,7 @@ mod tests {
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner);
 
         assert!(
             points.is_empty(),

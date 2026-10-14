@@ -55,6 +55,8 @@ fn finish_spinner(spinner: Option<ProgressBar>, message: &str) {
 pub struct BinaryAnalysisResult {
     pub summary: AnalysisSummary,
     pub code_points: Vec<CrateCodePoint>,
+    /// Resolved file path table for `CrateCodePoint.file` index resolution.
+    pub file_paths: Vec<String>,
 }
 
 impl BinaryAnalysisResult {
@@ -67,21 +69,17 @@ impl BinaryAnalysisResult {
     fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
-        let interner = FilePathInterner::new();
-
         // Build a map of existing code points by (file_idx, line, column)
+        // CrateCodePoint.file is already a u16 index -- no interning needed
         let mut points_map: HashMap<CodePointKey, CrateCodePoint> = self
             .code_points
             .drain(..)
-            .map(|cp| {
-                let key = (interner.intern(&cp.file), cp.line, cp.column);
-                (key, cp)
-            })
+            .map(|cp| ((cp.file, cp.line, cp.column), cp))
             .collect();
 
         // Merge other's code points
         for cp in other.code_points {
-            let key = (interner.intern(&cp.file), cp.line, cp.column);
+            let key = (cp.file, cp.line, cp.column);
             if let Some(existing) = points_map.get_mut(&key) {
                 // Merge causes (HashSet handles dedup)
                 existing.causes.extend(cp.causes);
@@ -100,13 +98,12 @@ impl BinaryAnalysisResult {
         });
 
         // Recalculate summary from merged code points
-        let interner = FilePathInterner::new();
         let points: HashSet<_> = self
             .code_points
             .iter()
-            .map(|cp| (interner.intern(&cp.file), cp.line, cp.column))
+            .map(|cp| (cp.file, cp.line, cp.column))
             .collect();
-        let files: HashSet<_> = self.code_points.iter().map(|cp| cp.file.clone()).collect();
+        let files: HashSet<_> = self.code_points.iter().map(|cp| cp.file).collect();
         self.summary = AnalysisSummary::from_points(points, files);
     }
 }
@@ -124,6 +121,7 @@ struct PanicCaller {
 
 /// Analyse a single MachO or ELF binary for panic points.
 /// Returns a summary of panic code points found, plus code points.
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_binary_target(
     symbols: &SymbolTable,
     buffer: &[u8],
@@ -132,6 +130,7 @@ pub fn analyze_binary_target(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Result<BinaryAnalysisResult, String> {
     // Construct BinaryRef from the SymbolTable
     let binary_ref = match symbols {
@@ -194,6 +193,7 @@ pub fn analyze_binary_target(
                 show_timings,
                 symbol_index.as_ref(),
                 project_context,
+                file_interner,
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -215,6 +215,7 @@ pub fn analyze_binary_target(
                     show_timings,
                     symbol_index.as_ref(),
                     project_context,
+                    file_interner,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
@@ -262,14 +263,21 @@ pub fn analyze_binary_target(
         let mut root = CallTreeNode::new_root(demangled.clone());
 
         // Build the call tree for this entry point
-        root.callers =
-            build_call_tree_parallel_filtered(&call_graph, *target_addr, &visited, project_context);
+        root.callers = build_call_tree_parallel_filtered(
+            &call_graph,
+            *target_addr,
+            &visited,
+            project_context,
+            file_interner,
+        );
 
         // Collect code points from this tree
-        let (code_points, _summary) = collect_crate_code_points(&root, config, project_context);
+        let (code_points, _summary) =
+            collect_crate_code_points(&root, config, project_context, file_interner);
         let entry_result = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points,
+            file_paths: Vec::new(),
         };
         final_result.merge(entry_result);
     }
@@ -296,6 +304,7 @@ pub fn analyze_binary_target(
 
 /// Analyse an archive (rlib/staticlib) for panic points using a relocation-based call graph.
 /// This works for library-only crates that don't have binary entry points.
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_archive(
     archive: &goblin::archive::Archive,
     buffer: &[u8],
@@ -304,6 +313,7 @@ pub fn analyze_archive(
     config: &Config,
     output: &OutputFormat,
     project_context: &ProjectContext,
+    file_interner: &FilePathInterner,
 ) -> Result<BinaryAnalysisResult, String> {
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
@@ -423,6 +433,7 @@ pub fn analyze_archive(
                         &binary_ref,
                         member_data.as_slice(),
                         project_context,
+                        file_interner,
                     )
                     .map_err(|e| {
                         if show_progress {
@@ -440,6 +451,7 @@ pub fn analyze_archive(
                         &binary_ref,
                         member_data.as_slice(),
                         project_context,
+                        file_interner,
                     )
                     .map_err(|e| {
                         if show_progress {
@@ -532,10 +544,9 @@ pub fn analyze_archive(
         }
 
         for caller_info in merged_graph.get_callers(target_sym) {
-            // Get file from DWARF info, filtering out non-crate code paths
-            let dwarf_file = caller_info
-                .file
-                .as_deref()
+            // Resolve file index to path string, filtering out non-crate code paths
+            let dwarf_file = file_interner
+                .resolve(caller_info.file)
                 .filter(|f| project_context.is_crate_source(f));
 
             // Only include entries with proper DWARF file/line info from user code
@@ -544,7 +555,7 @@ pub fn analyze_archive(
                 && caller_info.line > 0
             {
                 panic_callers.insert(PanicCaller {
-                    file: file.to_string(),
+                    file,
                     name: caller_info.caller_name.to_string(),
                     line: caller_info.line,
                     column: caller_info.column,
@@ -586,7 +597,7 @@ pub fn analyze_archive(
             }
             CrateCodePoint {
                 name: caller.name,
-                file: caller.file,
+                file: file_interner.intern(&caller.file),
                 line: caller.line,
                 column: caller.column,
                 causes,
@@ -606,14 +617,13 @@ pub fn analyze_archive(
 
     // Filter out allowed causes using the same logic as binary analysis,
     // including inline allow comments (e.g., `// jonesy:allow(overflow)`)
-    filter_allowed_causes(&mut code_points, config, project_context);
+    filter_allowed_causes(&mut code_points, config, project_context, file_interner);
 
-    // Deduplicate by (file, line, column)
-    let interner = FilePathInterner::new();
+    // Deduplicate by (file_idx, line, column) -- file is already a u16 index
     let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
     let mut deduped: Vec<CrateCodePoint> = Vec::new();
     for point in code_points {
-        let key = (interner.intern(&point.file), point.line, point.column);
+        let key = (point.file, point.line, point.column);
         if let Some(&idx) = seen.get(&key) {
             // Merge causes into existing point
             deduped[idx].causes.extend(point.causes);
@@ -629,15 +639,16 @@ pub fn analyze_archive(
 
     // Build summary from code points
     let mut points: HashSet<CodePointKey> = HashSet::new();
-    let mut files_affected: HashSet<String> = HashSet::new();
+    let mut files_affected: HashSet<u16> = HashSet::new();
     for point in &deduped {
-        points.insert((interner.intern(&point.file), point.line, point.column));
-        files_affected.insert(point.file.clone());
+        points.insert((point.file, point.line, point.column));
+        files_affected.insert(point.file);
     }
 
     Ok(BinaryAnalysisResult {
         summary: AnalysisSummary::from_points(points, files_affected),
         code_points: deduped,
+        file_paths: Vec::new(), // Caller resolves from the shared interner
     })
 }
 
@@ -658,12 +669,12 @@ mod tests {
         assert_eq!(result.summary.files_affected(), 0);
     }
 
-    fn make_code_point(file: &str, line: u16, cause: PanicCause) -> CrateCodePoint {
+    fn make_code_point(file_idx: u16, line: u16, cause: PanicCause) -> CrateCodePoint {
         let mut causes = HashSet::new();
         causes.insert(cause);
         CrateCodePoint {
             name: "test_func".to_string(),
-            file: file.to_string(),
+            file: file_idx,
             line,
             column: 0,
             causes,
@@ -677,12 +688,14 @@ mod tests {
     fn test_binary_analysis_result_merge_disjoint() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/a.rs", 10, PanicCause::Unwrap)],
+            code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
+            file_paths: Vec::new(),
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/b.rs", 20, PanicCause::Unwrap)],
+            code_points: vec![make_code_point(1, 20, PanicCause::Unwrap)],
+            file_paths: Vec::new(),
         };
 
         result1.merge(result2);
@@ -696,12 +709,14 @@ mod tests {
     fn test_binary_analysis_result_merge_same_location() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
+            code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
+            file_paths: Vec::new(),
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Expect)],
+            code_points: vec![make_code_point(0, 10, PanicCause::Expect)],
+            file_paths: Vec::new(),
         };
 
         result1.merge(result2);
@@ -715,28 +730,31 @@ mod tests {
 
     #[test]
     fn test_binary_analysis_result_merge_sorted() {
+        // file index 2 = "src/z.rs", 0 = "src/a.rs" — sorted by index
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/z.rs", 100, PanicCause::Unwrap)],
+            code_points: vec![make_code_point(2, 100, PanicCause::Unwrap)],
+            file_paths: Vec::new(),
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![
-                make_code_point("src/a.rs", 10, PanicCause::Unwrap),
-                make_code_point("src/a.rs", 5, PanicCause::ExplicitPanic),
+                make_code_point(0, 10, PanicCause::Unwrap),
+                make_code_point(0, 5, PanicCause::ExplicitPanic),
             ],
+            file_paths: Vec::new(),
         };
 
         result1.merge(result2);
 
-        // Should be sorted by file, then line
+        // Should be sorted by file index, then line
         assert_eq!(result1.code_points.len(), 3);
-        assert_eq!(result1.code_points[0].file, "src/a.rs");
+        assert_eq!(result1.code_points[0].file, 0);
         assert_eq!(result1.code_points[0].line, 5);
-        assert_eq!(result1.code_points[1].file, "src/a.rs");
+        assert_eq!(result1.code_points[1].file, 0);
         assert_eq!(result1.code_points[1].line, 10);
-        assert_eq!(result1.code_points[2].file, "src/z.rs");
+        assert_eq!(result1.code_points[2].file, 2);
         assert_eq!(result1.code_points[2].line, 100);
     }
 
@@ -744,7 +762,8 @@ mod tests {
     fn test_binary_analysis_result_merge_empty() {
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
-            code_points: vec![make_code_point("src/main.rs", 10, PanicCause::Unwrap)],
+            code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
+            file_paths: Vec::new(),
         };
 
         let result2 = BinaryAnalysisResult::new();
@@ -758,18 +777,20 @@ mod tests {
     /// are kept separate after merging.
     #[test]
     fn test_binary_analysis_result_merge_different_columns() {
-        let mut point_a = make_code_point("src/main.rs", 10, PanicCause::Unwrap);
+        let mut point_a = make_code_point(0, 10, PanicCause::Unwrap);
         point_a.column = 5;
-        let mut point_b = make_code_point("src/main.rs", 10, PanicCause::Expect);
+        let mut point_b = make_code_point(0, 10, PanicCause::Expect);
         point_b.column = 20;
 
         let mut result1 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![point_a],
+            file_paths: Vec::new(),
         };
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![point_b],
+            file_paths: Vec::new(),
         };
 
         result1.merge(result2);

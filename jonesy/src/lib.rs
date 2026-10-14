@@ -106,11 +106,12 @@ mod struct_size_tests {
             mem::size_of::<FunctionInfo>()
         );
 
-        // CallerInfo is compact (64 bytes, 64-byte aligned for cache-line packing)
+        // CallerInfo uses u16 file index instead of Option<Box<str>>, keeping it compact.
+        // With align(64), the struct pads to 64 bytes for cache-line alignment.
         assert_eq!(
             mem::size_of::<CallerInfo>(),
             64,
-            "CallerInfo should be exactly 64 bytes (merged file, Box<str>, u16 line/column)"
+            "CallerInfo should be exactly 64 bytes (u16 file index, u16 line/column, align(64))"
         );
         assert_eq!(
             mem::align_of::<CallerInfo>(),

@@ -324,6 +324,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
         let binary_ref = BinaryRef::MachO(macho);
         c.bench_function("call_graph_build_jonesy", |b| {
             b.iter(|| {
+                let file_interner = jonesy::string_tables::FilePathInterner::new();
                 let graph = CallGraph::build_with_debug_info(
                     &binary_ref,
                     &buffer,
@@ -332,6 +333,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
                     false,
                     symbol_index.as_ref(),
                     &project_context,
+                    &file_interner,
                 );
                 black_box(graph)
             })
@@ -350,6 +352,12 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
 
     let config = Config::with_defaults();
 
+    // Create a file path interner and intern sample paths
+    let interner = jonesy::string_tables::FilePathInterner::new();
+    let file_indices: Vec<u16> = (0..10)
+        .map(|i| interner.intern(&format!("src/file_{}.rs", i)))
+        .collect();
+
     // Create sample code points
     let sample_points: Vec<CrateCodePoint> = (0..100)
         .map(|i| {
@@ -360,7 +368,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
             }
             CrateCodePoint {
                 name: format!("function_{}", i),
-                file: format!("src/file_{}.rs", i % 10),
+                file: file_indices[i % 10],
                 line: (i * 10 + 1) as u16,
                 column: 5,
                 causes,
@@ -375,7 +383,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
     c.bench_function("filter_allowed_causes", |b| {
         b.iter(|| {
             let mut points = sample_points.clone();
-            filter_allowed_causes(&mut points, &config, &ctx);
+            filter_allowed_causes(&mut points, &config, &ctx, &interner);
             black_box(points)
         })
     });
@@ -497,6 +505,7 @@ fn bench_analyze_binary_target(c: &mut Criterion) {
         b.iter(|| {
             let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
             if let SymbolTable::MachO(Binary(_)) = &symbols {
+                let file_interner = jonesy::string_tables::FilePathInterner::new();
                 let result = analyze_binary_target(
                     &symbols,
                     &buffer,
@@ -505,6 +514,7 @@ fn bench_analyze_binary_target(c: &mut Criterion) {
                     &config,
                     &output,
                     &project_context,
+                    &file_interner,
                 );
                 black_box(result.ok());
             }
