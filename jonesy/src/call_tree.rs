@@ -407,7 +407,6 @@ pub fn collect_crate_relationships(
     let node_key = if let Some(file) = &node.file
         && file_matches
         && node.line > 0
-        && node.column != u16::MAX
     {
         Some((file.clone(), node.line, node.column))
     } else {
@@ -527,7 +526,6 @@ fn collect_crate_relationships_parallel(
     let node_key = if let Some(file) = &node.file
         && file_matches
         && node.line > 0
-        && node.column != u16::MAX
     {
         Some((file.clone(), node.line, node.column))
     } else {

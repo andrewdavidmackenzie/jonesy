@@ -745,4 +745,32 @@ mod tests {
 
         assert_eq!(result1.code_points.len(), 1);
     }
+
+    /// Verify that code points at the same (file, line) but different columns
+    /// are kept separate after merging.
+    #[test]
+    fn test_binary_analysis_result_merge_different_columns() {
+        let mut point_a = make_code_point("src/main.rs", 10, PanicCause::Unwrap);
+        point_a.column = 5;
+        let mut point_b = make_code_point("src/main.rs", 10, PanicCause::Expect);
+        point_b.column = 20;
+
+        let mut result1 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![point_a],
+        };
+        let result2 = BinaryAnalysisResult {
+            summary: AnalysisSummary::default(),
+            code_points: vec![point_b],
+        };
+
+        result1.merge(result2);
+
+        // Different columns on the same line should remain separate
+        assert_eq!(
+            result1.code_points.len(),
+            2,
+            "Same file:line but different columns should not merge"
+        );
+    }
 }

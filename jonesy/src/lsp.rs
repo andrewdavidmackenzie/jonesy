@@ -3193,7 +3193,7 @@ mod tests {
         let point = make_code_point("src/main.rs", 100, 0);
         let diag = JonesyLspServer::code_point_to_diagnostic(&point);
 
-        // No column defaults to 1, then subtract 1 for 0-based = 0
+        // Column 0 (DWARF left edge): saturating_sub(1) = 0 (LSP start of line)
         assert_eq!(diag.range.start.character, 0);
     }
 
