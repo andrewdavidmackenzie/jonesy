@@ -763,7 +763,6 @@ mod tests {
 
     /// Test that find_symbol_containing finds known panic symbols
     /// using the parallel two-phase approach.
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_symbol_containing_parallel() {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
@@ -784,7 +783,6 @@ mod tests {
     }
 
     /// Test that find_symbol_containing returns None for non-existent patterns.
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_symbol_containing_not_found() {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
@@ -799,7 +797,6 @@ mod tests {
 
     /// Test that find_all_symbols_with_addresses finds core::panicking symbols
     /// using the parallel two-phase approach.
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_all_symbols_with_addresses_parallel() {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
@@ -826,7 +823,6 @@ mod tests {
     }
 
     /// Test that find_all_symbols_matching finds symbols using parallel demangling.
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_all_symbols_matching_parallel() {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
@@ -847,7 +843,6 @@ mod tests {
     }
 
     /// Test that find_all_symbols_with_addresses works with multiple patterns.
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_all_symbols_multiple_patterns() {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
@@ -870,7 +865,6 @@ mod tests {
     }
 
     /// Test that empty pattern list returns empty results.
-    #[cfg(target_os = "macos")]
     #[test]
     fn test_find_all_symbols_empty_patterns() {
         let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
