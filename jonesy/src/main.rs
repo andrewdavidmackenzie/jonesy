@@ -19,49 +19,11 @@ use jonesy::output::json::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
 use jonesy::output::text::generate_text_output;
-use memmap2::Mmap;
+use jonesy::read_binary;
 use rayon::prelude::*;
 use std::error::Error;
-use std::fs;
 use std::io;
 use std::path::PathBuf;
-
-/// Read a binary file, preferring mmap for large files to avoid heap copies.
-/// Falls back to `fs::read` if mmap is unavailable or fails.
-///
-/// Uses mmap to avoid copying the entire binary into heap memory — the OS
-/// pages in only the sections that are actually accessed (text, symbols, DWARF).
-///
-/// # Safety note
-/// `Mmap::map` is unsafe because concurrent modification or truncation of
-/// the file by another process could cause undefined behaviour (SIGBUS).
-/// This is acceptable here because jonesy analyses build artefacts that are
-/// not modified during analysis. The binary is a snapshot of a completed build.
-enum BinaryBuffer {
-    Mmap(Mmap),
-    Vec(Vec<u8>),
-}
-
-impl std::ops::Deref for BinaryBuffer {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        match self {
-            BinaryBuffer::Mmap(m) => m,
-            BinaryBuffer::Vec(v) => v,
-        }
-    }
-}
-
-fn read_binary(path: &Path) -> io::Result<BinaryBuffer> {
-    let file = fs::File::open(path)?;
-    // SAFETY: the file is opened read-only. Jonesy analyses build artefacts
-    // that are not being modified concurrently. The mapping is short-lived
-    // (dropped after analysis completes).
-    match unsafe { Mmap::map(&file) } {
-        Ok(mmap) => Ok(BinaryBuffer::Mmap(mmap)),
-        Err(_) => fs::read(path).map(BinaryBuffer::Vec),
-    }
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();

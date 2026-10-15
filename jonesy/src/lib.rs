@@ -3,11 +3,56 @@
 //! This library provides the core functionality for analyzing Rust binaries
 //! to find code paths that can lead to panics.
 
+use memmap2::Mmap;
+use std::path::Path;
+
 /// Saturating conversion from `u64` to `u16`.
 /// Returns `u16::MAX` for values above 65535, avoiding silent wrapping
 /// (where e.g. line 65536 would wrap to 0 and be treated as "absent").
 pub(crate) fn to_u16_saturating(v: u64) -> u16 {
     u16::try_from(v).unwrap_or(u16::MAX)
+}
+
+/// Binary file content, read via mmap or fs::read.
+pub enum BinaryBuffer {
+    /// Memory-mapped file (zero-copy, OS pages in on demand)
+    Mmap(Mmap),
+    /// Heap-allocated copy (fallback when mmap fails)
+    Vec(Vec<u8>),
+}
+
+impl std::ops::Deref for BinaryBuffer {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            BinaryBuffer::Mmap(m) => m,
+            BinaryBuffer::Vec(v) => v,
+        }
+    }
+}
+
+/// Read a binary file, preferring mmap to avoid heap copies.
+/// Falls back to `fs::read` with a warning if mmap fails.
+///
+/// # Safety note
+/// `Mmap::map` is unsafe because concurrent modification or truncation of
+/// the file by another process could cause undefined behaviour (SIGBUS).
+/// This is acceptable here because jonesy analyses build artefacts that are
+/// not modified during analysis.
+pub fn read_binary(path: &Path) -> std::io::Result<BinaryBuffer> {
+    let file = std::fs::File::open(path)?;
+    // SAFETY: file is opened read-only. Jonesy analyses completed build
+    // artefacts that are not being modified concurrently.
+    match unsafe { Mmap::map(&file) } {
+        Ok(mmap) => Ok(BinaryBuffer::Mmap(mmap)),
+        Err(e) => {
+            eprintln!(
+                "Warning: mmap failed for {}: {e}. Falling back to fs::read.",
+                path.display()
+            );
+            std::fs::read(path).map(BinaryBuffer::Vec)
+        }
+    }
 }
 
 pub mod analysis;
@@ -136,5 +181,57 @@ mod struct_size_tests {
             "FullLineEntry should be <= 16 bytes, got {}",
             mem::size_of::<FullLineEntry>()
         );
+    }
+}
+
+#[cfg(test)]
+mod read_binary_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_read_binary_uses_mmap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_binary");
+        fs::write(&path, b"test binary content for mmap").unwrap();
+
+        let buffer = read_binary(&path).unwrap();
+        assert!(
+            matches!(buffer, BinaryBuffer::Mmap(_)),
+            "read_binary should use mmap, not fall back to fs::read"
+        );
+        assert_eq!(&*buffer, b"test binary content for mmap");
+    }
+
+    #[test]
+    fn test_read_binary_content_correct() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_binary");
+        let content = vec![0u8; 1024];
+        fs::write(&path, &content).unwrap();
+
+        let buffer = read_binary(&path).unwrap();
+        assert_eq!(&*buffer, &content[..]);
+    }
+
+    #[test]
+    fn test_read_binary_nonexistent_file() {
+        let result = read_binary(Path::new("/nonexistent/path/to/binary"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_binary_real_binary() {
+        // Use the jonesy binary itself (or any built binary)
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let binary = workspace_root.join("target/debug/jonesy");
+        if binary.exists() {
+            let buffer = read_binary(&binary).unwrap();
+            assert!(
+                matches!(buffer, BinaryBuffer::Mmap(_)),
+                "mmap should succeed on a real binary file"
+            );
+            assert!(!buffer.is_empty());
+        }
     }
 }
