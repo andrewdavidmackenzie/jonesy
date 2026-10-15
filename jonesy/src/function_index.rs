@@ -64,9 +64,9 @@ impl FunctionIndex {
     }
 
     /// Build a function index from a list of functions.
-    /// Sorts the functions by start_address for binary search.
+    /// Sorts the functions by start_address for binary search (parallel sort).
     pub fn new(mut functions: Vec<FunctionInfo>, strings: StringTables) -> Self {
-        functions.sort_by_key(|f| f.start_address);
+        functions.par_sort_by_key(|f| f.start_address);
         // Note: DWARF may have overlapping function ranges (e.g., from inlining).
         // We don't assert non-overlapping here because it's common in real binaries.
         // The binary search will find one valid function, which is sufficient.
@@ -85,7 +85,7 @@ impl FunctionIndex {
         inlined: Vec<FunctionInfo>,
         strings: StringTables,
     ) -> Self {
-        functions.sort_by_key(|f| f.start_address);
+        functions.par_sort_by_key(|f| f.start_address);
 
         // Build bucket index for inlined functions
         // Each function is added to all buckets its address range spans
@@ -921,5 +921,87 @@ mod tests {
     #[test]
     fn test_is_stdlib_name_inlined_helper() {
         assert!(!is_stdlib_name("inlined::helper"));
+    }
+
+    /// Test that FunctionIndex sorts functions by start_address (using par_sort).
+    #[test]
+    fn test_function_index_sorted() {
+        let strings = StringTables::new();
+        let functions = vec![
+            FunctionInfo {
+                start_address: 0x3000,
+                end_address: 0x3100,
+                name_idx: 0,
+                file_idx: 0,
+                line: 0,
+            },
+            FunctionInfo {
+                start_address: 0x1000,
+                end_address: 0x1100,
+                name_idx: 0,
+                file_idx: 0,
+                line: 0,
+            },
+            FunctionInfo {
+                start_address: 0x2000,
+                end_address: 0x2100,
+                name_idx: 0,
+                file_idx: 0,
+                line: 0,
+            },
+        ];
+
+        let index = FunctionIndex::new(functions, strings);
+
+        // Binary search should find each function by an address within its range
+        assert!(index.find_containing(0x1050).is_some());
+        assert_eq!(index.find_containing(0x1050).unwrap().start_address, 0x1000);
+        assert_eq!(index.find_containing(0x2050).unwrap().start_address, 0x2000);
+        assert_eq!(index.find_containing(0x3050).unwrap().start_address, 0x3000);
+
+        // Address before all functions should return None
+        assert!(index.find_containing(0x500).is_none());
+    }
+
+    /// Test that FunctionIndex with inlined functions uses par_sort and bucket index.
+    #[test]
+    fn test_function_index_with_inlined_sorted() {
+        let mut strings = StringTables::new();
+        let name_idx = strings.intern_name("test_func".to_string());
+
+        let functions = vec![
+            FunctionInfo {
+                start_address: 0x2000,
+                end_address: 0x2100,
+                name_idx,
+                file_idx: 0,
+                line: 10,
+            },
+            FunctionInfo {
+                start_address: 0x1000,
+                end_address: 0x1100,
+                name_idx,
+                file_idx: 0,
+                line: 5,
+            },
+        ];
+
+        let inlined = vec![FunctionInfo {
+            start_address: 0x1050,
+            end_address: 0x1080,
+            name_idx,
+            file_idx: 0,
+            line: 20,
+        }];
+
+        let index = FunctionIndex::new_with_inlined(functions, inlined, strings);
+
+        // Should find containing function via binary search on sorted array
+        let func = index.find_containing(0x1050);
+        assert!(func.is_some());
+        assert_eq!(func.unwrap().start_address, 0x1000);
+
+        // Function name lookup should work
+        assert_eq!(index.get_name(func.unwrap()), "test_func");
     }
 }

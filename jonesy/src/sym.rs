@@ -117,101 +117,104 @@ impl<'a> SymbolTable<'a> {
         &self,
         pattern: &str,
     ) -> Result<Option<(String, String)>, regex::Error> {
+        use rayon::prelude::*;
+
         let regex = Regex::new(pattern)?;
         let hint = extract_literal_hint(pattern);
 
-        match self {
-            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
-                let symbols = match macho.symbols.as_ref() {
-                    Some(s) => s,
-                    None => return Ok(None),
-                };
-                for (sym_name, _) in symbols.iter().flatten() {
-                    if !matches_hint(&hint, sym_name) {
-                        continue;
+        // Phase 1: collect candidate symbols sequentially (goblin iterator not Send)
+        let candidates: Vec<&str> = match self {
+            #[cfg(target_os = "macos")]
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => match macho.symbols.as_ref() {
+                Some(symbols) => symbols
+                    .iter()
+                    .flatten()
+                    .filter(|(name, _)| matches_hint(&hint, name))
+                    .map(|(name, _)| name)
+                    .collect(),
+                None => return Ok(None),
+            },
+            #[cfg(target_os = "linux")]
+            SymbolTable::Elf(elf) => elf
+                .syms
+                .iter()
+                .filter(|sym| sym.st_value != 0 && sym.st_shndx != 0)
+                .filter_map(|sym| {
+                    let name = elf.strtab.get_at(sym.st_name)?;
+                    if name.is_empty() || !matches_hint(&hint, name) {
+                        return None;
                     }
-                    let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-                    let demangled = format!("{:#}", demangle(stripped));
-                    if regex.is_match(&demangled) {
-                        return Ok(Some((sym_name.to_string(), demangled)));
-                    }
-                }
-                Ok(None)
+                    Some(name)
+                })
+                .collect(),
+            _ => return Ok(None),
+        };
+
+        // Phase 2: demangle and match in parallel, return first match
+        let result = candidates.par_iter().find_map_first(|sym_name| {
+            let stripped = sym_name.strip_prefix('_').unwrap_or(sym_name);
+            let demangled = format!("{:#}", demangle(stripped));
+            if regex.is_match(&demangled) {
+                Some((sym_name.to_string(), demangled))
+            } else {
+                None
             }
-            SymbolTable::Elf(elf) => {
-                for sym in elf.syms.iter() {
-                    if sym.st_value == 0 || sym.st_shndx == 0 {
-                        continue;
-                    }
-                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
-                        if name.is_empty() {
-                            continue;
-                        }
-                        if !matches_hint(&hint, name) {
-                            continue;
-                        }
-                        let demangled = format!("{:#}", demangle(name));
-                        if regex.is_match(&demangled) {
-                            return Ok(Some((name.to_string(), demangled)));
-                        }
-                    }
-                }
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+        });
+
+        Ok(result)
     }
 
     /// Returns all symbols whose demangled names match any of the given patterns.
+    /// Uses parallel demangling and matching via rayon.
     pub fn find_all_symbols_matching(
         &self,
         patterns: &[&str],
     ) -> Result<Vec<(String, String)>, regex::Error> {
+        use rayon::prelude::*;
+
         let regexes: Vec<Regex> = patterns
             .iter()
             .map(|p| Regex::new(p))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut results = Vec::new();
-        match self {
-            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
-                let symbols = match macho.symbols.as_ref() {
-                    Some(s) => s,
-                    None => return Ok(results),
-                };
+        // Phase 1: collect raw symbol names sequentially
+        let raw_symbols: Vec<&str> = match self {
+            #[cfg(target_os = "macos")]
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => match macho.symbols.as_ref() {
+                Some(symbols) => symbols.iter().flatten().map(|(name, _)| name).collect(),
+                None => return Ok(Vec::new()),
+            },
+            #[cfg(target_os = "linux")]
+            SymbolTable::Elf(elf) => elf
+                .syms
+                .iter()
+                .filter(|sym| sym.st_value != 0 && sym.st_shndx != 0)
+                .filter_map(|sym| {
+                    let name = elf.strtab.get_at(sym.st_name)?;
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some(name)
+                })
+                .collect(),
+            _ => return Ok(Vec::new()),
+        };
 
-                for (sym_name, _) in symbols.iter().flatten() {
-                    let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-                    let demangled = format!("{:#}", demangle(stripped));
-                    for regex in &regexes {
-                        if regex.is_match(&demangled) {
-                            results.push((sym_name.to_string(), demangled.clone()));
-                            break;
-                        }
+        // Phase 2: demangle and match in parallel
+        let results = raw_symbols
+            .par_iter()
+            .filter_map(|sym_name| {
+                let stripped = sym_name.strip_prefix('_').unwrap_or(sym_name);
+                let demangled = format!("{:#}", demangle(stripped));
+                for regex in &regexes {
+                    if regex.is_match(&demangled) {
+                        return Some((sym_name.to_string(), demangled));
                     }
                 }
-            }
-            SymbolTable::Elf(elf) => {
-                for sym in elf.syms.iter() {
-                    if sym.st_value == 0 || sym.st_shndx == 0 {
-                        continue;
-                    }
-                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
-                        if name.is_empty() {
-                            continue;
-                        }
-                        let demangled = format!("{:#}", demangle(name));
-                        for regex in &regexes {
-                            if regex.is_match(&demangled) {
-                                results.push((name.to_string(), demangled.clone()));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+                None
+            })
+            .collect();
+
         Ok(results)
     }
 
@@ -219,12 +222,16 @@ impl<'a> SymbolTable<'a> {
     /// Unlike `find_all_symbols_matching` + `find_symbol_address`, this returns all
     /// instances including multiple monomorphisations at different addresses.
     ///
-    /// Uses literal substring pre-filtering to avoid demangling symbols that
-    /// cannot possibly match any pattern.
+    /// Uses a two-phase approach: first collects raw symbol data sequentially
+    /// (goblin's iterator is not `Send`), then demangles and matches in parallel
+    /// via rayon. Uses literal substring pre-filtering to skip symbols whose
+    /// mangled names cannot possibly match.
     pub fn find_all_symbols_with_addresses(
         &self,
         patterns: &[&str],
     ) -> Result<Vec<(String, String, u64)>, regex::Error> {
+        use rayon::prelude::*;
+
         let regexes: Vec<Regex> = patterns
             .iter()
             .map(|p| Regex::new(p))
@@ -232,64 +239,59 @@ impl<'a> SymbolTable<'a> {
 
         let hints: Vec<Option<&str>> = patterns.iter().map(|p| extract_literal_hint(p)).collect();
 
-        let mut results = Vec::new();
-        match self {
-            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
-                if let Some(symbols) = macho.symbols.as_ref() {
-                    for (sym_name, nlist) in symbols.iter().flatten() {
-                        if nlist.is_undefined() || nlist.n_value == 0 {
-                            continue;
-                        }
-                        // Pre-filter: skip if no hint matches the mangled name
-                        if !matches_any_hint(&hints, sym_name) {
-                            continue;
-                        }
-                        let stripped = sym_name.strip_prefix("_").unwrap_or(sym_name);
-                        let demangled = format!("{:#}", demangle(stripped));
-                        for regex in &regexes {
-                            if regex.is_match(&demangled) {
-                                results.push((
-                                    sym_name.to_string(),
-                                    demangled.clone(),
-                                    nlist.n_value,
-                                ));
-                                break;
-                            }
-                        }
+        // Phase 1: collect raw symbol data sequentially (goblin iterator not Send).
+        // Apply cheap pre-filters (undefined, zero address, hint mismatch) to
+        // minimise the data passed to the parallel phase.
+        let raw_symbols: Vec<(&str, u64)> = match self {
+            #[cfg(target_os = "macos")]
+            SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => match macho.symbols.as_ref() {
+                Some(symbols) => symbols
+                    .iter()
+                    .flatten()
+                    .filter(|(_, nlist)| !nlist.is_undefined() && nlist.n_value != 0)
+                    .filter(|(name, _)| matches_any_hint(&hints, name))
+                    .map(|(name, nlist)| (name, nlist.n_value))
+                    .collect(),
+                None => Vec::new(),
+            },
+            #[cfg(target_os = "linux")]
+            SymbolTable::Elf(elf) => elf
+                .syms
+                .iter()
+                .filter(|sym| sym.st_value != 0 && sym.st_shndx != 0)
+                .filter_map(|sym| {
+                    let name = elf.strtab.get_at(sym.st_name)?;
+                    if name.is_empty() || !matches_any_hint(&hints, name) {
+                        return None;
+                    }
+                    Some((name, sym.st_value))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        // Phase 2: demangle and regex-match in parallel (the expensive part).
+        let results = raw_symbols
+            .par_iter()
+            .filter_map(|(sym_name, addr)| {
+                let stripped = sym_name.strip_prefix('_').unwrap_or(sym_name);
+                let demangled = format!("{:#}", demangle(stripped));
+                for regex in &regexes {
+                    if regex.is_match(&demangled) {
+                        return Some((sym_name.to_string(), demangled, *addr));
                     }
                 }
-            }
-            SymbolTable::Elf(elf) => {
-                for sym in elf.syms.iter() {
-                    if sym.st_value == 0 || sym.st_shndx == 0 {
-                        continue;
-                    }
-                    if let Some(name) = elf.strtab.get_at(sym.st_name) {
-                        if name.is_empty() {
-                            continue;
-                        }
-                        // Pre-filter: skip if no hint matches the mangled name
-                        if !matches_any_hint(&hints, name) {
-                            continue;
-                        }
-                        let demangled = format!("{:#}", demangle(name));
-                        for regex in &regexes {
-                            if regex.is_match(&demangled) {
-                                results.push((name.to_string(), demangled.clone(), sym.st_value));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+                None
+            })
+            .collect();
+
         Ok(results)
     }
 
     /// Returns the address of the first defined symbol found whose name matches `name` exactly.
     pub fn find_symbol_address(&self, name: &str) -> Option<u64> {
         match self {
+            #[cfg(target_os = "macos")]
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
                 let symbols = macho.symbols.as_ref()?;
                 for symbol in symbols.iter() {
@@ -303,6 +305,7 @@ impl<'a> SymbolTable<'a> {
                 }
                 None
             }
+            #[cfg(target_os = "linux")]
             SymbolTable::Elf(elf) => {
                 for sym in elf.syms.iter() {
                     if sym.st_value == 0 || sym.st_shndx == 0 {
@@ -760,6 +763,124 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // -- Parallel symbol search tests --
+
+    /// Test that find_symbol_containing finds known panic symbols
+    /// using the parallel two-phase approach.
+    #[test]
+    fn test_find_symbol_containing_parallel() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                // rust_panic should exist in a debug binary
+                let result = symbols.find_symbol_containing("rust_panic$");
+                assert!(result.is_ok());
+                if let Ok(Some((mangled, demangled))) = result {
+                    assert!(!mangled.is_empty());
+                    assert!(
+                        demangled.contains("rust_panic"),
+                        "demangled should contain rust_panic, got: {demangled}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Test that find_symbol_containing returns None for non-existent patterns.
+    #[test]
+    fn test_find_symbol_containing_not_found() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result =
+                    symbols.find_symbol_containing("this_symbol_definitely_does_not_exist_xyz$");
+                assert!(matches!(result, Ok(None)));
+            }
+        }
+    }
+
+    /// Test that find_all_symbols_with_addresses finds core::panicking symbols
+    /// using the parallel two-phase approach.
+    #[test]
+    fn test_find_all_symbols_with_addresses_parallel() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_all_symbols_with_addresses(&["core::panicking::"]);
+                assert!(result.is_ok());
+                let matches = result.unwrap();
+                // A debug Rust binary should have core::panicking functions
+                assert!(
+                    !matches.is_empty(),
+                    "should find at least one core::panicking symbol"
+                );
+                for (mangled, demangled, addr) in &matches {
+                    assert!(!mangled.is_empty());
+                    assert!(
+                        demangled.contains("core::panicking"),
+                        "demangled should contain core::panicking, got: {demangled}"
+                    );
+                    assert!(*addr > 0, "address should be non-zero");
+                }
+            }
+        }
+    }
+
+    /// Test that find_all_symbols_matching finds symbols using parallel demangling.
+    #[test]
+    fn test_find_all_symbols_matching_parallel() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_all_symbols_matching(&["core::panicking::"]);
+                assert!(result.is_ok());
+                let matches = result.unwrap();
+                assert!(
+                    !matches.is_empty(),
+                    "should find at least one core::panicking symbol"
+                );
+                for (_, demangled) in &matches {
+                    assert!(demangled.contains("core::panicking"));
+                }
+            }
+        }
+    }
+
+    /// Test that find_all_symbols_with_addresses works with multiple patterns.
+    #[test]
+    fn test_find_all_symbols_multiple_patterns() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols
+                    .find_all_symbols_with_addresses(&["core::panicking::", "std::process::abort"]);
+                assert!(result.is_ok());
+                let matches = result.unwrap();
+                // Should find symbols from both patterns
+                let has_panicking = matches
+                    .iter()
+                    .any(|(_, d, _)| d.contains("core::panicking"));
+                assert!(
+                    has_panicking,
+                    "should find at least one core::panicking symbol"
+                );
+            }
+        }
+    }
+
+    /// Test that empty pattern list returns empty results.
+    #[test]
+    fn test_find_all_symbols_empty_patterns() {
+        let binary_path = format!("{}/target/debug/jonesy", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(buffer) = std::fs::read(&binary_path) {
+            if let Ok(symbols) = SymbolTable::from(&buffer) {
+                let result = symbols.find_all_symbols_with_addresses(&[]);
+                assert!(result.is_ok());
+                assert!(result.unwrap().is_empty());
             }
         }
     }

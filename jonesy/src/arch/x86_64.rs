@@ -235,9 +235,11 @@ pub(crate) fn parallel_disassemble(
     // Build chunk start offsets
     let starts: Vec<usize> = (0..text_data.len()).step_by(chunk_size).collect();
 
-    let results: Vec<Vec<InsnData>> = starts
+    // Scan chunks in parallel, flattened into a single vec (avoids intermediate
+    // Vec<Vec<InsnData>> and sequential flatten)
+    starts
         .par_iter()
-        .map(|&start| {
+        .flat_map(|&start| {
             let chunk_end_offset = (start + chunk_size).min(text_data.len());
             let chunk_start_addr = text_addr + start as u64;
             let chunk_end_addr = text_addr + chunk_end_offset as u64;
@@ -266,9 +268,7 @@ pub(crate) fn parallel_disassemble(
             found.retain(|d| d.address >= chunk_start_addr);
             found
         })
-        .collect();
-
-    results.into_iter().flatten().collect()
+        .collect()
 }
 
 /// MachO relocation type for x86_64 PC-relative calls (X86_64_RELOC_BRANCH)

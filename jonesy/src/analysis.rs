@@ -66,6 +66,7 @@ impl BinaryAnalysisResult {
 
     /// Merge another result into this one, combining code points.
     /// Code points at the same location have their causes merged.
+    #[cfg(test)]
     fn merge(&mut self, other: BinaryAnalysisResult) {
         use std::collections::HashMap;
 
@@ -252,8 +253,8 @@ pub fn analyze_binary_target(
         eprintln!("  [timing] Build call graph: {:?}", step_start.elapsed());
     }
 
-    // Build call trees for all entry points and merge results
-    let mut final_result = BinaryAnalysisResult::new();
+    // Build call trees for all entry points, accumulating code points
+    let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
 
     // Track visited addresses across all entry points to avoid redundant work
     let visited = Arc::new(DashSet::new());
@@ -279,16 +280,48 @@ pub fn analyze_binary_target(
             file_interner,
         );
 
-        // Collect code points from this tree
+        // Collect code points from this tree and accumulate
         let (code_points, _summary) =
             collect_crate_code_points(&root, config, project_context, file_interner);
-        let entry_result = BinaryAnalysisResult {
-            summary: AnalysisSummary::default(),
-            code_points,
-            file_paths: Vec::new(),
-        };
-        final_result.merge(entry_result);
+        all_code_points.extend(code_points);
     }
+
+    // Single dedup pass across all entry points: merge causes and children
+    // for code points at the same (file, line, column). This replaces the
+    // previous per-entry-point merge() which rebuilt a HashMap on every iteration.
+    let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
+    let mut deduped: Vec<CrateCodePoint> = Vec::new();
+    for point in all_code_points {
+        let key = (point.file, point.line, point.column);
+        if let Some(&idx) = seen.get(&key) {
+            deduped[idx].causes.extend(point.causes);
+            deduped[idx].children.extend(point.children);
+        } else {
+            seen.insert(key, deduped.len());
+            deduped.push(point);
+        }
+    }
+    deduped.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.column.cmp(&b.column))
+    });
+
+    // Compute summary from deduped code points (resolve file indices for cross-interner safety)
+    let mut summary_points: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut summary_files: HashSet<String> = HashSet::new();
+    for point in &deduped {
+        let file = file_interner.resolve(point.file).unwrap_or_default();
+        summary_files.insert(file.clone());
+        summary_points.insert((file, point.line, point.column));
+    }
+
+    let final_result = BinaryAnalysisResult {
+        summary: AnalysisSummary::from_points(summary_points, summary_files),
+        code_points: deduped,
+        file_paths: Vec::new(),
+    };
 
     let total_nodes = visited.len();
     finish_spinner(
@@ -818,5 +851,77 @@ mod tests {
             2,
             "Same file:line but different columns should not merge"
         );
+    }
+
+    /// Test the accumulate-then-dedup pattern used in analyse_binary_target
+    /// (replacing the old per-entry-point merge). Verifies that code points
+    /// from multiple entry points are correctly deduplicated with causes merged.
+    #[test]
+    fn test_accumulate_then_dedup_merges_causes() {
+        // Simulate two entry points finding the same code point with different causes
+        let all_code_points = vec![
+            // Entry point 1 finds unwrap at file 0, line 10
+            make_code_point(0, 10, PanicCause::Unwrap),
+            // Entry point 1 also finds bounds check at file 1, line 20
+            make_code_point(1, 20, PanicCause::BoundsCheck),
+            // Entry point 2 finds expect at the SAME location (file 0, line 10)
+            make_code_point(0, 10, PanicCause::Expect),
+            // Entry point 2 finds a new point at file 2, line 30
+            make_code_point(2, 30, PanicCause::ExplicitPanic),
+        ];
+
+        // Single dedup pass (same logic as analyse_binary_target)
+        let mut seen: std::collections::HashMap<CodePointKey, usize> =
+            std::collections::HashMap::new();
+        let mut deduped: Vec<CrateCodePoint> = Vec::new();
+        for point in all_code_points {
+            let key = (point.file, point.line, point.column);
+            if let Some(&idx) = seen.get(&key) {
+                deduped[idx].causes.extend(point.causes);
+                deduped[idx].children.extend(point.children);
+            } else {
+                seen.insert(key, deduped.len());
+                deduped.push(point);
+            }
+        }
+
+        // Should have 3 unique points (file 0 line 10 merged)
+        assert_eq!(deduped.len(), 3);
+
+        // The merged point should have both causes
+        let merged = deduped
+            .iter()
+            .find(|p| p.file == 0 && p.line == 10)
+            .unwrap();
+        assert_eq!(merged.causes.len(), 2);
+        assert!(merged.causes.contains(&PanicCause::Unwrap));
+        assert!(merged.causes.contains(&PanicCause::Expect));
+    }
+
+    /// Test that accumulate-then-dedup preserves distinct column entries.
+    #[test]
+    fn test_accumulate_then_dedup_distinct_columns() {
+        let mut point_a = make_code_point(0, 10, PanicCause::Unwrap);
+        point_a.column = 5;
+        let mut point_b = make_code_point(0, 10, PanicCause::Expect);
+        point_b.column = 20;
+
+        let all_code_points = vec![point_a, point_b];
+
+        let mut seen: std::collections::HashMap<CodePointKey, usize> =
+            std::collections::HashMap::new();
+        let mut deduped: Vec<CrateCodePoint> = Vec::new();
+        for point in all_code_points {
+            let key = (point.file, point.line, point.column);
+            if let Some(&idx) = seen.get(&key) {
+                deduped[idx].causes.extend(point.causes);
+            } else {
+                seen.insert(key, deduped.len());
+                deduped.push(point);
+            }
+        }
+
+        // Different columns = different points, should not merge
+        assert_eq!(deduped.len(), 2);
     }
 }
