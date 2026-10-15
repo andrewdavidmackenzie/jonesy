@@ -124,6 +124,7 @@ impl<'a> SymbolTable<'a> {
 
         // Phase 1: collect candidate symbols sequentially (goblin iterator not Send)
         let candidates: Vec<&str> = match self {
+            #[cfg(target_os = "macos")]
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => match macho.symbols.as_ref() {
                 Some(symbols) => symbols
                     .iter()
@@ -133,6 +134,7 @@ impl<'a> SymbolTable<'a> {
                     .collect(),
                 None => return Ok(None),
             },
+            #[cfg(target_os = "linux")]
             SymbolTable::Elf(elf) => elf
                 .syms
                 .iter()
@@ -177,10 +179,12 @@ impl<'a> SymbolTable<'a> {
 
         // Phase 1: collect raw symbol names sequentially
         let raw_symbols: Vec<&str> = match self {
+            #[cfg(target_os = "macos")]
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => match macho.symbols.as_ref() {
                 Some(symbols) => symbols.iter().flatten().map(|(name, _)| name).collect(),
                 None => return Ok(Vec::new()),
             },
+            #[cfg(target_os = "linux")]
             SymbolTable::Elf(elf) => elf
                 .syms
                 .iter()
@@ -239,6 +243,7 @@ impl<'a> SymbolTable<'a> {
         // Apply cheap pre-filters (undefined, zero address, hint mismatch) to
         // minimise the data passed to the parallel phase.
         let raw_symbols: Vec<(&str, u64)> = match self {
+            #[cfg(target_os = "macos")]
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => match macho.symbols.as_ref() {
                 Some(symbols) => symbols
                     .iter()
@@ -249,6 +254,7 @@ impl<'a> SymbolTable<'a> {
                     .collect(),
                 None => Vec::new(),
             },
+            #[cfg(target_os = "linux")]
             SymbolTable::Elf(elf) => elf
                 .syms
                 .iter()
@@ -285,6 +291,7 @@ impl<'a> SymbolTable<'a> {
     /// Returns the address of the first defined symbol found whose name matches `name` exactly.
     pub fn find_symbol_address(&self, name: &str) -> Option<u64> {
         match self {
+            #[cfg(target_os = "macos")]
             SymbolTable::MachO(goblin::mach::Mach::Binary(macho)) => {
                 let symbols = macho.symbols.as_ref()?;
                 for symbol in symbols.iter() {
@@ -298,6 +305,7 @@ impl<'a> SymbolTable<'a> {
                 }
                 None
             }
+            #[cfg(target_os = "linux")]
             SymbolTable::Elf(elf) => {
                 for sym in elf.syms.iter() {
                     if sym.st_value == 0 || sym.st_shndx == 0 {
