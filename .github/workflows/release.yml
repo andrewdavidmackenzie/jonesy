@@ -7,10 +7,11 @@ on:
       - 'jonesy/Cargo.toml'
 
 jobs:
-  release:
-    runs-on: macos-14  # ARM64 runner (M1)
-    permissions:
-      contents: write  # Required for creating releases
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.check_release.outputs.should_release }}
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -27,64 +28,96 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "v${{ steps.version.outputs.version }}" > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> $GITHUB_OUTPUT
             echo "Release v${{ steps.version.outputs.version }} already exists"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> $GITHUB_OUTPUT
             echo "Release v${{ steps.version.outputs.version }} does not exist, will create"
           fi
 
+  build-binaries:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+
       - name: Install Rust
-        if: steps.check_release.outputs.exists == 'false'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release binary
-        if: steps.check_release.outputs.exists == 'false'
         run: cargo build --release -p jonesy
 
-      - name: Package binary for cargo-binstall
-        if: steps.check_release.outputs.exists == 'false'
+      - name: Package binary
         run: |
-          # cargo-binstall expects: {name}-{target}.tar.gz
-          TARGET="aarch64-apple-darwin"
           mkdir -p dist
           cp target/release/jonesy dist/
           cd dist
-          tar -czvf "jonesy-${TARGET}.tar.gz" jonesy
-          # Also create a simple binary for direct download
-          cp jonesy "jonesy-macos-arm64"
+          tar -czvf "jonesy-${{ matrix.target }}.tar.gz" jonesy
 
-      - name: Create release
-        if: steps.check_release.outputs.exists == 'false'
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jonesy-${{ matrix.target }}
+          path: dist/jonesy-${{ matrix.target }}.tar.gz
+
+  create-release:
+    needs: [check-version, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Create release with binaries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.check-version.outputs.version }}"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --generate-notes \
-            dist/jonesy-aarch64-apple-darwin.tar.gz \
-            dist/jonesy-macos-arm64
+            dist/jonesy-*.tar.gz
 
       - name: Update v2 tag for GitHub Action users
-        if: steps.check_release.outputs.exists == 'false'
         run: |
-          # Update the v2 tag to point to this release
-          # This ensures users of andrewdavidmackenzie/jonesy@v2 get the latest version
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -f v2
           git push origin v2 --force
 
       - name: Release summary
-        if: steps.check_release.outputs.exists == 'false'
         run: |
-          echo "::notice::Created release v${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.check-version.outputs.version }}"
+          echo "::notice::Created release v${VERSION} with pre-built binaries"
           echo "::notice::Updated v2 tag for GitHub Action users"
+          echo ""
+          echo "Pre-built binaries attached:"
+          echo "  jonesy-aarch64-apple-darwin.tar.gz"
+          echo "  jonesy-x86_64-apple-darwin.tar.gz"
+          echo "  jonesy-x86_64-unknown-linux-gnu.tar.gz"
+          echo "  jonesy-aarch64-unknown-linux-gnu.tar.gz"
           echo ""
           echo "Install with cargo-binstall:"
           echo "  cargo binstall jonesy"
-          echo ""
-          echo "Or download directly:"
-          echo "  curl -LO https://github.com/andrewdavidmackenzie/jonesy/releases/download/v${{ steps.version.outputs.version }}/jonesy-macos-arm64"
-          echo "  chmod +x jonesy-macos-arm64"
