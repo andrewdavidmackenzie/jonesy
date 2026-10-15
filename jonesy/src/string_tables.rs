@@ -715,4 +715,87 @@ mod tests {
         assert_eq!(resolve_name(&name_paths, 2), None); // out of bounds
         assert_eq!(resolve_name(&name_paths, NAME_NONE), None); // sentinel
     }
+
+    // -- NameInterner tests --
+
+    #[test]
+    fn test_name_interner_basic() {
+        let interner = NameInterner::new();
+        let idx1 = interner.intern("my_function");
+        let idx2 = interner.intern("my_function");
+        let idx3 = interner.intern("other_function");
+        assert_eq!(idx1, idx2);
+        assert_ne!(idx1, idx3);
+    }
+
+    #[test]
+    fn test_name_interner_default() {
+        let interner = NameInterner::default();
+        assert_eq!(interner.resolve(0), None); // empty interner
+    }
+
+    #[test]
+    fn test_name_interner_with_capacity() {
+        let interner = NameInterner::with_capacity(100);
+        let idx = interner.intern("test_func");
+        assert_eq!(interner.resolve(idx), Some("test_func".to_string()));
+    }
+
+    #[test]
+    fn test_name_interner_intern_owned() {
+        let interner = NameInterner::new();
+        let idx1 = interner.intern_owned("owned_func".to_string());
+        let idx2 = interner.intern("owned_func");
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_name_interner_resolve_none() {
+        let interner = NameInterner::new();
+        assert_eq!(interner.resolve(NAME_NONE), None);
+    }
+
+    #[test]
+    fn test_name_interner_reverse_snapshot() {
+        let interner = NameInterner::new();
+        let idx_a = interner.intern("func_a");
+        let idx_b = interner.intern("func_b");
+        let snapshot = interner.reverse_snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[idx_a as usize], "func_a");
+        assert_eq!(snapshot[idx_b as usize], "func_b");
+        // Interner should still be usable after snapshot
+        let idx_c = interner.intern("func_c");
+        assert_ne!(idx_c, idx_a);
+    }
+
+    #[test]
+    fn test_name_interner_into_vec() {
+        let interner = NameInterner::new();
+        let idx_a = interner.intern("aaa");
+        let idx_b = interner.intern("bbb");
+        let vec = interner.into_vec();
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[idx_a as usize], "aaa");
+        assert_eq!(vec[idx_b as usize], "bbb");
+    }
+
+    #[test]
+    fn test_name_interner_hint_capacity() {
+        let interner = NameInterner::new();
+        interner.hint_capacity(500);
+        let idx = interner.intern("after_hint");
+        assert_eq!(interner.resolve(idx), Some("after_hint".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_interner_reverse_snapshot() {
+        let interner = FilePathInterner::new();
+        let idx_a = interner.intern("file_a.rs");
+        let idx_b = interner.intern("file_b.rs");
+        let snapshot = interner.reverse_snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[idx_a as usize], "file_a.rs");
+        assert_eq!(snapshot[idx_b as usize], "file_b.rs");
+    }
 }
