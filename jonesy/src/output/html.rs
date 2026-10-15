@@ -804,7 +804,7 @@ mod tests {
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file,
             line,
             column: 1,
@@ -884,7 +884,7 @@ mod tests {
     fn test_generate_html_output_with_tree() {
         let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let child = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 1,
             line: 20,
             column: 5,
@@ -894,14 +894,14 @@ mod tests {
             called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: 1,
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: 0,
+            called_function: 0u32,
         };
         let result = AnalysisResult {
             project_name: "test_project".to_string(),

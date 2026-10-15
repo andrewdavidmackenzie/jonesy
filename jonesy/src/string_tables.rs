@@ -186,10 +186,10 @@ impl ConcurrentStringTables {
 /// Also used as `NAME_NONE` for function name indices (same sentinel value).
 pub const FILE_NONE: u16 = u16::MAX;
 
-/// Sentinel value meaning "no function name". Same value as `FILE_NONE`
-/// but semantically distinct — used for `CallerInfo.caller_name`,
-/// `CrateCodePoint.called_function`, etc.
-pub const NAME_NONE: u16 = u16::MAX;
+/// Sentinel value meaning "no function name". Used for `CallerInfo.caller_name`,
+/// `CrateCodePoint.called_function`, etc. Uses `u32` because large binaries
+/// can have >65K unique function names (e.g., monomorphised generics).
+pub const NAME_NONE: u32 = u32::MAX;
 
 /// Thread-safe string interner for concurrent use during rayon `par_iter` phases.
 ///
@@ -361,10 +361,114 @@ pub fn resolve_file_owned(file_paths: &[String], idx: u16) -> String {
     }
 }
 
+/// Thread-safe function name interner using `u32` indices.
+///
+/// Uses the same `DashMap` + `RwLock` reverse index pattern as `FilePathInterner`,
+/// but with `u32` indices to support large binaries with >65K unique function names
+/// (common with monomorphised generics in Rust).
+#[derive(Debug)]
+pub struct NameInterner {
+    map: DashMap<String, u32>,
+    next_id: AtomicU32,
+    reverse: std::sync::RwLock<Vec<String>>,
+}
+
+impl Default for NameInterner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NameInterner {
+    /// Create a new empty name interner.
+    pub fn new() -> Self {
+        Self {
+            map: DashMap::new(),
+            next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Create a new interner with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: DashMap::with_capacity(capacity),
+            next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::with_capacity(capacity)),
+        }
+    }
+
+    /// Intern a function name, returning its `u32` index.
+    pub fn intern(&self, name: &str) -> u32 {
+        if let Some(entry) = self.map.get(name) {
+            return *entry.value();
+        }
+        let name_owned = name.to_string();
+        *self.map.entry(name_owned.clone()).or_insert_with(|| {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let idx = id.min(NAME_NONE - 1);
+            let mut rev = self.reverse.write().unwrap();
+            if (idx as usize) >= rev.len() {
+                rev.resize(idx as usize + 1, String::new());
+            }
+            rev[idx as usize] = name_owned;
+            idx
+        })
+    }
+
+    /// Intern an owned String, avoiding a clone if not yet interned.
+    pub fn intern_owned(&self, name: String) -> u32 {
+        if let Some(entry) = self.map.get(&name) {
+            return *entry.value();
+        }
+        let name_clone = name.clone();
+        *self.map.entry(name).or_insert_with(|| {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let idx = id.min(NAME_NONE - 1);
+            let mut rev = self.reverse.write().unwrap();
+            if (idx as usize) >= rev.len() {
+                rev.resize(idx as usize + 1, String::new());
+            }
+            rev[idx as usize] = name_clone;
+            idx
+        })
+    }
+
+    /// Resolve an index back to its function name string.
+    pub(crate) fn resolve(&self, idx: u32) -> Option<String> {
+        if idx == NAME_NONE {
+            return None;
+        }
+        let rev = self.reverse.read().unwrap();
+        rev.get(idx as usize).filter(|s| !s.is_empty()).cloned()
+    }
+
+    /// Pre-size the interner if it is still empty.
+    pub fn hint_capacity(&self, capacity: usize) {
+        if self.next_id.load(Ordering::Relaxed) == 0 {
+            let mut rev = self.reverse.write().unwrap();
+            rev.reserve(capacity);
+        }
+    }
+
+    /// Consume the interner and produce a `Vec<String>` indexed by the interned IDs.
+    pub fn into_vec(self) -> Vec<String> {
+        let count = self.next_id.load(Ordering::Relaxed) as usize;
+        let mut result = vec![String::new(); count];
+        for entry in self.map.into_iter() {
+            let idx = entry.1 as usize;
+            if idx < result.len() {
+                result[idx] = entry.0;
+            }
+        }
+        result
+    }
+}
+
 /// Resolve a name index to a function name string from a resolved name table.
 /// Returns `None` for `NAME_NONE` or out-of-bounds indices.
 #[inline]
-pub fn resolve_name(name_paths: &[String], idx: u16) -> Option<&str> {
+pub fn resolve_name(name_paths: &[String], idx: u32) -> Option<&str> {
     if idx == NAME_NONE {
         None
     } else {

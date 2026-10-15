@@ -8,7 +8,7 @@ use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
 use crate::project_context::ProjectContext;
-use crate::string_tables::{FILE_NONE, FilePathInterner, NAME_NONE};
+use crate::string_tables::{FILE_NONE, FilePathInterner, NAME_NONE, NameInterner};
 use crate::sym::CallGraph;
 use dashmap::{DashMap, DashSet};
 use rayon::prelude::*;
@@ -49,9 +49,9 @@ use std::sync::Arc;
 /// A node in the call tree representing a function that can lead to the target symbol
 #[derive(Debug)]
 pub struct CallTreeNode {
-    /// Symbol/function name index into a shared name interner (`FilePathInterner`).
+    /// Symbol/function name index into a shared name interner (`NameInterner`).
     /// `NAME_NONE` means no name is known.
-    pub name: u16,
+    pub name: u32,
     /// Source file index into a shared `FilePathInterner`.
     /// `FILE_NONE` means no file path is known.
     pub file: u16,
@@ -65,7 +65,7 @@ pub struct CallTreeNode {
 
 impl CallTreeNode {
     /// Create a new root node for a call tree
-    pub fn new_root(name: u16) -> Self {
+    pub fn new_root(name: u32) -> Self {
         CallTreeNode {
             name,
             file: FILE_NONE,
@@ -230,9 +230,9 @@ fn build_shallow_callers_filtered(
 /// Use `resolve_file()` from `string_tables` to get the actual path string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateCodePoint {
-    /// Function name index into a shared name interner (`FilePathInterner`).
+    /// Function name index into a shared name interner (`NameInterner`).
     /// `NAME_NONE` means no name is known.
-    pub name: u16,
+    pub name: u32,
     /// File path index into a shared `FilePathInterner`.
     /// `FILE_NONE` means no file path is known.
     pub file: u16,
@@ -248,16 +248,16 @@ pub struct CrateCodePoint {
     pub is_direct_panic: bool,
     /// Name of the function called at this code point (for indirect panics).
     /// `NAME_NONE` means no called function (e.g., direct panics).
-    pub called_function: u16,
+    pub called_function: u32,
 }
 
 /// Info stored for each code point: (function name index, set of causes, set of child keys, is_direct_panic, called_function index)
 pub type CodePointInfo = (
-    u16,
+    u32,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
     bool, // is_direct_panic
-    u16,  // called_function (NAME_NONE for direct panics / no called function)
+    u32,  // called_function (NAME_NONE for direct panics / no called function)
 );
 
 /// Map of code points: key -> info
@@ -318,7 +318,7 @@ pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Vec<CrateCodePoint> {
     let points: DashMap<CodePointKey, CodePointInfo> = DashMap::new();
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
@@ -440,7 +440,7 @@ fn collect_crate_relationships_parallel(
     node: &CallTreeNode,
     points: &DashMap<CodePointKey, CodePointInfo>,
     interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
     immediate_callee: Option<&str>,
@@ -570,7 +570,7 @@ pub fn collect_crate_code_points(
     config: &Config,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
     let mut roots =
         collect_crate_code_points_hierarchical(node, project_context, file_interner, name_interner);
@@ -635,7 +635,7 @@ pub fn filter_allowed_causes(
     config: &Config,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) {
     let mut cache = crate::inline_allows::SourceFileCache::new();
     filter_allowed_causes_cached(
@@ -655,7 +655,7 @@ fn filter_allowed_causes_cached(
     config: &Config,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
     cache: &mut crate::inline_allows::SourceFileCache,
 ) {
     use crate::inline_allows::check_inline_allow;
@@ -792,7 +792,7 @@ impl AnalysisResult {
 
     /// Resolve a name index to a function name string.
     /// Returns an empty string for `NAME_NONE` or out-of-bounds indices.
-    pub fn resolve_name(&self, idx: u16) -> &str {
+    pub fn resolve_name(&self, idx: u32) -> &str {
         if idx == NAME_NONE {
             ""
         } else {
@@ -995,7 +995,7 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let main_rs = interner.intern("src/main.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_app_run = name_interner.intern("app::run");
         let name_called = name_interner.intern("my_crate::time::TimeStamp::now");
 
@@ -1037,7 +1037,7 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let device_rs = interner.intern("src/device.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_hash = name_interner.intern("meshchat::device::DeviceIdentifier::hash");
         let name_called = name_interner.intern("core::hash::Hash::hash");
 
@@ -1079,7 +1079,7 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let device_rs = interner.intern("src/device.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_hash = name_interner.intern("meshchat::device::DeviceIdentifier::hash");
         let name_called = name_interner.intern("core::hash::Hash::hash");
 
@@ -1138,7 +1138,7 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let main_rs = interner.intern("src/main.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_app_run = name_interner.intern("app::run");
         let name_called = name_interner.intern("other_crate::Config::parse");
 
@@ -1168,13 +1168,13 @@ mod tests {
     #[test]
     fn test_assign_unknown_causes_non_leaf() {
         let mut points = vec![CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![CrateCodePoint {
-                name: 1,
+                name: 1u32,
                 file: 0,
                 line: 20,
                 column: 1,
@@ -1214,7 +1214,7 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let main_rs = interner.intern("src/main.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_app_run = name_interner.intern("app::run");
 
         let mut points = vec![CrateCodePoint {
@@ -1257,7 +1257,7 @@ mod tests {
         let interner = FilePathInterner::new();
         let file_a = interner.intern("src/a.rs");
         let file_b = interner.intern("src/b.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_fn_a = name_interner.intern("fn_a");
         let name_fn_b = name_interner.intern("fn_b");
         let name_fn_a2 = name_interner.intern("fn_a2");
@@ -1310,7 +1310,7 @@ mod tests {
     fn test_analysis_result_summary_with_children() {
         let interner = FilePathInterner::new();
         let file_idx = interner.intern("src/main.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_parent = name_interner.intern("parent");
         let name_child = name_interner.intern("child");
 
@@ -1352,7 +1352,7 @@ mod tests {
 
         let mut points = vec![
             CrateCodePoint {
-                name: 0,
+                name: 0u32,
                 file: file_idx,
                 line: 10,
                 column: 5,
@@ -1362,7 +1362,7 @@ mod tests {
                 called_function: NAME_NONE,
             },
             CrateCodePoint {
-                name: 0,
+                name: 0u32,
                 file: file_idx,
                 line: 10,
                 column: 5,

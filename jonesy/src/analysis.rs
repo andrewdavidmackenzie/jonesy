@@ -13,7 +13,7 @@ use crate::call_tree::{
 use crate::config::Config;
 use crate::heuristics::{find_entry_points, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
-use crate::string_tables::FilePathInterner;
+use crate::string_tables::{FilePathInterner, NameInterner};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, load_debug_info,
 };
@@ -142,7 +142,7 @@ pub fn analyze_binary_target(
     output: &OutputFormat,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Result<BinaryAnalysisResult, String> {
     // Construct BinaryRef from the SymbolTable
     let binary_ref = match symbols {
@@ -366,7 +366,7 @@ pub fn analyze_archive(
     output: &OutputFormat,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Result<BinaryAnalysisResult, String> {
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
@@ -739,7 +739,7 @@ mod tests {
         let mut causes = HashSet::new();
         causes.insert(cause);
         CrateCodePoint {
-            name: 0, // test name index
+            name: 0u32, // test name index
             file: file_idx,
             line,
             column: 0,

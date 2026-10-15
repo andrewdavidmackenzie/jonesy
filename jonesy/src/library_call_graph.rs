@@ -6,7 +6,7 @@ use crate::call_graph::CallerInfo;
 use crate::function_index::load_dwarf_sections;
 use crate::object_line_table::ObjectLineTable;
 use crate::project_context::ProjectContext;
-use crate::string_tables::FilePathInterner;
+use crate::string_tables::{FilePathInterner, NameInterner};
 use crate::sym::SymbolIndex;
 use goblin::container::{Container, Ctx, Endian};
 use goblin::elf::Elf;
@@ -38,7 +38,7 @@ impl LibraryCallGraph {
         buffer: &[u8],
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
-        name_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         match binary {
             BinaryRef::MachO(macho) => Self::build_from_macho_object(
@@ -64,7 +64,7 @@ impl LibraryCallGraph {
         buffer: &[u8],
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
-        name_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
 
@@ -215,7 +215,7 @@ impl LibraryCallGraph {
         buffer: &[u8],
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
-        name_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
 

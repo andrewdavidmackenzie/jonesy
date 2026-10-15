@@ -4,7 +4,7 @@ use crate::crate_line_table::CrateLineTable;
 use crate::full_line_table::FullLineTable;
 use crate::function_index::{FunctionIndex, get_functions_from_dwarf, load_dwarf_sections};
 use crate::project_context::ProjectContext;
-use crate::string_tables::{FILE_NONE, FilePathInterner};
+use crate::string_tables::{FILE_NONE, FilePathInterner, NameInterner};
 use crate::sym::SymbolIndex;
 use dashmap::DashMap;
 use goblin::mach::MachO;
@@ -38,9 +38,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(64))]
 pub struct CallerInfo {
-    /// Function name index into a shared name interner (`FilePathInterner`).
+    /// Function name index into a shared name interner (`NameInterner`).
     /// `NAME_NONE` means no name is known.
-    pub caller_name: u16,
+    pub caller_name: u32,
     /// Source file index into a shared `FilePathInterner`.
     /// `FILE_NONE` means no file path is known.
     pub file: u16,
@@ -84,7 +84,7 @@ impl CallGraph {
         binary: &BinaryRef,
         buffer: &[u8],
         symbol_index: Option<&SymbolIndex>,
-        name_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Build PLT map for ELF binaries (for resolving PLT stubs to actual functions)
         let plt_map = if let BinaryRef::Elf(elf) = binary {
@@ -152,7 +152,7 @@ impl CallGraph {
         symbol_index: Option<&SymbolIndex>,
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
-        name_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -294,7 +294,7 @@ fn process_instruction_data_with_crate_table(
     symbol_index: Option<&SymbolIndex>,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Option<(u64, CallerInfo)> {
     let call_target = data.call_target?;
 
@@ -505,7 +505,7 @@ mod tests {
             if let Ok(macho) = MachO::parse(&buffer, 0) {
                 let binary_ref = BinaryRef::MachO(&macho);
                 let symbol_index = SymbolIndex::new(&macho);
-                let name_interner = FilePathInterner::new();
+                let name_interner = NameInterner::new();
                 let graph =
                     CallGraph::build(&binary_ref, &buffer, symbol_index.as_ref(), &name_interner);
                 assert!(graph.is_ok());
@@ -523,7 +523,7 @@ mod tests {
         if let Ok(buffer) = std::fs::read(&binary_path) {
             if let Ok(macho) = MachO::parse(&buffer, 0) {
                 let binary_ref = BinaryRef::MachO(&macho);
-                let name_interner = FilePathInterner::new();
+                let name_interner = NameInterner::new();
                 // Build without symbol index — should still work but find no callers
                 let graph = CallGraph::build(&binary_ref, &buffer, None, &name_interner);
                 assert!(graph.is_ok());
@@ -536,7 +536,7 @@ mod tests {
     fn test_caller_info_construction() {
         let interner = FilePathInterner::new();
         let file_idx = interner.intern("src/main.rs");
-        let name_interner = FilePathInterner::new();
+        let name_interner = NameInterner::new();
         let name_idx = name_interner.intern("my_function");
         let info = CallerInfo {
             caller_name: name_idx,
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn test_caller_info_name_none() {
         use crate::string_tables::NAME_NONE;
-        let info = CallerInfo {
+        let info: CallerInfo = CallerInfo {
             caller_name: NAME_NONE,
             file: FILE_NONE,
             caller_start_address: 0x2000,

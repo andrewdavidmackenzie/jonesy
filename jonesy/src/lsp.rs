@@ -2172,7 +2172,7 @@ fn analyze_single_target(
 
     // Each target gets its own file path interner and name interner
     let interner = crate::string_tables::FilePathInterner::new();
-    let name_interner = crate::string_tables::FilePathInterner::new();
+    let name_interner = crate::string_tables::NameInterner::new();
 
     let mut result = match &symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
@@ -3066,7 +3066,7 @@ mod tests {
             file: file_idx,
             line,
             column,
-            name: 0,
+            name: 0u32,
             causes: HashSet::new(),
             children: Vec::new(),
             is_direct_panic: false,
@@ -3298,7 +3298,7 @@ mod tests {
             file: 0,
             line: 10,
             column: 5,
-            name: 0,
+            name: 0u32,
             causes,
             children: Vec::new(),
             is_direct_panic: true,
@@ -3334,11 +3334,11 @@ mod tests {
             file: 0,
             line: 10,
             column: 5,
-            name: 0,
+            name: 0u32,
             causes,
             children: Vec::new(),
             is_direct_panic: false,
-            called_function: 1,
+            called_function: 1u32,
         };
 
         let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);

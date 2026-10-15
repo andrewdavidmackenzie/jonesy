@@ -325,7 +325,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
         c.bench_function("call_graph_build_jonesy", |b| {
             b.iter(|| {
                 let file_interner = jonesy::string_tables::FilePathInterner::new();
-                let name_interner = jonesy::string_tables::FilePathInterner::new();
+                let name_interner = jonesy::string_tables::NameInterner::new();
                 let graph = CallGraph::build_with_debug_info(
                     &binary_ref,
                     &buffer,
@@ -361,7 +361,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
         .collect();
 
     // Create a name interner for function names
-    let name_interner = jonesy::string_tables::FilePathInterner::new();
+    let name_interner = jonesy::string_tables::NameInterner::new();
 
     // Create sample code points
     let sample_points: Vec<CrateCodePoint> = (0..100)
@@ -511,7 +511,7 @@ fn bench_analyze_binary_target(c: &mut Criterion) {
             let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
             if let SymbolTable::MachO(Binary(_)) = &symbols {
                 let file_interner = jonesy::string_tables::FilePathInterner::new();
-                let name_interner = jonesy::string_tables::FilePathInterner::new();
+                let name_interner = jonesy::string_tables::NameInterner::new();
                 let result = analyze_binary_target(
                     &symbols,
                     &buffer,

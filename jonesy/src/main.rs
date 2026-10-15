@@ -8,7 +8,7 @@ use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CodePointKey, CrateCode
 use jonesy::cargo::{detect_library_type, find_project_root, get_project_name};
 use jonesy::output::OutputFormat;
 use jonesy::project_context::ProjectContext;
-use jonesy::string_tables::FilePathInterner;
+use jonesy::string_tables::{FilePathInterner, NameInterner};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -85,7 +85,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
     let file_interner = FilePathInterner::new();
-    let name_interner = FilePathInterner::new();
+    let name_interner = NameInterner::new();
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
 
@@ -220,7 +220,7 @@ fn analyze_binary(
     output: &OutputFormat,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-    name_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Result<Option<BinaryAnalysisResult>, String> {
     match symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
@@ -312,7 +312,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
 
         // Shared file path interner for all binaries in this member
         let member_interner = FilePathInterner::new();
-        let member_name_interner = FilePathInterner::new();
+        let member_name_interner = NameInterner::new();
 
         // Parallel analysis of all binaries in this member
         let binary_results: Vec<(PathBuf, BinaryAnalysisResult)> = member

@@ -642,7 +642,7 @@ mod tests {
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file,
             line,
             column: 5,
@@ -840,7 +840,7 @@ mod tests {
     fn test_write_text_output_with_children() {
         let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let child = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 1,
             line: 20,
             column: 1,
@@ -850,14 +850,14 @@ mod tests {
             called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: 1,
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: 0,
+            called_function: 0u32,
         };
         let result = AnalysisResult {
             project_name: "test_project".to_string(),
@@ -904,7 +904,7 @@ mod tests {
         causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::BoundsCheck);
         let point = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 0,
             line: 10,
             column: 1,
@@ -968,14 +968,14 @@ mod tests {
     fn test_write_text_output_indirect_panic() {
         let file_paths = vec!["src/main.rs".to_string()];
         let point = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 0,
             line: 10,
             column: 1,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: 1,
+            called_function: 1u32,
         };
         let result = AnalysisResult {
             project_name: "test_project".to_string(),
@@ -997,7 +997,7 @@ mod tests {
         // Test that tree=true shows children in flat format
         let file_paths = vec!["src/main.rs".to_string(), "src/child.rs".to_string()];
         let child = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 1,
             line: 5,
             column: 1,
@@ -1007,7 +1007,7 @@ mod tests {
             called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: 1,
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
@@ -1037,7 +1037,7 @@ mod tests {
         // Test that tree=false hides children
         let file_paths = vec!["src/main.rs".to_string(), "src/child.rs".to_string()];
         let child = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 1,
             line: 5,
             column: 1,
@@ -1047,7 +1047,7 @@ mod tests {
             called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: 1,
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
@@ -1083,7 +1083,7 @@ mod tests {
             "parent".to_string(),
         ];
         let grandchild = CrateCodePoint {
-            name: 0,
+            name: 0u32,
             file: 2,
             line: 1,
             column: 1,
@@ -1093,7 +1093,7 @@ mod tests {
             called_function: NAME_NONE,
         };
         let child = CrateCodePoint {
-            name: 1,
+            name: 1u32,
             file: 1,
             line: 5,
             column: 1,
@@ -1103,7 +1103,7 @@ mod tests {
             called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: 2,
+            name: 2u32,
             file: 0,
             line: 10,
             column: 1,
