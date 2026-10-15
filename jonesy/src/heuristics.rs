@@ -69,34 +69,48 @@ const BINARY_PANIC_PREFIXES: &[&str] = &["core::panicking::"];
 /// Find panic and abort entry point addresses in the binary's symbol table.
 /// Returns `(mangled_name, demangled_name, address)` for each entry point.
 pub fn find_entry_points(symbols: &SymbolTable) -> Vec<(String, String, u64)> {
-    let mut entry_points = Vec::new();
-    let mut seen_addrs = std::collections::HashSet::new();
-
-    // Find panic entry points (rust_panic and rust_begin_unwind)
-    for pattern in PANIC_SYMBOLS {
-        if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
-            && let Some(addr) = symbols.find_symbol_address(&sym)
-            && seen_addrs.insert(addr)
-        {
-            entry_points.push((sym, dem, addr));
-        }
-    }
-
-    // Find core::panicking:: functions and abort entry points in a single pass.
-    // These two calls were previously separate, each iterating all symbols and
-    // demangling every one. Combining them into one pass saves ~30 MB of
-    // transient allocations.
+    // Run the two independent symbol searches in parallel using rayon::join.
+    // Each search does its own sequential goblin iteration (iterator not Send)
+    // then parallel demangling. Running them concurrently overlaps their work.
     let all_patterns: Vec<&str> = BINARY_PANIC_PREFIXES
         .iter()
         .copied()
         .chain(std::iter::once(ABORT_SYMBOL))
         .collect();
 
-    if let Ok(matches) = symbols.find_all_symbols_with_addresses(&all_patterns) {
-        for (sym, dem, addr) in matches {
-            if seen_addrs.insert(addr) {
-                entry_points.push((sym, dem, addr));
+    let (panic_results, bulk_results) = rayon::join(
+        || {
+            // Find panic entry points (rust_panic and rust_begin_unwind)
+            let mut results = Vec::new();
+            for pattern in PANIC_SYMBOLS {
+                if let Ok(Some((sym, dem))) = symbols.find_symbol_containing(pattern)
+                    && let Some(addr) = symbols.find_symbol_address(&sym)
+                {
+                    results.push((sym, dem, addr));
+                }
             }
+            results
+        },
+        || {
+            // Find core::panicking:: functions and abort entry points
+            symbols
+                .find_all_symbols_with_addresses(&all_patterns)
+                .unwrap_or_default()
+        },
+    );
+
+    // Merge results, deduplicating by address
+    let mut seen_addrs = std::collections::HashSet::new();
+    let mut entry_points = Vec::new();
+
+    for (sym, dem, addr) in panic_results {
+        if seen_addrs.insert(addr) {
+            entry_points.push((sym, dem, addr));
+        }
+    }
+    for (sym, dem, addr) in bulk_results {
+        if seen_addrs.insert(addr) {
+            entry_points.push((sym, dem, addr));
         }
     }
 
