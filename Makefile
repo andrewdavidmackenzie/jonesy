@@ -17,12 +17,11 @@ build:
 build-examples: build
 	CARGO_INCREMENTAL=0 cargo build --manifest-path examples/workspace_test/Cargo.toml
 
-test: build-examples
-	@# Remove stale dSYM bundles so jonesy regenerates them from the freshly built binaries
+test:
+	@# Remove stale dSYM bundles before building so fresh ones are created
 	@find target/debug -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
-	@# Integration tests run single-threaded to avoid dSYM generation race conditions
-	@# when multiple tests analyse the same binary concurrently
-	cargo test -p jonesy -- --test-threads=1
+	@$(MAKE) build-examples
+	cargo test -p jonesy
 
 coverage: build-examples
 	cargo llvm-cov -p jonesy
