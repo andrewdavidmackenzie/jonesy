@@ -528,37 +528,22 @@ fn collect_crate_relationships_parallel(
 
     let next_child = node_key.or(child_crate_key);
 
-    if node.callers.len() >= 4 {
-        node.callers.par_iter().for_each(|caller| {
-            collect_crate_relationships_parallel(
-                caller,
-                points,
-                interner,
-                name_interner,
-                next_child,
-                propagated_cause,
-                Some(node_name.as_str()),
-                project_context,
-                workspace_root,
-                source_cache,
-            );
-        });
-    } else {
-        for caller in &node.callers {
-            collect_crate_relationships_parallel(
-                caller,
-                points,
-                interner,
-                name_interner,
-                next_child,
-                propagated_cause,
-                Some(node_name.as_str()),
-                project_context,
-                workspace_root,
-                source_cache,
-            );
-        }
-    }
+    // Always use par_iter — rayon handles small workloads efficiently
+    // via its work-stealing scheduler without significant overhead.
+    node.callers.par_iter().for_each(|caller| {
+        collect_crate_relationships_parallel(
+            caller,
+            points,
+            interner,
+            name_interner,
+            next_child,
+            propagated_cause,
+            Some(node_name.as_str()),
+            project_context,
+            workspace_root,
+            source_cache,
+        );
+    });
 }
 
 /// Collect crate code points without printing.

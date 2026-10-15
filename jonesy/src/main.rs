@@ -19,9 +19,9 @@ use jonesy::output::json::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
 use jonesy::output::text::generate_text_output;
+use jonesy::read_binary;
 use rayon::prelude::*;
 use std::error::Error;
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 
@@ -126,7 +126,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let binary_buffer = fs::read(&binary_path)?;
+        let binary_buffer = read_binary(&binary_path)?;
         let symbols = SymbolTable::from(&binary_buffer)?;
 
         // Capture project info from the first binary processed
@@ -322,7 +322,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 let binary_path = binary_path
                     .canonicalize()
                     .unwrap_or_else(|_| binary_path.clone());
-                let binary_buffer = fs::read(&binary_path).ok()?;
+                let binary_buffer = read_binary(&binary_path).ok()?;
                 let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
                 let result = analyze_binary(

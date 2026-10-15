@@ -2121,7 +2121,7 @@ fn analyze_single_target(
     use goblin::mach::constants::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 
     let binary_buffer =
-        std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
+        crate::read_binary(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
 
     let symbols =
         SymbolTable::from(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;
