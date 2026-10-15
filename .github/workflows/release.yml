@@ -44,7 +44,7 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-26-intel
             target: x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -90,15 +90,24 @@ jobs:
       - name: List artifacts
         run: ls -la dist/
 
-      - name: Create release with binaries
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
-            --generate-notes \
-            dist/jonesy-*.tar.gz
+            --generate-notes
+
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          for asset in dist/jonesy-*.tar.gz; do
+            echo "Uploading $asset..."
+            gh release upload "v${VERSION}" "$asset" --clobber
+          done
 
       - name: Update v2 tag for GitHub Action users
         run: |
