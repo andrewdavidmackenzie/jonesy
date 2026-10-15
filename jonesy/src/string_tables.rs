@@ -182,9 +182,16 @@ impl ConcurrentStringTables {
 /// of a file path without needing `Option<u16>`.
 /// The maximum valid index is 65534, supporting up to 65535 unique file paths
 /// which is sufficient for any realistic project.
+///
+/// Also used as `NAME_NONE` for function name indices (same sentinel value).
 pub const FILE_NONE: u16 = u16::MAX;
 
-/// Thread-safe file path interner for use during code point collection.
+/// Sentinel value meaning "no function name". Same value as `FILE_NONE`
+/// but semantically distinct — used for `CallerInfo.caller_name`,
+/// `CrateCodePoint.called_function`, etc.
+pub const NAME_NONE: u16 = u16::MAX;
+
+/// Thread-safe string interner for concurrent use during rayon `par_iter` phases.
 ///
 /// Uses a `DashMap` for concurrent interning (safe with `par_iter`) and an
 /// `AtomicU32` counter for lock-free ID allocation. Valid indices are `u16`,
