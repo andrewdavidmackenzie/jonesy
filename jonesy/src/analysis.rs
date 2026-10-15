@@ -151,6 +151,11 @@ pub fn analyze_binary_target(
         _ => return Err("Expected MachO or ELF binary".to_string()),
     };
 
+    // Pre-size interners based on binary size heuristics to reduce rehashing.
+    // ~1 unique function name per 700 bytes, ~1 unique file per 200KB.
+    name_interner.hint_capacity(buffer.len() / 700);
+    file_interner.hint_capacity((buffer.len() / 200_000).max(16));
+
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
 

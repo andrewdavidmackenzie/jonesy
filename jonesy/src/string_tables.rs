@@ -232,6 +232,29 @@ impl FilePathInterner {
         }
     }
 
+    /// Create a new interner with pre-allocated capacity.
+    /// Use when the approximate number of unique strings is known or estimable.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: DashMap::with_capacity(capacity),
+            next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::with_capacity(capacity)),
+        }
+    }
+
+    /// Pre-size the interner if it is still empty.
+    /// Called when the expected number of entries becomes known (e.g., after
+    /// reading the binary but before the parallel analysis phase).
+    /// No-op if the interner already contains entries.
+    pub fn hint_capacity(&self, capacity: usize) {
+        if self.next_id.load(Ordering::Relaxed) == 0 {
+            // Pre-size the reverse index Vec (the DashMap grows dynamically
+            // and cannot be reserved through a shared reference).
+            let mut rev = self.reverse.write().unwrap();
+            rev.reserve(capacity);
+        }
+    }
+
     /// Intern a file path, returning its `u16` index.
     /// Thread-safe: can be called concurrently from multiple rayon threads.
     /// If the path is already interned, returns the existing index without allocating.
