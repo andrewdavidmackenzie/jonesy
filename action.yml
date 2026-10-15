@@ -34,21 +34,32 @@ runs:
     - name: Install jonesy
       shell: bash
       run: |
-        # Try cargo-binstall for faster installation (pre-built binary)
-        # Fall back to cargo install if binstall fails
-        if command -v cargo-binstall &> /dev/null || cargo install cargo-binstall 2>/dev/null; then
-          echo "Using cargo-binstall for faster installation..."
-          if cargo binstall jonesy --no-confirm --log-level info 2>&1; then
+        set -e
+
+        # Try cargo-binstall if already available (downloads pre-built binary in seconds).
+        # Don't install binstall itself — compiling it takes longer than compiling jonesy.
+        if command -v cargo-binstall &> /dev/null; then
+          echo "cargo-binstall found, trying pre-built binary..."
+          if cargo binstall jonesy --no-confirm --log-level info; then
             echo "::notice::Installed jonesy via cargo-binstall (pre-built binary)"
+            jonesy --version
             exit 0
           fi
           echo "::warning::cargo-binstall failed, falling back to cargo install"
         fi
 
-        # Fallback: build from source
-        echo "Installing jonesy from source..."
+        # Build from source (~2 minutes)
+        echo "Installing jonesy from source (this may take a few minutes)..."
         cargo install jonesy
+
+        # Verify installation succeeded
+        if ! command -v jonesy &> /dev/null; then
+          echo "::error::Failed to install jonesy"
+          exit 1
+        fi
+
         echo "::notice::Installed jonesy via cargo install (built from source)"
+        jonesy --version
 
     - name: Register problem matcher
       shell: bash
