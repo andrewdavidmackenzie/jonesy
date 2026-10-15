@@ -21,7 +21,9 @@ test:
 	@# Remove stale dSYM bundles before building so fresh ones are created
 	@find target/debug -name "*.dSYM" -type d -exec rm -rf {} + 2>/dev/null || true
 	@$(MAKE) build-examples
-	cargo test -p jonesy
+	@# Single-threaded to avoid LSP test races (multiple server instances
+	@# competing for resources) and dSYM generation races on macOS
+	cargo test -p jonesy -- --test-threads=1
 
 coverage: build-examples
 	cargo llvm-cov -p jonesy
