@@ -30,7 +30,7 @@
 //!   Confirms safe Rust never has UB
 
 /// Known panic causes with explanations and suggestions
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanicCause {
     /// Explicit panic!() macro
     ExplicitPanic,

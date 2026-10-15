@@ -394,8 +394,22 @@ pub fn collect_crate_code_points_hierarchical(
             called_function: called_function.clone(),
         };
 
-        // Cache for reuse by other parents
-        cache.insert(*key, point.clone());
+        // Cache a shallow copy (without children) for reuse by other parents.
+        // The cache-hit path at line 361 always returns children: vec![],
+        // so storing children in the cache is wasted memory and cloning cost.
+        cache.insert(
+            *key,
+            CrateCodePoint {
+                name: point.name.clone(),
+                file: point.file,
+                line: point.line,
+                column: point.column,
+                causes: point.causes.clone(),
+                children: vec![],
+                is_direct_panic: point.is_direct_panic,
+                called_function: point.called_function.clone(),
+            },
+        );
         Some(point)
     }
 
@@ -471,7 +485,7 @@ fn collect_crate_relationships_parallel(
         }
 
         if let Some(cause) = &detected_cause {
-            entry.1.insert(cause.clone());
+            entry.1.insert(*cause);
         }
 
         if let Some(child_key) = &child_crate_key {
@@ -493,10 +507,10 @@ fn collect_crate_relationships_parallel(
         {
             None
         } else {
-            detected_cause.clone()
+            detected_cause
         }
     } else {
-        detected_cause.clone()
+        detected_cause
     };
 
     let next_child = node_key.or(child_crate_key);
@@ -508,7 +522,7 @@ fn collect_crate_relationships_parallel(
                 points,
                 interner,
                 next_child,
-                propagated_cause.clone(),
+                propagated_cause,
                 Some(&node.name),
                 project_context,
                 workspace_root,
@@ -522,7 +536,7 @@ fn collect_crate_relationships_parallel(
                 points,
                 interner,
                 next_child,
-                propagated_cause.clone(),
+                propagated_cause,
                 Some(&node.name),
                 project_context,
                 workspace_root,
