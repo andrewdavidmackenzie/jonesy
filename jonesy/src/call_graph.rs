@@ -10,7 +10,6 @@ use dashmap::DashMap;
 use goblin::mach::MachO;
 use rayon::prelude::*;
 use rustc_demangle::demangle;
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Compact information about a call site.
@@ -31,11 +30,17 @@ use std::collections::HashMap;
 /// - **x86_64** (64-byte cache lines): `align(64)` — 1 per cache line, no straddling
 /// - **aarch64** (128-byte cache lines on Apple Silicon): `align(64)` — 2 per cache
 ///   line, no straddling. Using `align(128)` would waste 72 bytes per entry.
-#[derive(Debug, Clone)]
+///
+/// ## Field sizes
+/// With `u16` indices for both name and file (replacing `Cow<str>` and `Option<Box<str>>`),
+/// the natural size is 28 bytes. `align(64)` pads to 64 bytes but eliminates all heap
+/// allocations — each `CallerInfo` is fully stack-resident.
+#[derive(Debug, Clone, Copy)]
 #[repr(C, align(64))]
-pub struct CallerInfo<'a> {
-    /// Demangled name of the calling function
-    pub caller_name: Cow<'a, str>,
+pub struct CallerInfo {
+    /// Function name index into a shared name interner (`FilePathInterner`).
+    /// `NAME_NONE` means no name is known.
+    pub caller_name: u16,
     /// Source file index into a shared `FilePathInterner`.
     /// `FILE_NONE` means no file path is known.
     pub file: u16,
@@ -64,20 +69,22 @@ fn get_section_by_name<'a>(
 
 /// Pre-computed call graph mapping target addresses to their callers.
 /// This allows O(1) lookup instead of O(n) scanning for each query.
-/// Lifetime 'a comes from SymbolIndex - caller_name may borrow from it.
-pub struct CallGraph<'a> {
+/// All string data (function names, file paths) is stored as interned `u16`
+/// indices, making the graph fully owned with no lifetime dependencies.
+pub struct CallGraph {
     /// Maps target_addr -> list of CallerInfo
-    edges: HashMap<u64, Vec<CallerInfo<'a>>>,
+    edges: HashMap<u64, Vec<CallerInfo>>,
 }
 
-impl<'a> CallGraph<'a> {
+impl CallGraph {
     /// Build a call graph by scanning all instructions once (no debug info).
     /// Uses parallel disassembly and parallel processing for faster analysis.
-    /// Symbol names are borrowed from the provided SymbolIndex.
+    /// Function names from the symbol index are interned into `name_interner`.
     pub fn build(
         binary: &BinaryRef,
         buffer: &[u8],
-        symbol_index: Option<&'a SymbolIndex>,
+        symbol_index: Option<&SymbolIndex>,
+        name_interner: &FilePathInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Build PLT map for ELF binaries (for resolving PLT stubs to actual functions)
         let plt_map = if let BinaryRef::Elf(elf) = binary {
@@ -103,7 +110,7 @@ impl<'a> CallGraph<'a> {
         // Process bl instructions in parallel (the expensive part is function lookup).
         // Pre-size the DashMap to reduce rehashing (~17 MB saved for large binaries).
         // Unique call targets are typically ~1/3 of total call instructions (measured ratio: 1:2.8 to 1:3.8 across different binary sizes).
-        let edges: DashMap<u64, Vec<CallerInfo<'a>>> = DashMap::with_capacity(insn_data.len() / 3);
+        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::with_capacity(insn_data.len() / 3);
 
         insn_data.par_iter().for_each(|data| {
             if let Some(call_target) = data.call_target
@@ -114,7 +121,7 @@ impl<'a> CallGraph<'a> {
                 let resolved_target = arch::plt::resolve_stub(call_target, &plt_map);
 
                 edges.entry(resolved_target).or_default().push(CallerInfo {
-                    caller_name: Cow::Borrowed(func_name),
+                    caller_name: name_interner.intern(func_name),
                     file: FILE_NONE,
                     caller_start_address: func_addr,
                     call_site_addr: data.address,
@@ -125,7 +132,7 @@ impl<'a> CallGraph<'a> {
         });
 
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
-        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = edges.into_iter().collect();
+        let mut edges: HashMap<u64, Vec<CallerInfo>> = edges.into_iter().collect();
         for callers in edges.values_mut() {
             callers.sort_unstable_by_key(|c| c.call_site_addr);
         }
@@ -134,8 +141,7 @@ impl<'a> CallGraph<'a> {
 
     /// Build a call graph with debug info enrichment.
     /// Uses parallel disassembly and parallel processing for faster analysis.
-    /// DWARF names are owned, symbol fallback names borrow from the provided SymbolIndex.
-    /// File paths from DWARF are interned into the shared `file_interner`.
+    /// Function names and file paths are interned into the shared interners.
     #[allow(clippy::too_many_arguments)]
     pub fn build_with_debug_info(
         binary: &BinaryRef,
@@ -143,9 +149,10 @@ impl<'a> CallGraph<'a> {
         debug_binary: &BinaryRef,
         debug_buffer: &[u8],
         show_timings: bool,
-        symbol_index: Option<&'a SymbolIndex>,
+        symbol_index: Option<&SymbolIndex>,
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
+        name_interner: &FilePathInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
@@ -225,7 +232,7 @@ impl<'a> CallGraph<'a> {
         // Process bl instructions in parallel.
         // Pre-size the DashMap to reduce rehashing.
         let step = Instant::now();
-        let edges: DashMap<u64, Vec<CallerInfo<'a>>> = DashMap::with_capacity(insn_data.len() / 3);
+        let edges: DashMap<u64, Vec<CallerInfo>> = DashMap::with_capacity(insn_data.len() / 3);
 
         insn_data.par_iter().for_each(|data| {
             if let Some(_call_target) = data.call_target
@@ -237,6 +244,7 @@ impl<'a> CallGraph<'a> {
                     symbol_index,
                     project_context,
                     file_interner,
+                    name_interner,
                 )
             {
                 // Resolve PLT stub to actual function address (for ELF dylib support)
@@ -249,7 +257,7 @@ impl<'a> CallGraph<'a> {
         }
 
         // Convert DashMap to HashMap and sort each caller list for deterministic ordering
-        let mut edges: HashMap<u64, Vec<CallerInfo<'a>>> = edges.into_iter().collect();
+        let mut edges: HashMap<u64, Vec<CallerInfo>> = edges.into_iter().collect();
         for callers in edges.values_mut() {
             callers.sort_unstable_by_key(|c| c.call_site_addr);
         }
@@ -258,7 +266,7 @@ impl<'a> CallGraph<'a> {
 
     /// Get all callers of a target address.
     /// Returns a slice reference to avoid cloning CallerInfo instances.
-    pub fn get_callers(&self, target_addr: u64) -> &[CallerInfo<'a>] {
+    pub fn get_callers(&self, target_addr: u64) -> &[CallerInfo] {
         self.edges
             .get(&target_addr)
             .map(|v| v.as_slice())
@@ -273,20 +281,21 @@ impl<'a> CallGraph<'a> {
     }
 }
 
-/// Process a single instruction and extract call information (basic version without debug info).
-/// Returns (call_target, CallerInfo) if this is a bl/b instruction, None otherwise.
-/// Process instruction data using pre-built line tables for fast O(log n) lookups.
-/// Falls back to symbol table lookup if DWARF doesn't contain the function.
-/// DWARF names use Cow::Owned, symbol fallback uses Cow::Borrowed from SymbolIndex.
-fn process_instruction_data_with_crate_table<'a>(
+/// Process a single instruction and extract call information using pre-built
+/// line tables for fast O(log n) lookups. Falls back to symbol table lookup
+/// if DWARF doesn't contain the function. Function names and file paths are
+/// interned into the shared interners (no heap String allocation).
+#[allow(clippy::too_many_arguments)]
+fn process_instruction_data_with_crate_table(
     data: &arch::InsnData,
     function_index: &FunctionIndex,
     full_line_table: &FullLineTable,
     crate_line_table: &CrateLineTable,
-    symbol_index: Option<&'a SymbolIndex>,
+    symbol_index: Option<&SymbolIndex>,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
-) -> Option<(u64, CallerInfo<'a>)> {
+    name_interner: &FilePathInterner,
+) -> Option<(u64, CallerInfo)> {
     let call_target = data.call_target?;
 
     // Find the function containing this call - try DWARF first, fall back to symbol table
@@ -391,30 +400,29 @@ fn process_instruction_data_with_crate_table<'a>(
             }
         }
 
-        // Get function name - only do expensive inlined lookup for crate source functions
+        // Get function name - only do expensive inlined lookup for crate source functions.
+        // Intern the name to avoid heap String allocation.
         let func_name = function_index.get_name(func);
-        let display_name: Cow<'a, str> = if file_in_crate {
-            Cow::Owned(
-                function_index
-                    .find_function_name(data.address)
-                    .map(|s| {
-                        let stripped = s.strip_prefix('_').unwrap_or(s);
-                        format!("{:#}", demangle(stripped))
-                    })
-                    .unwrap_or_else(|| func_name.to_string()),
-            )
+        let name_idx = if file_in_crate {
+            let name = function_index
+                .find_function_name(data.address)
+                .map(|s| {
+                    let stripped = s.strip_prefix('_').unwrap_or(s);
+                    format!("{:#}", demangle(stripped))
+                })
+                .unwrap_or_else(|| func_name.to_string());
+            name_interner.intern_owned(name)
         } else {
-            Cow::Owned(func_name.to_string())
+            name_interner.intern(func_name)
         };
 
         // Merge file fields: prefer call-site file, fall back to declaration file.
-        // Intern the merged path into the shared interner (u32 index, no allocation).
         let merged_file = file_interner.intern_option(decl_file.or(file));
 
         Some((
             call_target,
             CallerInfo {
-                caller_name: display_name,
+                caller_name: name_idx,
                 file: merged_file,
                 caller_start_address: func.start_address,
                 call_site_addr: data.address,
@@ -425,11 +433,11 @@ fn process_instruction_data_with_crate_table<'a>(
     } else if let Some((func_addr, func_name)) =
         symbol_index.and_then(|idx| idx.find_containing(data.address))
     {
-        // Fallback: found in symbol table but not in DWARF (e.g., expect_failed, unwrap_failed)
+        // Fallback: found in symbol table but not in DWARF
         Some((
             call_target,
             CallerInfo {
-                caller_name: Cow::Borrowed(func_name),
+                caller_name: name_interner.intern(func_name),
                 file: FILE_NONE,
                 caller_start_address: func_addr,
                 call_site_addr: data.address,
@@ -477,14 +485,14 @@ mod tests {
     // Tests for CallGraph
     #[test]
     fn test_empty_call_graph() {
-        let graph: CallGraph<'_> = CallGraph::empty();
+        let graph: CallGraph = CallGraph::empty();
         assert!(graph.get_callers(0x1000).is_empty());
         assert!(graph.get_callers(0).is_empty());
     }
 
     #[test]
     fn test_get_callers_returns_empty_for_unknown_target() {
-        let graph: CallGraph<'_> = CallGraph::empty();
+        let graph: CallGraph = CallGraph::empty();
         let callers = graph.get_callers(0xDEADBEEF);
         assert!(callers.is_empty());
     }
@@ -497,7 +505,9 @@ mod tests {
             if let Ok(macho) = MachO::parse(&buffer, 0) {
                 let binary_ref = BinaryRef::MachO(&macho);
                 let symbol_index = SymbolIndex::new(&macho);
-                let graph = CallGraph::build(&binary_ref, &buffer, symbol_index.as_ref());
+                let name_interner = FilePathInterner::new();
+                let graph =
+                    CallGraph::build(&binary_ref, &buffer, symbol_index.as_ref(), &name_interner);
                 assert!(graph.is_ok());
                 let graph = graph.unwrap();
                 // A real binary should have many call edges
@@ -513,8 +523,9 @@ mod tests {
         if let Ok(buffer) = std::fs::read(&binary_path) {
             if let Ok(macho) = MachO::parse(&buffer, 0) {
                 let binary_ref = BinaryRef::MachO(&macho);
+                let name_interner = FilePathInterner::new();
                 // Build without symbol index — should still work but find no callers
-                let graph = CallGraph::build(&binary_ref, &buffer, None);
+                let graph = CallGraph::build(&binary_ref, &buffer, None, &name_interner);
                 assert!(graph.is_ok());
             }
         }
@@ -525,8 +536,10 @@ mod tests {
     fn test_caller_info_construction() {
         let interner = FilePathInterner::new();
         let file_idx = interner.intern("src/main.rs");
+        let name_interner = FilePathInterner::new();
+        let name_idx = name_interner.intern("my_function");
         let info = CallerInfo {
-            caller_name: Cow::Owned("my_function".to_string()),
+            caller_name: name_idx,
             file: file_idx,
             caller_start_address: 0x1000,
             call_site_addr: 0x1010,
@@ -540,17 +553,17 @@ mod tests {
     }
 
     #[test]
-    fn test_caller_info_borrowed_name() {
-        let name = "borrowed_function".to_string();
+    fn test_caller_info_name_none() {
+        use crate::string_tables::NAME_NONE;
         let info = CallerInfo {
-            caller_name: Cow::Borrowed(&name),
+            caller_name: NAME_NONE,
             file: FILE_NONE,
             caller_start_address: 0x2000,
             call_site_addr: 0x2020,
             line: 0,
             column: 0,
         };
-        assert_eq!(&*info.caller_name, "borrowed_function");
+        assert_eq!(info.caller_name, NAME_NONE);
         assert_eq!(info.file, FILE_NONE);
         assert_eq!(info.line, 0);
     }

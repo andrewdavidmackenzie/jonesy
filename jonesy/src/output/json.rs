@@ -27,6 +27,8 @@ pub struct WorkspaceMemberResult {
     pub code_points: Vec<CrateCodePoint>,
     /// Resolved file path table for `CrateCodePoint.file` index resolution
     pub file_paths: Vec<String>,
+    /// Resolved name table for `CrateCodePoint.name` and `called_function` index resolution
+    pub name_paths: Vec<String>,
 }
 
 /// Complete workspace analysis results
@@ -56,7 +58,15 @@ pub fn generate_json_output(
         result
             .code_points
             .iter()
-            .map(|p| code_point_to_json(p, &result.file_paths, &result.project_root, tree))
+            .map(|p| {
+                code_point_to_json(
+                    p,
+                    &result.file_paths,
+                    &result.name_paths,
+                    &result.project_root,
+                    tree,
+                )
+            })
             .collect()
     };
 
@@ -81,6 +91,7 @@ pub fn generate_json_output(
 fn code_point_to_json(
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     project_root: &str,
     include_children: bool,
 ) -> Value {
@@ -88,11 +99,11 @@ fn code_point_to_json(
     let causes_json: Vec<Value> = {
         let mut causes: Vec<_> = point.causes.iter().collect();
         causes.sort_by_key(|c| c.error_code());
+        let called_fn = string_tables::resolve_name(name_paths, point.called_function);
         causes
             .iter()
             .map(|c| {
-                let suggestion =
-                    c.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
+                let suggestion = c.format_suggestion(point.is_direct_panic, called_fn);
                 let mut cause_obj = json!({
                     "code": c.error_code(),
                     "type": c.id(),
@@ -114,17 +125,18 @@ fn code_point_to_json(
         point
             .children
             .iter()
-            .map(|c| code_point_to_json(c, file_paths, project_root, true))
+            .map(|c| code_point_to_json(c, file_paths, name_paths, project_root, true))
             .collect()
     } else {
         Vec::new()
     };
 
     let file_str = string_tables::resolve_file(file_paths, point.file).unwrap_or("");
+    let resolved_name = string_tables::resolve_name(name_paths, point.name).unwrap_or("");
     let mut obj = json!({
         "file": make_absolute_path(file_str, project_root),
         "line": point.line,
-        "function": point.name,
+        "function": resolved_name,
     });
 
     if point.column > 0 {
@@ -167,7 +179,9 @@ pub fn generate_workspace_json_output(
             } else {
                 m.code_points
                     .iter()
-                    .map(|p| code_point_to_json(p, &m.file_paths, &result.root, tree))
+                    .map(|p| {
+                        code_point_to_json(p, &m.file_paths, &m.name_paths, &result.root, tree)
+                    })
                     .collect()
             };
 
@@ -205,23 +219,24 @@ mod tests {
     use super::*;
     use crate::call_tree::AnalysisSummary;
     use crate::panic_cause::PanicCause;
+    use crate::string_tables::NAME_NONE;
     use std::collections::HashSet;
 
     fn make_test_code_point(
-        name: &str,
+        _name: &str,
         file: u16,
         line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
-            name: name.to_string(),
+            name: 0,
             file,
             line,
             column: 1,
             causes: causes.into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         }
     }
 
@@ -250,6 +265,7 @@ mod tests {
             project_root: "/test".to_string(),
             code_points: vec![],
             file_paths: vec![],
+            name_paths: vec![],
         };
 
         let json = generate_json_output(&result, false, false).unwrap();
@@ -276,6 +292,7 @@ mod tests {
                 vec![PanicCause::Unwrap],
             )],
             file_paths,
+            name_paths: vec!["test_func".to_string()],
         };
 
         let json = generate_json_output(&result, false, false).unwrap();
@@ -304,6 +321,7 @@ mod tests {
                 vec![PanicCause::Unwrap],
             )],
             file_paths,
+            name_paths: vec!["test_func".to_string()],
         };
 
         let json = generate_json_output(&result, false, true).unwrap();
@@ -319,25 +337,25 @@ mod tests {
     fn test_generate_json_output_with_children() {
         let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let child = CrateCodePoint {
-            name: "child_func".to_string(),
+            name: 0,
             file: 1,
             line: 20,
             column: 5,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
 
         let parent = CrateCodePoint {
-            name: "parent_func".to_string(),
+            name: 1,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: Some("child_func".to_string()),
+            called_function: 0,
         };
 
         let result = AnalysisResult {
@@ -345,6 +363,7 @@ mod tests {
             project_root: "/test".to_string(),
             code_points: vec![parent],
             file_paths,
+            name_paths: vec!["child_func".to_string(), "parent_func".to_string()],
         };
 
         // Without tree flag, children should be empty
@@ -368,6 +387,7 @@ mod tests {
     #[test]
     fn test_code_point_to_json_includes_causes() {
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test".to_string()];
         let point = make_test_code_point(
             "test",
             0,
@@ -375,7 +395,7 @@ mod tests {
             vec![PanicCause::Unwrap, PanicCause::BoundsCheck],
         );
 
-        let json = code_point_to_json(&point, &file_paths, "/test", false);
+        let json = code_point_to_json(&point, &file_paths, &name_paths, "/test", false);
         let causes = json["causes"].as_array().unwrap();
         assert_eq!(causes.len(), 2);
         // Causes should be sorted by error code
@@ -397,6 +417,7 @@ mod tests {
             ),
             code_points: vec![make_test_code_point("func", 0, 5, vec![PanicCause::Todo])],
             file_paths: member_file_paths,
+            name_paths: vec!["func".to_string()],
         };
 
         let workspace = WorkspaceResult {
@@ -435,6 +456,7 @@ mod tests {
             ),
             code_points: vec![make_test_code_point("func", 0, 5, vec![PanicCause::Todo])],
             file_paths: member_file_paths,
+            name_paths: vec!["func".to_string()],
         };
 
         let workspace = WorkspaceResult {

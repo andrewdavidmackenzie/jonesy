@@ -27,11 +27,13 @@ pub fn generate_html_output(result: &AnalysisResult, tree: bool, summary_only: b
         summary.files_affected(),
         code_points,
         &result.file_paths,
+        &result.name_paths,
         tree,
     )
 }
 
 /// Generate a complete HTML report from analysis results.
+#[allow(clippy::too_many_arguments)]
 fn generate_html_report(
     project_name: &str,
     project_root: &str,
@@ -39,6 +41,7 @@ fn generate_html_report(
     files_affected: usize,
     code_points: &[CrateCodePoint],
     file_paths: &[String],
+    name_paths: &[String],
     include_tree: bool,
 ) -> String {
     let mut html = String::new();
@@ -237,7 +240,15 @@ fn generate_html_report(
 "#,
         );
         for point in code_points {
-            render_panic_point(&mut html, point, file_paths, project_root, include_tree, 0);
+            render_panic_point(
+                &mut html,
+                point,
+                file_paths,
+                name_paths,
+                project_root,
+                include_tree,
+                0,
+            );
         }
         html.push_str("        </ul>\n");
     }
@@ -262,6 +273,7 @@ fn render_panic_point(
     html: &mut String,
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     project_root: &str,
     include_tree: bool,
     depth: usize,
@@ -283,6 +295,7 @@ fn render_panic_point(
         causes
     };
 
+    let resolved_name = string_tables::resolve_name(name_paths, point.name).unwrap_or("");
     html.push_str(&format!(
         r#"{}<li class="panic-item">
 {}    <div class="panic-header">
@@ -295,7 +308,7 @@ fn render_panic_point(
         file_url,
         escape_html(&location),
         indent,
-        escape_html(&point.name)
+        escape_html(resolved_name)
     ));
 
     // Show all causes as badges
@@ -314,8 +327,8 @@ fn render_panic_point(
 
     // Cause details (show for primary cause only)
     if let Some(c) = sorted_causes.first() {
-        let suggestion =
-            c.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
+        let called_fn = string_tables::resolve_name(name_paths, point.called_function);
+        let suggestion = c.format_suggestion(point.is_direct_panic, called_fn);
         let warning = c.release_warning();
         if !suggestion.is_empty() || warning.is_some() {
             html.push_str(&format!("{}    <div class=\"cause-details\">\n", indent));
@@ -341,7 +354,7 @@ fn render_panic_point(
     if include_tree && !point.children.is_empty() {
         html.push_str(&format!("{}    <div class=\"children\">\n", indent));
         for child in &point.children {
-            render_child_point(html, child, file_paths, project_root, depth + 1);
+            render_child_point(html, child, file_paths, name_paths, project_root, depth + 1);
         }
         html.push_str(&format!("{}    </div>\n", indent));
     }
@@ -354,6 +367,7 @@ fn render_child_point(
     html: &mut String,
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     project_root: &str,
     depth: usize,
 ) {
@@ -374,6 +388,7 @@ fn render_child_point(
         causes
     };
 
+    let resolved_name = string_tables::resolve_name(name_paths, point.name).unwrap_or("");
     html.push_str(&format!(
         r#"{}    <div class="child-item">
 {}        <a href="{}" class="file-link">{}</a>
@@ -384,7 +399,7 @@ fn render_child_point(
         file_url,
         escape_html(&location),
         indent,
-        escape_html(&point.name)
+        escape_html(resolved_name)
     ));
 
     // Show all causes as badges
@@ -405,7 +420,7 @@ fn render_child_point(
     if !point.children.is_empty() {
         html.push_str(&format!("{}    <div class=\"children\">\n", indent));
         for child in &point.children {
-            render_child_point(html, child, file_paths, project_root, depth + 1);
+            render_child_point(html, child, file_paths, name_paths, project_root, depth + 1);
         }
         html.push_str(&format!("{}    </div>\n", indent));
     }
@@ -738,7 +753,15 @@ pub fn generate_workspace_html_output(
 "#,
             );
             for point in code_points {
-                render_panic_point(&mut html, point, &member.file_paths, &result.root, tree, 1);
+                render_panic_point(
+                    &mut html,
+                    point,
+                    &member.file_paths,
+                    &member.name_paths,
+                    &result.root,
+                    tree,
+                    1,
+                );
             }
             html.push_str(
                 r#"                </ul>
@@ -771,23 +794,24 @@ mod tests {
     use crate::call_tree::AnalysisSummary;
     use crate::output::json::WorkspaceMemberResult;
     use crate::panic_cause::PanicCause;
+    use crate::string_tables::NAME_NONE;
     use std::collections::HashSet;
 
     fn make_test_point(
-        name: &str,
+        _name: &str,
         file: u16,
         line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
-            name: name.to_string(),
+            name: 0,
             file,
             line,
             column: 1,
             causes: causes.into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         }
     }
 
@@ -800,6 +824,7 @@ mod tests {
             project_root: "/test".to_string(),
             code_points,
             file_paths,
+            name_paths: vec!["test_func".to_string()],
         }
     }
 
@@ -859,26 +884,32 @@ mod tests {
     fn test_generate_html_output_with_tree() {
         let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let child = CrateCodePoint {
-            name: "child_func".to_string(),
+            name: 0,
             file: 1,
             line: 20,
             column: 5,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: "parent_func".to_string(),
+            name: 1,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: Some("child_func".to_string()),
+            called_function: 0,
         };
-        let result = make_test_result(vec![parent], file_paths);
+        let result = AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test".to_string(),
+            code_points: vec![parent],
+            file_paths,
+            name_paths: vec!["child_func".to_string(), "parent_func".to_string()],
+        };
         let html = generate_html_output(&result, true, false);
 
         // Both parent and child should appear
@@ -895,6 +926,7 @@ mod tests {
             project_root: "/test".to_string(),
             code_points: vec![],
             file_paths: vec![],
+            name_paths: vec![],
         };
         let html = generate_html_output(&result, false, false);
 
@@ -915,6 +947,7 @@ mod tests {
             ),
             code_points: vec![make_test_point("func", 0, 5, vec![PanicCause::Todo])],
             file_paths: member_file_paths,
+            name_paths: vec!["func".to_string()],
         };
         let workspace = WorkspaceResult {
             root: "/workspace".to_string(),

@@ -24,6 +24,7 @@ use crate::call_tree::{CodePointKey, CrateCodePoint};
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
 use crate::project_context::ProjectContext;
+use crate::string_tables;
 use notify::RecommendedWatcher;
 
 /// Counter for generating unique progress tokens
@@ -38,6 +39,9 @@ struct ServerState {
     /// Resolved file path table for `CrateCodePoint.file` index resolution.
     /// Accumulated across all analysed targets.
     file_paths: Vec<String>,
+    /// Resolved name table for `CrateCodePoint.name` and `called_function` index resolution.
+    /// Accumulated across all analysed targets.
+    name_paths: Vec<String>,
     /// Files that have been opened (for re-publishing after analysis)
     opened_files: HashSet<Url>,
 }
@@ -48,6 +52,7 @@ impl ServerState {
             workspace_root: None,
             panic_points: HashMap::new(),
             file_paths: Vec::new(),
+            name_paths: Vec::new(),
             opened_files: HashSet::new(),
         }
     }
@@ -77,7 +82,12 @@ impl JonesyLspServer {
 
     /// Convert a CrateCodePoint to an LSP Diagnostic.
     /// `file_paths` is the resolved file path table from `BinaryAnalysisResult`.
-    fn code_point_to_diagnostic(point: &CrateCodePoint, file_paths: &[String]) -> Diagnostic {
+    /// `name_paths` is the resolved name table for function name index resolution.
+    fn code_point_to_diagnostic(
+        point: &CrateCodePoint,
+        file_paths: &[String],
+        name_paths: &[String],
+    ) -> Diagnostic {
         // Get all causes sorted by error code for determinism
         let sorted_causes: Vec<_> = {
             let mut causes: Vec<_> = point.causes.iter().collect();
@@ -86,6 +96,7 @@ impl JonesyLspServer {
         };
 
         // Build message showing all causes
+        let called_fn = string_tables::resolve_name(name_paths, point.called_function);
         let (message, suggestion, error_code, docs_url) = if sorted_causes.is_empty() {
             ("potential panic point".to_string(), None, None, None)
         } else {
@@ -96,10 +107,7 @@ impl JonesyLspServer {
             let primary = sorted_causes[0];
             (
                 format!("panic point: {}", descriptions.join(", ")),
-                Some(
-                    primary
-                        .format_suggestion(point.is_direct_panic, point.called_function.as_deref()),
-                ),
+                Some(primary.format_suggestion(point.is_direct_panic, called_fn)),
                 Some(primary.error_code().to_string()),
                 Url::parse(&primary.docs_url()).ok(),
             )
@@ -126,11 +134,12 @@ impl JonesyLspServer {
             .get(point.file as usize)
             .cloned()
             .unwrap_or_default();
+        let resolved_name = string_tables::resolve_name(name_paths, point.name).unwrap_or("");
         let data = serde_json::json!({
             "causes": cause_ids,
-            "function": &point.name,
+            "function": resolved_name,
             "file": &resolved_file,
-            "called_function": &point.called_function,
+            "called_function": called_fn,
             "is_direct_panic": point.is_direct_panic,
         });
 
@@ -486,6 +495,7 @@ impl JonesyLspServer {
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         let mut seen: std::collections::HashSet<CodePointKey> = std::collections::HashSet::new();
         let mut all_file_paths: Vec<String> = Vec::new();
+        let mut all_name_paths: Vec<String> = Vec::new();
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
@@ -531,6 +541,16 @@ impl JonesyLspServer {
                     for (i, fp) in file_paths.iter().enumerate() {
                         if !fp.is_empty() {
                             all_file_paths[i] = fp.clone();
+                        }
+                    }
+                    // Merge name_paths into the accumulated table
+                    let name_paths = &analysis.name_paths;
+                    if all_name_paths.len() < name_paths.len() {
+                        all_name_paths.resize(name_paths.len(), String::new());
+                    }
+                    for (i, np) in name_paths.iter().enumerate() {
+                        if !np.is_empty() {
+                            all_name_paths[i] = np.clone();
                         }
                     }
 
@@ -589,7 +609,13 @@ impl JonesyLspServer {
                         if let Some(points) = points_by_file.get(&uri) {
                             let diagnostics: Vec<Diagnostic> = points
                                 .iter()
-                                .map(|p| Self::code_point_to_diagnostic(p, &all_file_paths))
+                                .map(|p| {
+                                    Self::code_point_to_diagnostic(
+                                        p,
+                                        &all_file_paths,
+                                        &all_name_paths,
+                                    )
+                                })
                                 .collect();
 
                             self.client
@@ -623,6 +649,7 @@ impl JonesyLspServer {
         let new_files: std::collections::HashSet<_> = points_by_file.keys().cloned().collect();
         state.panic_points = points_by_file;
         state.file_paths = all_file_paths;
+        state.name_paths = all_name_paths;
         drop(state);
 
         // Clear diagnostics for files that no longer have panic points
@@ -661,6 +688,7 @@ impl JonesyLspServer {
         let republish: Vec<(Url, Vec<Diagnostic>)> = {
             let state = self.state.read().await;
             let file_paths = &state.file_paths;
+            let name_paths = &state.name_paths;
             state
                 .opened_files
                 .iter()
@@ -668,7 +696,7 @@ impl JonesyLspServer {
                     state.panic_points.get(uri).map(|points| {
                         let diagnostics = points
                             .iter()
-                            .map(|p| Self::code_point_to_diagnostic(p, file_paths))
+                            .map(|p| Self::code_point_to_diagnostic(p, file_paths, name_paths))
                             .collect();
                         (uri.clone(), diagnostics)
                     })
@@ -1351,9 +1379,10 @@ impl LanguageServer for JonesyLspServer {
         let state = self.state.read().await;
         if let Some(points) = state.panic_points.get(&uri) {
             let file_paths = &state.file_paths;
+            let name_paths = &state.name_paths;
             let diagnostics: Vec<Diagnostic> = points
                 .iter()
-                .map(|p| Self::code_point_to_diagnostic(p, file_paths))
+                .map(|p| Self::code_point_to_diagnostic(p, file_paths, name_paths))
                 .collect();
             drop(state); // Release lock before async call
 
@@ -1710,6 +1739,7 @@ async fn run_analysis_task(
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
     let mut all_file_paths: Vec<String> = Vec::new();
+    let mut all_name_paths: Vec<String> = Vec::new();
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1742,6 +1772,16 @@ async fn run_analysis_task(
             for (i, fp) in file_paths.iter().enumerate() {
                 if !fp.is_empty() {
                     all_file_paths[i] = fp.clone();
+                }
+            }
+            // Merge name_paths into the accumulated table
+            let name_paths = &analysis.name_paths;
+            if all_name_paths.len() < name_paths.len() {
+                all_name_paths.resize(name_paths.len(), String::new());
+            }
+            for (i, np) in name_paths.iter().enumerate() {
+                if !np.is_empty() {
+                    all_name_paths[i] = np.clone();
                 }
             }
 
@@ -1842,10 +1882,20 @@ async fn run_analysis_task(
                     state.file_paths[i] = fp.clone();
                 }
             }
+            // Merge name_paths: extend if new table is larger
+            if all_name_paths.len() > state.name_paths.len() {
+                state.name_paths.resize(all_name_paths.len(), String::new());
+            }
+            for (i, np) in all_name_paths.iter().enumerate() {
+                if !np.is_empty() {
+                    state.name_paths[i] = np.clone();
+                }
+            }
         } else {
             // Full analysis: replace entirely
             state.panic_points = points_by_file.clone();
             state.file_paths = all_file_paths.clone();
+            state.name_paths = all_name_paths.clone();
         }
     }
 
@@ -1853,7 +1903,7 @@ async fn run_analysis_task(
     for (uri, points) in &points_by_file {
         let diagnostics: Vec<Diagnostic> = points
             .iter()
-            .map(|p| JonesyLspServer::code_point_to_diagnostic(p, &all_file_paths))
+            .map(|p| JonesyLspServer::code_point_to_diagnostic(p, &all_file_paths, &all_name_paths))
             .collect();
         client
             .publish_diagnostics(uri.clone(), diagnostics, None)
@@ -2120,8 +2170,9 @@ fn analyze_single_target(
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
 
-    // Each target gets its own file path interner
+    // Each target gets its own file path interner and name interner
     let interner = crate::string_tables::FilePathInterner::new();
+    let name_interner = crate::string_tables::FilePathInterner::new();
 
     let mut result = match &symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
@@ -2133,6 +2184,7 @@ fn analyze_single_target(
             &output,
             project_context,
             &interner,
+            &name_interner,
         ),
         SymbolTable::MachO(Fat(fat)) => {
             // Fat binary - find native architecture slice and analyze it
@@ -2175,6 +2227,7 @@ fn analyze_single_target(
                         &output,
                         project_context,
                         &interner,
+                        &name_interner,
                     )
                 }
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
@@ -2189,6 +2242,7 @@ fn analyze_single_target(
             &output,
             project_context,
             &interner,
+            &name_interner,
         ),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
@@ -2199,11 +2253,13 @@ fn analyze_single_target(
             &output,
             project_context,
             &interner,
+            &name_interner,
         ),
     }?;
 
-    // Resolve the interner to a file_paths table for downstream use
+    // Resolve the interners to path tables for downstream use
     result.file_paths = interner.into_vec();
+    result.name_paths = name_interner.into_vec();
     Ok(result)
 }
 
@@ -3005,15 +3061,16 @@ mod tests {
     // ========================================================================
 
     fn make_code_point(file_idx: u16, line: u16, column: u16) -> CrateCodePoint {
+        use crate::string_tables::NAME_NONE;
         CrateCodePoint {
             file: file_idx,
             line,
             column,
-            name: "test_func".to_string(),
+            name: 0,
             causes: HashSet::new(),
             children: Vec::new(),
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         }
     }
 
@@ -3213,8 +3270,9 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_empty_causes() {
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let point = make_code_point(0, 42, 10);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(diag.source, Some("jonesy".to_string()));
@@ -3229,8 +3287,10 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_single_cause() {
         use crate::panic_cause::PanicCause;
+        use crate::string_tables::NAME_NONE;
 
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["my_func".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
 
@@ -3238,14 +3298,14 @@ mod tests {
             file: 0,
             line: 10,
             column: 5,
-            name: "my_func".to_string(),
+            name: 0,
             causes,
             children: Vec::new(),
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
 
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         assert!(diag.message.contains("unwrap"));
         // Single cause should also show JP code in message (consistent with multi-cause)
@@ -3265,6 +3325,7 @@ mod tests {
         use crate::panic_cause::PanicCause;
 
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["my_func".to_string(), "risky_fn".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::Expect);
@@ -3273,14 +3334,14 @@ mod tests {
             file: 0,
             line: 10,
             column: 5,
-            name: "my_func".to_string(),
+            name: 0,
             causes,
             children: Vec::new(),
             is_direct_panic: false,
-            called_function: Some("risky_fn".to_string()),
+            called_function: 1,
         };
 
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         // Multiple causes shown in message
         assert!(diag.message.contains("JP"));
@@ -3294,8 +3355,9 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_no_column() {
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let point = make_code_point(0, 100, 0);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         // Column 0 (DWARF left edge): saturating_sub(1) = 0 (LSP start of line)
         assert_eq!(diag.range.start.character, 0);
@@ -3305,8 +3367,9 @@ mod tests {
     fn test_code_point_to_diagnostic_line_1() {
         // Edge case: line 1 should not underflow
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let point = make_code_point(0, 1, 1);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         assert_eq!(diag.range.start.line, 0);
         assert_eq!(diag.range.start.character, 0);

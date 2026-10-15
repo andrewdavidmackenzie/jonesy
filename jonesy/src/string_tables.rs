@@ -338,6 +338,17 @@ pub fn resolve_file_owned(file_paths: &[String], idx: u16) -> String {
     }
 }
 
+/// Resolve a name index to a function name string from a resolved name table.
+/// Returns `None` for `NAME_NONE` or out-of-bounds indices.
+#[inline]
+pub fn resolve_name(name_paths: &[String], idx: u16) -> Option<&str> {
+    if idx == NAME_NONE {
+        None
+    } else {
+        name_paths.get(idx as usize).map(|s| s.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
