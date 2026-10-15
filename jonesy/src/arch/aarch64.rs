@@ -490,23 +490,26 @@ mod tests {
     }
 
     /// Test parallel_disassemble with a large enough buffer to trigger multi-chunk
-    /// processing via flat_map. Verifies that results from all chunks are correctly
-    /// collected without the intermediate Vec<Vec> flatten.
+    /// processing via flat_map. Uses a dedicated 2-thread pool and 160KB of
+    /// instructions (> 2 * MIN_CHUNK_SIZE) to guarantee chunking.
     #[test]
     fn test_parallel_disassemble_large_buffer() {
-        // Create a buffer large enough to exceed MIN_CHUNK_SIZE (64KB)
-        // Fill with BL instructions (one per 4 bytes) to maximise result density
-        let num_instructions = 20_000; // 80KB > 64KB minimum chunk size
+        // 40_000 instructions * 4 bytes = 160KB > 2 * MIN_CHUNK_SIZE (64KB)
+        // With 2 threads, each chunk is 80KB > MIN_CHUNK_SIZE, so both are used.
+        let num_instructions = 40_000;
         let mut code = Vec::with_capacity(num_instructions * 4);
-        for i in 0..num_instructions {
+        for _ in 0..num_instructions {
             // BL +4 (each instruction branches to the next)
-            let offset = 1_u32; // imm26 = 1 => target = pc + 4
-            let insn = 0x94000000 | (offset & 0x03FFFFFF);
+            let insn: u32 = 0x94000001;
             code.extend_from_slice(&insn.to_le_bytes());
-            let _ = i; // suppress unused warning
         }
 
-        let results = parallel_disassemble(&code, 0x1000);
+        // Use a 2-thread pool to guarantee the multi-chunk path
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let results = pool.install(|| parallel_disassemble(&code, 0x1000));
 
         // Every instruction should be found
         assert_eq!(results.len(), num_instructions);

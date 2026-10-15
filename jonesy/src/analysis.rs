@@ -308,8 +308,17 @@ pub fn analyze_binary_target(
             .then_with(|| a.column.cmp(&b.column))
     });
 
+    // Compute summary from deduped code points (resolve file indices for cross-interner safety)
+    let mut summary_points: HashSet<(String, u16, u16)> = HashSet::new();
+    let mut summary_files: HashSet<String> = HashSet::new();
+    for point in &deduped {
+        let file = file_interner.resolve(point.file).unwrap_or_default();
+        summary_files.insert(file.clone());
+        summary_points.insert((file, point.line, point.column));
+    }
+
     let final_result = BinaryAnalysisResult {
-        summary: AnalysisSummary::default(),
+        summary: AnalysisSummary::from_points(summary_points, summary_files),
         code_points: deduped,
         file_paths: Vec::new(),
     };

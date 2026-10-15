@@ -151,7 +151,7 @@ impl<'a> SymbolTable<'a> {
         };
 
         // Phase 2: demangle and match in parallel, return first match
-        let result = candidates.par_iter().find_map_any(|sym_name| {
+        let result = candidates.par_iter().find_map_first(|sym_name| {
             let stripped = sym_name.strip_prefix('_').unwrap_or(sym_name);
             let demangled = format!("{:#}", demangle(stripped));
             if regex.is_match(&demangled) {
