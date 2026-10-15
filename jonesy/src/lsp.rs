@@ -2120,11 +2120,8 @@ fn analyze_single_target(
     use goblin::mach::SingleArch;
     use goblin::mach::constants::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 
-    let file =
-        std::fs::File::open(target_path).map_err(|e| format!("Failed to open target: {}", e))?;
-    // SAFETY: the file is opened read-only and not modified while mapped.
-    let binary_buffer = unsafe { memmap2::Mmap::map(&file) }
-        .map_err(|e| format!("Failed to mmap target: {}", e))?;
+    let binary_buffer =
+        std::fs::read(target_path).map_err(|e| format!("Failed to read target: {}", e))?;
 
     let symbols =
         SymbolTable::from(&binary_buffer).map_err(|e| format!("Failed to read symbols: {}", e))?;

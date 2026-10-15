@@ -26,14 +26,41 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-/// Memory-map a file for reading. Falls back to `fs::read` if mmap fails.
+/// Read a binary file, preferring mmap for large files to avoid heap copies.
+/// Falls back to `fs::read` if mmap is unavailable or fails.
+///
 /// Uses mmap to avoid copying the entire binary into heap memory — the OS
 /// pages in only the sections that are actually accessed (text, symbols, DWARF).
-fn mmap_file(path: &Path) -> io::Result<Mmap> {
+///
+/// # Safety note
+/// `Mmap::map` is unsafe because concurrent modification or truncation of
+/// the file by another process could cause undefined behaviour (SIGBUS).
+/// This is acceptable here because jonesy analyses build artefacts that are
+/// not modified during analysis. The binary is a snapshot of a completed build.
+enum BinaryBuffer {
+    Mmap(Mmap),
+    Vec(Vec<u8>),
+}
+
+impl std::ops::Deref for BinaryBuffer {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            BinaryBuffer::Mmap(m) => m,
+            BinaryBuffer::Vec(v) => v,
+        }
+    }
+}
+
+fn read_binary(path: &Path) -> io::Result<BinaryBuffer> {
     let file = fs::File::open(path)?;
-    // SAFETY: the file is opened read-only and not modified while mapped.
-    // The Mmap is used as a read-only &[u8] slice throughout the analysis.
-    unsafe { Mmap::map(&file) }
+    // SAFETY: the file is opened read-only. Jonesy analyses build artefacts
+    // that are not being modified concurrently. The mapping is short-lived
+    // (dropped after analysis completes).
+    match unsafe { Mmap::map(&file) } {
+        Ok(mmap) => Ok(BinaryBuffer::Mmap(mmap)),
+        Err(_) => fs::read(path).map(BinaryBuffer::Vec),
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -137,7 +164,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let binary_buffer = mmap_file(&binary_path)?;
+        let binary_buffer = read_binary(&binary_path)?;
         let symbols = SymbolTable::from(&binary_buffer)?;
 
         // Capture project info from the first binary processed
@@ -333,7 +360,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 let binary_path = binary_path
                     .canonicalize()
                     .unwrap_or_else(|_| binary_path.clone());
-                let binary_buffer = mmap_file(&binary_path).ok()?;
+                let binary_buffer = read_binary(&binary_path).ok()?;
                 let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
                 let result = analyze_binary(
