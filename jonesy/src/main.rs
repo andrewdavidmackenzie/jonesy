@@ -8,7 +8,7 @@ use jonesy::call_tree::{AnalysisResult, AnalysisSummary, CodePointKey, CrateCode
 use jonesy::cargo::{detect_library_type, find_project_root, get_project_name};
 use jonesy::output::OutputFormat;
 use jonesy::project_context::ProjectContext;
-use jonesy::string_tables::FilePathInterner;
+use jonesy::string_tables::{FilePathInterner, NameInterner};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -85,6 +85,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
     let mut all_code_points: Vec<CrateCodePoint> = Vec::new();
     let mut seen_code_points: HashSet<CodePointKey> = HashSet::new();
     let file_interner = FilePathInterner::new();
+    let name_interner = NameInterner::new();
     let mut project_name: Option<String> = None;
     let mut project_root_path: Option<String> = None;
 
@@ -148,6 +149,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             &parsed_args.output,
             &project_context,
             &file_interner,
+            &name_interner,
         )? {
             total_summary.add(&result.summary);
             merge_code_points(&mut result, &mut seen_code_points, &mut all_code_points);
@@ -168,6 +170,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
         project_root_path.unwrap_or_else(|| ".".to_string()),
         all_code_points,
         file_interner.into_vec(),
+        name_interner.into_vec(),
     );
 
     // Output results based on format
@@ -217,6 +220,7 @@ fn analyze_binary(
     output: &OutputFormat,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Result<Option<BinaryAnalysisResult>, String> {
     match symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
@@ -228,6 +232,7 @@ fn analyze_binary(
             output,
             project_context,
             file_interner,
+            name_interner,
         )
         .map(Some),
         SymbolTable::MachO(Fat(_)) => Ok(None),
@@ -240,6 +245,7 @@ fn analyze_binary(
             output,
             project_context,
             file_interner,
+            name_interner,
         )
         .map(Some),
         SymbolTable::Archive(archive) => analyze_archive(
@@ -251,6 +257,7 @@ fn analyze_binary(
             output,
             project_context,
             file_interner,
+            name_interner,
         )
         .map(Some),
     }
@@ -305,6 +312,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
 
         // Shared file path interner for all binaries in this member
         let member_interner = FilePathInterner::new();
+        let member_name_interner = NameInterner::new();
 
         // Parallel analysis of all binaries in this member
         let binary_results: Vec<(PathBuf, BinaryAnalysisResult)> = member
@@ -326,6 +334,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     &args.output,
                     &project_context,
                     &member_interner,
+                    &member_name_interner,
                 )
                 .ok()??;
                 Some((binary_path, result))
@@ -345,6 +354,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             merge_code_points(&mut result, &mut seen_code_points, &mut member_code_points);
         }
         let member_file_paths = member_interner.into_vec();
+        let member_name_paths = member_name_interner.into_vec();
 
         if args.direct_only {
             member_code_points.retain(|p| p.is_direct_panic);
@@ -358,6 +368,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                     workspace_root.to_string_lossy().to_string(),
                     member_code_points.clone(),
                     member_file_paths.clone(),
+                    member_name_paths.clone(),
                 );
                 let no_hyperlinks = !args.output.use_hyperlinks();
                 generate_text_output(
@@ -382,6 +393,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
             summary: member_summary.clone(),
             code_points: member_code_points,
             file_paths: member_file_paths,
+            name_paths: member_name_paths,
         });
         workspace_summary.add(&member_summary);
     }

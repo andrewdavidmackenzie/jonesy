@@ -421,10 +421,10 @@ impl SymbolIndex {
             return None;
         }
 
-        // Second pass: create entries in parallel
+        // Second pass: create entries in parallel (into_par_iter moves strings, avoiding clone)
         let mut entries: Vec<SymbolEntry> = raw_symbols
-            .par_iter()
-            .map(|(addr, name)| SymbolEntry::new(*addr, name.clone()))
+            .into_par_iter()
+            .map(|(addr, name)| SymbolEntry::new(addr, name))
             .collect();
 
         // Parallel sort by address

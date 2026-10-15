@@ -24,6 +24,7 @@ use crate::call_tree::{CodePointKey, CrateCodePoint};
 use crate::cargo::{find_binary, find_library};
 use crate::file_watcher::{self, WatcherConfig};
 use crate::project_context::ProjectContext;
+use crate::string_tables;
 use notify::RecommendedWatcher;
 
 /// Counter for generating unique progress tokens
@@ -38,6 +39,9 @@ struct ServerState {
     /// Resolved file path table for `CrateCodePoint.file` index resolution.
     /// Accumulated across all analysed targets.
     file_paths: Vec<String>,
+    /// Resolved name table for `CrateCodePoint.name` and `called_function` index resolution.
+    /// Accumulated across all analysed targets.
+    name_paths: Vec<String>,
     /// Files that have been opened (for re-publishing after analysis)
     opened_files: HashSet<Url>,
 }
@@ -48,6 +52,7 @@ impl ServerState {
             workspace_root: None,
             panic_points: HashMap::new(),
             file_paths: Vec::new(),
+            name_paths: Vec::new(),
             opened_files: HashSet::new(),
         }
     }
@@ -77,7 +82,12 @@ impl JonesyLspServer {
 
     /// Convert a CrateCodePoint to an LSP Diagnostic.
     /// `file_paths` is the resolved file path table from `BinaryAnalysisResult`.
-    fn code_point_to_diagnostic(point: &CrateCodePoint, file_paths: &[String]) -> Diagnostic {
+    /// `name_paths` is the resolved name table for function name index resolution.
+    fn code_point_to_diagnostic(
+        point: &CrateCodePoint,
+        file_paths: &[String],
+        name_paths: &[String],
+    ) -> Diagnostic {
         // Get all causes sorted by error code for determinism
         let sorted_causes: Vec<_> = {
             let mut causes: Vec<_> = point.causes.iter().collect();
@@ -86,6 +96,7 @@ impl JonesyLspServer {
         };
 
         // Build message showing all causes
+        let called_fn = string_tables::resolve_name(name_paths, point.called_function);
         let (message, suggestion, error_code, docs_url) = if sorted_causes.is_empty() {
             ("potential panic point".to_string(), None, None, None)
         } else {
@@ -96,10 +107,7 @@ impl JonesyLspServer {
             let primary = sorted_causes[0];
             (
                 format!("panic point: {}", descriptions.join(", ")),
-                Some(
-                    primary
-                        .format_suggestion(point.is_direct_panic, point.called_function.as_deref()),
-                ),
+                Some(primary.format_suggestion(point.is_direct_panic, called_fn)),
                 Some(primary.error_code().to_string()),
                 Url::parse(&primary.docs_url()).ok(),
             )
@@ -126,11 +134,12 @@ impl JonesyLspServer {
             .get(point.file as usize)
             .cloned()
             .unwrap_or_default();
+        let resolved_name = string_tables::resolve_name(name_paths, point.name).unwrap_or("");
         let data = serde_json::json!({
             "causes": cause_ids,
-            "function": &point.name,
+            "function": resolved_name,
             "file": &resolved_file,
-            "called_function": &point.called_function,
+            "called_function": called_fn,
             "is_direct_panic": point.is_direct_panic,
         });
 
@@ -485,7 +494,9 @@ impl JonesyLspServer {
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         let mut seen: std::collections::HashSet<CodePointKey> = std::collections::HashSet::new();
-        let mut all_file_paths: Vec<String> = Vec::new();
+        // Shared interners across all targets — ensures indices are consistent
+        let shared_file_interner = Arc::new(crate::string_tables::FilePathInterner::new());
+        let shared_name_interner = Arc::new(crate::string_tables::NameInterner::new());
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
@@ -515,24 +526,18 @@ impl JonesyLspServer {
             let analysis_result = {
                 let target = target.clone();
                 let project_context = Arc::clone(&project_context);
+                let file_interner = Arc::clone(&shared_file_interner);
+                let name_interner = Arc::clone(&shared_name_interner);
                 tokio::task::spawn_blocking(move || {
-                    analyze_single_target(&target, &project_context)
+                    analyze_single_target(&target, &project_context, &file_interner, &name_interner)
                 })
                 .await
             };
 
             match analysis_result {
                 Ok(Ok(analysis)) => {
-                    let file_paths = &analysis.file_paths;
-                    // Merge file_paths into the accumulated table
-                    if all_file_paths.len() < file_paths.len() {
-                        all_file_paths.resize(file_paths.len(), String::new());
-                    }
-                    for (i, fp) in file_paths.iter().enumerate() {
-                        if !fp.is_empty() {
-                            all_file_paths[i] = fp.clone();
-                        }
-                    }
+                    // No per-target path merging needed — shared interners ensure
+                    // all targets use the same index namespace.
 
                     // Filter to new points only (dedup across targets)
                     // CrateCodePoint.file is already a u16 index
@@ -560,11 +565,9 @@ impl JonesyLspServer {
                         std::collections::HashSet::new();
 
                     for point in new_points {
-                        // Resolve file index to path string
-                        let resolved_file = file_paths
-                            .get(point.file as usize)
-                            .cloned()
-                            .unwrap_or_default();
+                        // Resolve file index from the shared interner
+                        let resolved_file =
+                            shared_file_interner.resolve(point.file).unwrap_or_default();
 
                         // Skip files in target/ directory
                         if resolved_file.starts_with(&target_dir) {
@@ -584,12 +587,22 @@ impl JonesyLspServer {
                         }
                     }
 
-                    // Publish updated diagnostics for files that changed
+                    // Publish updated diagnostics for files that changed.
+                    // Snapshot the shared interners for name/file resolution.
+                    let file_paths_snapshot = shared_file_interner.reverse_snapshot();
+                    let name_paths_snapshot = shared_name_interner.reverse_snapshot();
+
                     for uri in files_updated {
                         if let Some(points) = points_by_file.get(&uri) {
                             let diagnostics: Vec<Diagnostic> = points
                                 .iter()
-                                .map(|p| Self::code_point_to_diagnostic(p, &all_file_paths))
+                                .map(|p| {
+                                    Self::code_point_to_diagnostic(
+                                        p,
+                                        &file_paths_snapshot,
+                                        &name_paths_snapshot,
+                                    )
+                                })
                                 .collect();
 
                             self.client
@@ -617,12 +630,23 @@ impl JonesyLspServer {
             }
         }
 
+        // Resolve shared interners to vecs for state storage
+        // Try to unwrap the Arc (succeeds if this is the only reference);
+        // fall back to snapshot if spawn_blocking tasks still hold refs.
+        let all_file_paths = Arc::try_unwrap(shared_file_interner)
+            .map(|i| i.into_vec())
+            .unwrap_or_else(|arc| arc.reverse_snapshot());
+        let all_name_paths = Arc::try_unwrap(shared_name_interner)
+            .map(|i| i.into_vec())
+            .unwrap_or_else(|arc| arc.reverse_snapshot());
+
         // Update state with final results
         let mut state = self.state.write().await;
         let old_files: std::collections::HashSet<_> = state.panic_points.keys().cloned().collect();
         let new_files: std::collections::HashSet<_> = points_by_file.keys().cloned().collect();
         state.panic_points = points_by_file;
         state.file_paths = all_file_paths;
+        state.name_paths = all_name_paths;
         drop(state);
 
         // Clear diagnostics for files that no longer have panic points
@@ -661,6 +685,7 @@ impl JonesyLspServer {
         let republish: Vec<(Url, Vec<Diagnostic>)> = {
             let state = self.state.read().await;
             let file_paths = &state.file_paths;
+            let name_paths = &state.name_paths;
             state
                 .opened_files
                 .iter()
@@ -668,7 +693,7 @@ impl JonesyLspServer {
                     state.panic_points.get(uri).map(|points| {
                         let diagnostics = points
                             .iter()
-                            .map(|p| Self::code_point_to_diagnostic(p, file_paths))
+                            .map(|p| Self::code_point_to_diagnostic(p, file_paths, name_paths))
                             .collect();
                         (uri.clone(), diagnostics)
                     })
@@ -1351,9 +1376,10 @@ impl LanguageServer for JonesyLspServer {
         let state = self.state.read().await;
         if let Some(points) = state.panic_points.get(&uri) {
             let file_paths = &state.file_paths;
+            let name_paths = &state.name_paths;
             let diagnostics: Vec<Diagnostic> = points
                 .iter()
-                .map(|p| Self::code_point_to_diagnostic(p, file_paths))
+                .map(|p| Self::code_point_to_diagnostic(p, file_paths, name_paths))
                 .collect();
             drop(state); // Release lock before async call
 
@@ -1709,7 +1735,9 @@ async fn run_analysis_task(
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
-    let mut all_file_paths: Vec<String> = Vec::new();
+    // Shared interners across all targets — ensures indices are consistent
+    let shared_file_interner = Arc::new(crate::string_tables::FilePathInterner::new());
+    let shared_name_interner = Arc::new(crate::string_tables::NameInterner::new());
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1729,24 +1757,16 @@ async fn run_analysis_task(
         let analysis_result = {
             let target = target.clone();
             let project_context = Arc::clone(&project_context);
-            tokio::task::spawn_blocking(move || analyze_single_target(&target, &project_context))
-                .await
+            let file_interner = Arc::clone(&shared_file_interner);
+            let name_interner = Arc::clone(&shared_name_interner);
+            tokio::task::spawn_blocking(move || {
+                analyze_single_target(&target, &project_context, &file_interner, &name_interner)
+            })
+            .await
         };
 
         if let Ok(Ok(analysis)) = analysis_result {
-            let file_paths = &analysis.file_paths;
-            // Merge file_paths into the accumulated table
-            if all_file_paths.len() < file_paths.len() {
-                all_file_paths.resize(file_paths.len(), String::new());
-            }
-            for (i, fp) in file_paths.iter().enumerate() {
-                if !fp.is_empty() {
-                    all_file_paths[i] = fp.clone();
-                }
-            }
-
             let point_count = analysis.code_points.len();
-            // CrateCodePoint.file is already a u16 index
             let new_points: Vec<_> = analysis
                 .code_points
                 .into_iter()
@@ -1761,11 +1781,8 @@ async fn run_analysis_task(
 
             // Group by file
             for point in new_points {
-                // Resolve file index to path string
-                let resolved_file = file_paths
-                    .get(point.file as usize)
-                    .cloned()
-                    .unwrap_or_default();
+                // Resolve file index from the shared interner
+                let resolved_file = shared_file_interner.resolve(point.file).unwrap_or_default();
 
                 if resolved_file.starts_with(&target_dir) {
                     continue;
@@ -1819,6 +1836,14 @@ async fn run_analysis_task(
             .await;
     }
 
+    // Resolve shared interners to vecs for state storage and diagnostics
+    let all_file_paths = Arc::try_unwrap(shared_file_interner)
+        .map(|i| i.into_vec())
+        .unwrap_or_else(|arc| arc.reverse_snapshot());
+    let all_name_paths = Arc::try_unwrap(shared_name_interner)
+        .map(|i| i.into_vec())
+        .unwrap_or_else(|arc| arc.reverse_snapshot());
+
     // Update state and publish diagnostics
     // When some targets were skipped, merge with existing state to preserve their diagnostics
     let old_files: HashSet<_>;
@@ -1829,31 +1854,24 @@ async fn run_analysis_task(
         old_files = state.panic_points.keys().cloned().collect();
 
         if skipped_count > 0 {
-            // Merge: update analyzed files, keep diagnostics from skipped targets
+            // Merge: update analysed files, keep diagnostics from skipped targets
             for (uri, points) in points_by_file.clone() {
                 state.panic_points.insert(uri, points);
-            }
-            // Merge file_paths: extend if new table is larger
-            if all_file_paths.len() > state.file_paths.len() {
-                state.file_paths.resize(all_file_paths.len(), String::new());
-            }
-            for (i, fp) in all_file_paths.iter().enumerate() {
-                if !fp.is_empty() {
-                    state.file_paths[i] = fp.clone();
-                }
             }
         } else {
             // Full analysis: replace entirely
             state.panic_points = points_by_file.clone();
-            state.file_paths = all_file_paths.clone();
         }
+        // Always update path tables from the shared interners (consistent namespace)
+        state.file_paths = all_file_paths.clone();
+        state.name_paths = all_name_paths.clone();
     }
 
     // Publish diagnostics for files with panic points
     for (uri, points) in &points_by_file {
         let diagnostics: Vec<Diagnostic> = points
             .iter()
-            .map(|p| JonesyLspServer::code_point_to_diagnostic(p, &all_file_paths))
+            .map(|p| JonesyLspServer::code_point_to_diagnostic(p, &all_file_paths, &all_name_paths))
             .collect();
         client
             .publish_diagnostics(uri.clone(), diagnostics, None)
@@ -2012,28 +2030,17 @@ fn analyze_workspace_targets(
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
+    let file_interner = crate::string_tables::FilePathInterner::new();
+    let name_interner = crate::string_tables::NameInterner::new();
 
     for target in targets {
-        match analyze_single_target(target, project_context) {
+        match analyze_single_target(target, project_context, &file_interner, &name_interner) {
             Ok(analysis) => {
                 result.analyzed_count += 1;
                 let point_count = analysis.code_points.len();
                 result.total_count += point_count;
 
-                // Merge file_paths
-                if result.file_paths.len() < analysis.file_paths.len() {
-                    result
-                        .file_paths
-                        .resize(analysis.file_paths.len(), String::new());
-                }
-                for (i, fp) in analysis.file_paths.iter().enumerate() {
-                    if !fp.is_empty() {
-                        result.file_paths[i] = fp.clone();
-                    }
-                }
-
-                // Filter to new points only (dedup across targets)
-                // CrateCodePoint.file is already a u16 index
+                // No per-target path merging — shared interners handle it
                 let new_points: Vec<_> = analysis
                     .code_points
                     .into_iter()
@@ -2050,6 +2057,9 @@ fn analyze_workspace_targets(
             }
         }
     }
+
+    // Resolve shared interners to vecs for the result
+    result.file_paths = file_interner.into_vec();
 
     result
 }
@@ -2099,6 +2109,8 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
 fn analyze_single_target(
     target_path: &Path,
     project_context: &ProjectContext,
+    file_interner: &crate::string_tables::FilePathInterner,
+    name_interner: &crate::string_tables::NameInterner,
 ) -> std::result::Result<BinaryAnalysisResult, String> {
     use crate::analysis::{analyze_archive, analyze_binary_target};
     use crate::args::OutputFormat;
@@ -2120,10 +2132,7 @@ fn analyze_single_target(
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
 
-    // Each target gets its own file path interner
-    let interner = crate::string_tables::FilePathInterner::new();
-
-    let mut result = match &symbols {
+    let result = match &symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
             &symbols,
             &binary_buffer,
@@ -2132,7 +2141,8 @@ fn analyze_single_target(
             &config,
             &output,
             project_context,
-            &interner,
+            file_interner,
+            name_interner,
         ),
         SymbolTable::MachO(Fat(fat)) => {
             // Fat binary - find native architecture slice and analyze it
@@ -2174,7 +2184,8 @@ fn analyze_single_target(
                         &config,
                         &output,
                         project_context,
-                        &interner,
+                        file_interner,
+                        name_interner,
                     )
                 }
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
@@ -2188,7 +2199,8 @@ fn analyze_single_target(
             &config,
             &output,
             project_context,
-            &interner,
+            file_interner,
+            name_interner,
         ),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
@@ -2198,12 +2210,12 @@ fn analyze_single_target(
             &config,
             &output,
             project_context,
-            &interner,
+            file_interner,
+            name_interner,
         ),
     }?;
 
-    // Resolve the interner to a file_paths table for downstream use
-    result.file_paths = interner.into_vec();
+    // file_paths and name_paths are populated by the caller from the shared interners
     Ok(result)
 }
 
@@ -2584,14 +2596,19 @@ mod tests {
             .expect("Should build project context");
 
         let mut lsp_points: HashSet<(String, u16)> = HashSet::new();
+        let file_interner = crate::string_tables::FilePathInterner::new();
+        let name_interner = crate::string_tables::NameInterner::new();
 
         for target in &targets {
-            let result = analyze_single_target(target, &project_context);
+            let result =
+                analyze_single_target(target, &project_context, &file_interner, &name_interner);
             if let Ok(analysis) = result {
+                // Resolve file paths from the shared interner (not analysis.file_paths
+                // which is empty since the interner is external)
+                let file_paths_snapshot = file_interner.reverse_snapshot();
                 for point in &analysis.code_points {
-                    // Resolve file index to path string using this analysis's file_paths
                     let resolved_file =
-                        crate::string_tables::resolve_file_owned(&analysis.file_paths, point.file);
+                        crate::string_tables::resolve_file_owned(&file_paths_snapshot, point.file);
                     // Normalize path
                     let file = resolved_file
                         .rsplit("workspace_test/")
@@ -3005,15 +3022,16 @@ mod tests {
     // ========================================================================
 
     fn make_code_point(file_idx: u16, line: u16, column: u16) -> CrateCodePoint {
+        use crate::string_tables::NAME_NONE;
         CrateCodePoint {
             file: file_idx,
             line,
             column,
-            name: "test_func".to_string(),
+            name: 0u32,
             causes: HashSet::new(),
             children: Vec::new(),
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         }
     }
 
@@ -3213,8 +3231,9 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_empty_causes() {
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let point = make_code_point(0, 42, 10);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(diag.source, Some("jonesy".to_string()));
@@ -3229,8 +3248,10 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_single_cause() {
         use crate::panic_cause::PanicCause;
+        use crate::string_tables::NAME_NONE;
 
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["my_func".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
 
@@ -3238,14 +3259,14 @@ mod tests {
             file: 0,
             line: 10,
             column: 5,
-            name: "my_func".to_string(),
+            name: 0u32,
             causes,
             children: Vec::new(),
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
 
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         assert!(diag.message.contains("unwrap"));
         // Single cause should also show JP code in message (consistent with multi-cause)
@@ -3265,6 +3286,7 @@ mod tests {
         use crate::panic_cause::PanicCause;
 
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["my_func".to_string(), "risky_fn".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::Expect);
@@ -3273,14 +3295,14 @@ mod tests {
             file: 0,
             line: 10,
             column: 5,
-            name: "my_func".to_string(),
+            name: 0u32,
             causes,
             children: Vec::new(),
             is_direct_panic: false,
-            called_function: Some("risky_fn".to_string()),
+            called_function: 1u32,
         };
 
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         // Multiple causes shown in message
         assert!(diag.message.contains("JP"));
@@ -3294,8 +3316,9 @@ mod tests {
     #[test]
     fn test_code_point_to_diagnostic_no_column() {
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let point = make_code_point(0, 100, 0);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         // Column 0 (DWARF left edge): saturating_sub(1) = 0 (LSP start of line)
         assert_eq!(diag.range.start.character, 0);
@@ -3305,8 +3328,9 @@ mod tests {
     fn test_code_point_to_diagnostic_line_1() {
         // Edge case: line 1 should not underflow
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let point = make_code_point(0, 1, 1);
-        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths);
+        let diag = JonesyLspServer::code_point_to_diagnostic(&point, &file_paths, &name_paths);
 
         assert_eq!(diag.range.start.line, 0);
         assert_eq!(diag.range.start.character, 0);

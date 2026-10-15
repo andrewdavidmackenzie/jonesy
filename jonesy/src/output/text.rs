@@ -65,6 +65,7 @@ pub fn write_text_output<W: Write>(
             w,
             &result.code_points,
             &result.file_paths,
+            &result.name_paths,
             &result.project_root,
             tree,
             no_hyperlinks,
@@ -86,10 +87,12 @@ pub fn write_text_output<W: Write>(
 }
 
 /// Write panic code points.
+#[allow(clippy::too_many_arguments)]
 fn write_panic_points<W: Write>(
     w: &mut W,
     code_points: &[CrateCodePoint],
     file_paths: &[String],
+    name_paths: &[String],
     project_root: &str,
     include_children: bool,
     no_hyperlinks: bool,
@@ -113,6 +116,7 @@ fn write_panic_points<W: Write>(
             w,
             code_points,
             file_paths,
+            name_paths,
             Some(project_root_path),
             None,
             no_hyperlinks,
@@ -124,6 +128,7 @@ fn write_panic_points<W: Write>(
             w,
             code_points,
             file_paths,
+            name_paths,
             Some(project_root_path),
             include_children,
         )?;
@@ -137,6 +142,7 @@ fn write_directory_tree<W: Write>(
     w: &mut W,
     points: &[CrateCodePoint],
     file_paths: &[String],
+    name_paths: &[String],
     project_root: Option<&Path>,
     crate_root: Option<&Path>,
     no_hyperlinks: bool,
@@ -185,6 +191,7 @@ fn write_directory_tree<W: Write>(
                 w,
                 point,
                 file_paths,
+                name_paths,
                 if dir.is_empty() { "" } else { child_prefix },
                 is_last_file,
                 dir.is_empty(),
@@ -204,11 +211,19 @@ fn write_flat_format<W: Write>(
     w: &mut W,
     points: &[CrateCodePoint],
     file_paths: &[String],
+    name_paths: &[String],
     project_root: Option<&Path>,
     include_children: bool,
 ) -> io::Result<()> {
     for point in points {
-        write_flat_point(w, point, file_paths, project_root, include_children)?;
+        write_flat_point(
+            w,
+            point,
+            file_paths,
+            name_paths,
+            project_root,
+            include_children,
+        )?;
     }
     Ok(())
 }
@@ -218,6 +233,7 @@ fn write_flat_point<W: Write>(
     w: &mut W,
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     project_root: Option<&Path>,
     include_children: bool,
 ) -> io::Result<()> {
@@ -244,8 +260,8 @@ fn write_flat_point<W: Write>(
     if is_leaf {
         // Show help/warning for primary cause only (first in sorted order)
         if let Some(cause) = sorted_causes.first() {
-            let suggestion =
-                cause.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
+            let called_fn = string_tables::resolve_name(name_paths, point.called_function);
+            let suggestion = cause.format_suggestion(point.is_direct_panic, called_fn);
             if !suggestion.is_empty() {
                 writeln!(w, "     = help: {}", suggestion)?;
             }
@@ -263,6 +279,7 @@ fn write_flat_point<W: Write>(
                 w,
                 child,
                 file_paths,
+                name_paths,
                 project_root,
                 "     ",
                 include_children,
@@ -277,6 +294,7 @@ fn write_flat_child<W: Write>(
     w: &mut W,
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     project_root: Option<&Path>,
     indent: &str,
     include_children: bool,
@@ -300,8 +318,8 @@ fn write_flat_child<W: Write>(
     if is_leaf {
         // Show help/warning for primary cause only (first in sorted order)
         if let Some(cause) = sorted_causes.first() {
-            let suggestion =
-                cause.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
+            let called_fn = string_tables::resolve_name(name_paths, point.called_function);
+            let suggestion = cause.format_suggestion(point.is_direct_panic, called_fn);
             if !suggestion.is_empty() {
                 writeln!(w, "{}     = help: {}", indent, suggestion)?;
             }
@@ -320,6 +338,7 @@ fn write_flat_child<W: Write>(
                 w,
                 child,
                 file_paths,
+                name_paths,
                 project_root,
                 &child_indent,
                 include_children,
@@ -335,6 +354,7 @@ fn write_file_entry<W: Write>(
     w: &mut W,
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     prefix: &str,
     is_last: bool,
     is_root_level: bool,
@@ -389,8 +409,8 @@ fn write_file_entry<W: Write>(
     if is_leaf {
         // Show help/warning for primary cause only (first in sorted order)
         if let Some(cause) = sorted_causes.first() {
-            let suggestion =
-                cause.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
+            let called_fn = string_tables::resolve_name(name_paths, point.called_function);
+            let suggestion = cause.format_suggestion(point.is_direct_panic, called_fn);
             if !suggestion.is_empty() {
                 let help_prefix = if is_root_level { "     " } else { prefix };
                 writeln!(w, "{}    = help: {}", help_prefix, suggestion)?;
@@ -421,6 +441,7 @@ fn write_file_entry<W: Write>(
                 w,
                 child,
                 file_paths,
+                name_paths,
                 &child_prefix,
                 is_last_child,
                 false,
@@ -441,6 +462,7 @@ fn write_crate_point<W: Write>(
     w: &mut W,
     point: &CrateCodePoint,
     file_paths: &[String],
+    name_paths: &[String],
     prefix: &str,
     is_last: bool,
     is_root: bool,
@@ -499,8 +521,8 @@ fn write_crate_point<W: Write>(
     if is_leaf {
         // Show help/warning for primary cause only (first in sorted order)
         if let Some(cause) = sorted_causes.first() {
-            let suggestion =
-                cause.format_suggestion(point.is_direct_panic, point.called_function.as_deref());
+            let called_fn = string_tables::resolve_name(name_paths, point.called_function);
+            let suggestion = cause.format_suggestion(point.is_direct_panic, called_fn);
             if !suggestion.is_empty() {
                 let help_prefix = if is_root { "     " } else { prefix };
                 writeln!(w, "{}    = help: {}", help_prefix, suggestion)?;
@@ -531,6 +553,7 @@ fn write_crate_point<W: Write>(
                 w,
                 child,
                 file_paths,
+                name_paths,
                 &child_prefix,
                 is_last_child,
                 false,
@@ -606,26 +629,27 @@ mod tests {
     use super::*;
     use crate::call_tree::AnalysisResult;
     use crate::panic_cause::PanicCause;
+    use crate::string_tables::NAME_NONE;
     use std::collections::HashSet;
 
     /// Create a test point with a file path index.
     /// The file path index should correspond to an entry in the file_paths vec
     /// used with the test result.
     fn make_test_point(
-        name: &str,
+        _name: &str,
         file: u16,
         line: u16,
         causes: Vec<PanicCause>,
     ) -> CrateCodePoint {
         CrateCodePoint {
-            name: name.to_string(),
+            name: 0u32,
             file,
             line,
             column: 5,
             causes: causes.into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         }
     }
 
@@ -638,6 +662,7 @@ mod tests {
             project_root: "/test/project".to_string(),
             code_points,
             file_paths,
+            name_paths: vec!["test_func".to_string()],
         }
     }
 
@@ -815,26 +840,32 @@ mod tests {
     fn test_write_text_output_with_children() {
         let file_paths = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let child = CrateCodePoint {
-            name: "child_func".to_string(),
+            name: 0u32,
             file: 1,
             line: 20,
             column: 1,
             causes: vec![PanicCause::BoundsCheck].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: "parent_func".to_string(),
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: Some("child_func".to_string()),
+            called_function: 0u32,
         };
-        let result = make_test_result(vec![parent], file_paths);
+        let result = AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test/project".to_string(),
+            code_points: vec![parent],
+            file_paths,
+            name_paths: vec!["child_func".to_string(), "parent_func".to_string()],
+        };
         let mut output = Vec::new();
         write_text_output(&mut output, &result, true, false, true, false).unwrap();
         let output_str = String::from_utf8(output).unwrap();
@@ -868,24 +899,26 @@ mod tests {
     #[test]
     fn test_write_flat_point_multiple_causes() {
         let file_paths = vec!["src/main.rs".to_string()];
+        let name_paths = vec!["test".to_string()];
         let mut causes = HashSet::new();
         causes.insert(PanicCause::Unwrap);
         causes.insert(PanicCause::BoundsCheck);
         let point = CrateCodePoint {
-            name: "test".to_string(),
+            name: 0u32,
             file: 0,
             line: 10,
             column: 1,
             causes,
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let mut output = Vec::new();
         write_flat_point(
             &mut output,
             &point,
             &file_paths,
+            &name_paths,
             Some(Path::new("/test")),
             true,
         )
@@ -903,6 +936,7 @@ mod tests {
             "/test/src/main.rs".to_string(),
             "/test/src/lib.rs".to_string(),
         ];
+        let name_paths = vec!["test_func".to_string()];
         let points = vec![
             make_test_point("func1", 0, 10, vec![PanicCause::Todo]),
             make_test_point("func2", 1, 20, vec![PanicCause::Unreachable]),
@@ -912,6 +946,7 @@ mod tests {
             &mut output,
             &points,
             &file_paths,
+            &name_paths,
             Some(Path::new("/test")),
             None,
             true,
@@ -933,16 +968,22 @@ mod tests {
     fn test_write_text_output_indirect_panic() {
         let file_paths = vec!["src/main.rs".to_string()];
         let point = CrateCodePoint {
-            name: "caller".to_string(),
+            name: 0u32,
             file: 0,
             line: 10,
             column: 1,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: Some("parse_config".to_string()),
+            called_function: 1u32,
         };
-        let result = make_test_result(vec![point], file_paths);
+        let result = AnalysisResult {
+            project_name: "test_project".to_string(),
+            project_root: "/test/project".to_string(),
+            code_points: vec![point],
+            file_paths,
+            name_paths: vec!["caller".to_string(), "parse_config".to_string()],
+        };
         let mut output = Vec::new();
         write_text_output(&mut output, &result, false, false, true, false).unwrap();
         let output_str = String::from_utf8(output).unwrap();
@@ -956,24 +997,24 @@ mod tests {
         // Test that tree=true shows children in flat format
         let file_paths = vec!["src/main.rs".to_string(), "src/child.rs".to_string()];
         let child = CrateCodePoint {
-            name: "child_func".to_string(),
+            name: 0u32,
             file: 1,
             line: 5,
             column: 1,
             causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: "parent_func".to_string(),
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let result = make_test_result(vec![parent], file_paths);
         let mut output = Vec::new();
@@ -996,24 +1037,24 @@ mod tests {
         // Test that tree=false hides children
         let file_paths = vec!["src/main.rs".to_string(), "src/child.rs".to_string()];
         let child = CrateCodePoint {
-            name: "child_func".to_string(),
+            name: 0u32,
             file: 1,
             line: 5,
             column: 1,
             causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: "parent_func".to_string(),
+            name: 1u32,
             file: 0,
             line: 10,
             column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let result = make_test_result(vec![parent], file_paths);
         let mut output = Vec::new();
@@ -1036,35 +1077,40 @@ mod tests {
             "src/middle.rs".to_string(),
             "src/deep.rs".to_string(),
         ];
+        let name_paths = vec![
+            "grandchild".to_string(),
+            "child".to_string(),
+            "parent".to_string(),
+        ];
         let grandchild = CrateCodePoint {
-            name: "grandchild".to_string(),
+            name: 0u32,
             file: 2,
             line: 1,
             column: 1,
             causes: vec![PanicCause::Todo].into_iter().collect(),
             children: vec![],
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let child = CrateCodePoint {
-            name: "child".to_string(),
+            name: 1u32,
             file: 1,
             line: 5,
             column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![grandchild],
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         };
         let parent = CrateCodePoint {
-            name: "parent".to_string(),
+            name: 2u32,
             file: 0,
             line: 10,
             column: 1,
             causes: std::collections::HashSet::new(),
             children: vec![child],
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         };
 
         let mut output = Vec::new();
@@ -1072,6 +1118,7 @@ mod tests {
             &mut output,
             &parent,
             &file_paths,
+            &name_paths,
             Some(Path::new("/test")),
             true,
         )
@@ -1093,6 +1140,7 @@ mod tests {
             "/test/src/b/file2.rs".to_string(),
             "/test/src/a/file3.rs".to_string(),
         ];
+        let name_paths = vec!["test_func".to_string()];
         let points = vec![
             make_test_point("func1", 0, 10, vec![PanicCause::Todo]),
             make_test_point("func2", 1, 20, vec![PanicCause::Unreachable]),
@@ -1103,6 +1151,7 @@ mod tests {
             &mut output,
             &points,
             &file_paths,
+            &name_paths,
             Some(Path::new("/test")),
             None,
             true,
@@ -1125,6 +1174,7 @@ mod tests {
     fn test_write_directory_tree_root_level_files() {
         // Test tree format with files at root level (no directory)
         let file_paths = vec!["/test/main.rs".to_string(), "/test/lib.rs".to_string()];
+        let name_paths = vec!["test_func".to_string()];
         let points = vec![
             make_test_point("func1", 0, 10, vec![PanicCause::Todo]),
             make_test_point("func2", 1, 20, vec![PanicCause::Unreachable]),
@@ -1134,6 +1184,7 @@ mod tests {
             &mut output,
             &points,
             &file_paths,
+            &name_paths,
             Some(Path::new("/test")),
             None,
             true,

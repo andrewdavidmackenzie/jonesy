@@ -182,9 +182,16 @@ impl ConcurrentStringTables {
 /// of a file path without needing `Option<u16>`.
 /// The maximum valid index is 65534, supporting up to 65535 unique file paths
 /// which is sufficient for any realistic project.
+///
+/// Also used as `NAME_NONE` for function name indices (same sentinel value).
 pub const FILE_NONE: u16 = u16::MAX;
 
-/// Thread-safe file path interner for use during code point collection.
+/// Sentinel value meaning "no function name". Used for `CallerInfo.caller_name`,
+/// `CrateCodePoint.called_function`, etc. Uses `u32` because large binaries
+/// can have >65K unique function names (e.g., monomorphised generics).
+pub const NAME_NONE: u32 = u32::MAX;
+
+/// Thread-safe string interner for concurrent use during rayon `par_iter` phases.
 ///
 /// Uses a `DashMap` for concurrent interning (safe with `par_iter`) and an
 /// `AtomicU32` counter for lock-free ID allocation. Valid indices are `u16`,
@@ -222,6 +229,29 @@ impl FilePathInterner {
             map: DashMap::new(),
             next_id: AtomicU32::new(0),
             reverse: std::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Create a new interner with pre-allocated capacity.
+    /// Use when the approximate number of unique strings is known or estimable.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: DashMap::with_capacity(capacity),
+            next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::with_capacity(capacity)),
+        }
+    }
+
+    /// Pre-size the interner if it is still empty.
+    /// Called when the expected number of entries becomes known (e.g., after
+    /// reading the binary but before the parallel analysis phase).
+    /// No-op if the interner already contains entries.
+    pub fn hint_capacity(&self, capacity: usize) {
+        if self.next_id.load(Ordering::Relaxed) == 0 {
+            // Pre-size the reverse index Vec (the DashMap grows dynamically
+            // and cannot be reserved through a shared reference).
+            let mut rev = self.reverse.write().unwrap();
+            rev.reserve(capacity);
         }
     }
 
@@ -302,6 +332,12 @@ impl FilePathInterner {
         result
     }
 
+    /// Snapshot the reverse index without consuming the interner.
+    /// Used when the interner is still shared (via Arc) but a Vec is needed.
+    pub fn reverse_snapshot(&self) -> Vec<String> {
+        self.reverse.read().unwrap().clone()
+    }
+
     /// Get the number of interned paths.
     #[cfg(test)]
     fn len(&self) -> usize {
@@ -328,6 +364,126 @@ pub fn resolve_file_owned(file_paths: &[String], idx: u16) -> String {
         String::new()
     } else {
         file_paths.get(idx as usize).cloned().unwrap_or_default()
+    }
+}
+
+/// Thread-safe function name interner using `u32` indices.
+///
+/// Uses the same `DashMap` + `RwLock` reverse index pattern as `FilePathInterner`,
+/// but with `u32` indices to support large binaries with >65K unique function names
+/// (common with monomorphised generics in Rust).
+#[derive(Debug)]
+pub struct NameInterner {
+    map: DashMap<String, u32>,
+    next_id: AtomicU32,
+    reverse: std::sync::RwLock<Vec<String>>,
+}
+
+impl Default for NameInterner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NameInterner {
+    /// Create a new empty name interner.
+    pub fn new() -> Self {
+        Self {
+            map: DashMap::new(),
+            next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Create a new interner with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: DashMap::with_capacity(capacity),
+            next_id: AtomicU32::new(0),
+            reverse: std::sync::RwLock::new(Vec::with_capacity(capacity)),
+        }
+    }
+
+    /// Intern a function name, returning its `u32` index.
+    pub fn intern(&self, name: &str) -> u32 {
+        if let Some(entry) = self.map.get(name) {
+            return *entry.value();
+        }
+        let name_owned = name.to_string();
+        *self.map.entry(name_owned.clone()).or_insert_with(|| {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let idx = id.min(NAME_NONE - 1);
+            let mut rev = self.reverse.write().unwrap();
+            if (idx as usize) >= rev.len() {
+                rev.resize(idx as usize + 1, String::new());
+            }
+            rev[idx as usize] = name_owned;
+            idx
+        })
+    }
+
+    /// Intern an owned String, avoiding a clone if not yet interned.
+    pub fn intern_owned(&self, name: String) -> u32 {
+        if let Some(entry) = self.map.get(&name) {
+            return *entry.value();
+        }
+        let name_clone = name.clone();
+        *self.map.entry(name).or_insert_with(|| {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let idx = id.min(NAME_NONE - 1);
+            let mut rev = self.reverse.write().unwrap();
+            if (idx as usize) >= rev.len() {
+                rev.resize(idx as usize + 1, String::new());
+            }
+            rev[idx as usize] = name_clone;
+            idx
+        })
+    }
+
+    /// Resolve an index back to its function name string.
+    pub(crate) fn resolve(&self, idx: u32) -> Option<String> {
+        if idx == NAME_NONE {
+            return None;
+        }
+        let rev = self.reverse.read().unwrap();
+        rev.get(idx as usize).filter(|s| !s.is_empty()).cloned()
+    }
+
+    /// Pre-size the interner if it is still empty.
+    pub fn hint_capacity(&self, capacity: usize) {
+        if self.next_id.load(Ordering::Relaxed) == 0 {
+            let mut rev = self.reverse.write().unwrap();
+            rev.reserve(capacity);
+        }
+    }
+
+    /// Consume the interner and produce a `Vec<String>` indexed by the interned IDs.
+    pub fn into_vec(self) -> Vec<String> {
+        let count = self.next_id.load(Ordering::Relaxed) as usize;
+        let mut result = vec![String::new(); count];
+        for entry in self.map.into_iter() {
+            let idx = entry.1 as usize;
+            if idx < result.len() {
+                result[idx] = entry.0;
+            }
+        }
+        result
+    }
+
+    /// Snapshot the reverse index without consuming the interner.
+    pub fn reverse_snapshot(&self) -> Vec<String> {
+        self.reverse.read().unwrap().clone()
+    }
+}
+
+/// Resolve a name index to a function name string from a resolved name table.
+/// Returns `None` for `NAME_NONE` or out-of-bounds indices.
+#[inline]
+pub fn resolve_name(name_paths: &[String], idx: u32) -> Option<&str> {
+    if idx == NAME_NONE {
+        None
+    } else {
+        name_paths.get(idx as usize).map(|s| s.as_str())
     }
 }
 
@@ -520,5 +676,126 @@ mod tests {
         let file_paths: Vec<String> = Vec::new();
         assert_eq!(resolve_file(&file_paths, 0), None);
         assert_eq!(resolve_file_owned(&file_paths, 0), "");
+    }
+
+    #[test]
+    fn test_file_path_interner_with_capacity() {
+        let interner = FilePathInterner::with_capacity(100);
+        let idx1 = interner.intern("src/main.rs");
+        let idx2 = interner.intern("src/lib.rs");
+        assert_ne!(idx1, idx2);
+        assert_eq!(interner.resolve(idx1), Some("src/main.rs".to_string()));
+        assert_eq!(interner.resolve(idx2), Some("src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_interner_hint_capacity() {
+        let interner = FilePathInterner::new();
+        // hint_capacity on empty interner should not panic
+        interner.hint_capacity(1000);
+        // Should still work normally after hint
+        let idx = interner.intern("test.rs");
+        assert_eq!(interner.resolve(idx), Some("test.rs".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_interner_hint_capacity_noop_when_nonempty() {
+        let interner = FilePathInterner::new();
+        interner.intern("already.rs");
+        // hint_capacity should be a no-op when interner already has entries
+        interner.hint_capacity(1000);
+        assert_eq!(interner.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_name_function() {
+        let name_paths = vec!["main".to_string(), "my_module::process".to_string()];
+        assert_eq!(resolve_name(&name_paths, 0), Some("main"));
+        assert_eq!(resolve_name(&name_paths, 1), Some("my_module::process"));
+        assert_eq!(resolve_name(&name_paths, 2), None); // out of bounds
+        assert_eq!(resolve_name(&name_paths, NAME_NONE), None); // sentinel
+    }
+
+    // -- NameInterner tests --
+
+    #[test]
+    fn test_name_interner_basic() {
+        let interner = NameInterner::new();
+        let idx1 = interner.intern("my_function");
+        let idx2 = interner.intern("my_function");
+        let idx3 = interner.intern("other_function");
+        assert_eq!(idx1, idx2);
+        assert_ne!(idx1, idx3);
+    }
+
+    #[test]
+    fn test_name_interner_default() {
+        let interner = NameInterner::default();
+        assert_eq!(interner.resolve(0), None); // empty interner
+    }
+
+    #[test]
+    fn test_name_interner_with_capacity() {
+        let interner = NameInterner::with_capacity(100);
+        let idx = interner.intern("test_func");
+        assert_eq!(interner.resolve(idx), Some("test_func".to_string()));
+    }
+
+    #[test]
+    fn test_name_interner_intern_owned() {
+        let interner = NameInterner::new();
+        let idx1 = interner.intern_owned("owned_func".to_string());
+        let idx2 = interner.intern("owned_func");
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_name_interner_resolve_none() {
+        let interner = NameInterner::new();
+        assert_eq!(interner.resolve(NAME_NONE), None);
+    }
+
+    #[test]
+    fn test_name_interner_reverse_snapshot() {
+        let interner = NameInterner::new();
+        let idx_a = interner.intern("func_a");
+        let idx_b = interner.intern("func_b");
+        let snapshot = interner.reverse_snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[idx_a as usize], "func_a");
+        assert_eq!(snapshot[idx_b as usize], "func_b");
+        // Interner should still be usable after snapshot
+        let idx_c = interner.intern("func_c");
+        assert_ne!(idx_c, idx_a);
+    }
+
+    #[test]
+    fn test_name_interner_into_vec() {
+        let interner = NameInterner::new();
+        let idx_a = interner.intern("aaa");
+        let idx_b = interner.intern("bbb");
+        let vec = interner.into_vec();
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[idx_a as usize], "aaa");
+        assert_eq!(vec[idx_b as usize], "bbb");
+    }
+
+    #[test]
+    fn test_name_interner_hint_capacity() {
+        let interner = NameInterner::new();
+        interner.hint_capacity(500);
+        let idx = interner.intern("after_hint");
+        assert_eq!(interner.resolve(idx), Some("after_hint".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_interner_reverse_snapshot() {
+        let interner = FilePathInterner::new();
+        let idx_a = interner.intern("file_a.rs");
+        let idx_b = interner.intern("file_b.rs");
+        let snapshot = interner.reverse_snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[idx_a as usize], "file_a.rs");
+        assert_eq!(snapshot[idx_b as usize], "file_b.rs");
     }
 }

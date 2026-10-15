@@ -6,22 +6,20 @@ use crate::call_graph::CallerInfo;
 use crate::function_index::load_dwarf_sections;
 use crate::object_line_table::ObjectLineTable;
 use crate::project_context::ProjectContext;
-use crate::string_tables::FilePathInterner;
+use crate::string_tables::{FilePathInterner, NameInterner};
 use crate::sym::SymbolIndex;
 use goblin::container::{Container, Ctx, Endian};
 use goblin::elf::Elf;
 use goblin::mach::MachO;
 use regex::Regex;
 use rustc_demangle::demangle;
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Call graph for library analysis - uses symbol names instead of addresses.
 /// This allows cross-object-file resolution in archives (rlib/staticlib).
 pub struct LibraryCallGraph {
     /// Maps target symbol name -> list of CallerInfo (aggregated from all .o files)
-    /// Uses 'static lifetime because LibraryCallGraph owns all its data
-    edges: HashMap<String, Vec<CallerInfo<'static>>>,
+    edges: HashMap<String, Vec<CallerInfo>>,
 }
 
 impl LibraryCallGraph {
@@ -33,19 +31,30 @@ impl LibraryCallGraph {
     /// * `binary` - Parsed binary (MachO or ELF) from the object file
     /// * `buffer` - Raw bytes of the object file
     /// * `project_context` - Project context for source file ownership
+    /// * `file_interner` - Shared interner for file paths
+    /// * `name_interner` - Shared interner for function names
     pub fn build_from_object(
         binary: &BinaryRef,
         buffer: &[u8],
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         match binary {
-            BinaryRef::MachO(macho) => {
-                Self::build_from_macho_object(macho, buffer, project_context, file_interner)
-            }
-            BinaryRef::Elf(elf) => {
-                Self::build_from_elf_object(elf, buffer, project_context, file_interner)
-            }
+            BinaryRef::MachO(macho) => Self::build_from_macho_object(
+                macho,
+                buffer,
+                project_context,
+                file_interner,
+                name_interner,
+            ),
+            BinaryRef::Elf(elf) => Self::build_from_elf_object(
+                elf,
+                buffer,
+                project_context,
+                file_interner,
+                name_interner,
+            ),
         }
     }
 
@@ -55,8 +64,9 @@ impl LibraryCallGraph {
         buffer: &[u8],
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
+        let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
 
         // Get symbols for lookup
         let symbols: Vec<(String, u64)> = macho
@@ -184,7 +194,7 @@ impl LibraryCallGraph {
 
                         // Record the call: target_symbol -> caller
                         edges.entry(target_demangled).or_default().push(CallerInfo {
-                            caller_name: Cow::Owned(func_name),
+                            caller_name: name_interner.intern_owned(func_name),
                             file: file_interner.intern_option(file.as_deref()),
                             caller_start_address: func_addr,
                             call_site_addr,
@@ -205,8 +215,9 @@ impl LibraryCallGraph {
         buffer: &[u8],
         project_context: &ProjectContext,
         file_interner: &FilePathInterner,
+        name_interner: &NameInterner,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut edges: HashMap<String, Vec<CallerInfo<'static>>> = HashMap::new();
+        let mut edges: HashMap<String, Vec<CallerInfo>> = HashMap::new();
 
         // Get symbols for lookup
         let symbols: Vec<(String, u64)> = elf
@@ -418,7 +429,7 @@ impl LibraryCallGraph {
 
                 // Record the call: target_symbol -> caller
                 edges.entry(target_demangled).or_default().push(CallerInfo {
-                    caller_name: Cow::Owned(func_name),
+                    caller_name: name_interner.intern_owned(func_name),
                     file: file_interner.intern_option(file.as_deref()),
                     caller_start_address: func_addr,
                     call_site_addr,
@@ -439,12 +450,12 @@ impl LibraryCallGraph {
     }
 
     /// Get all callers of a symbol by name (demangled).
-    pub fn get_callers(&self, symbol_name: &str) -> Vec<CallerInfo<'static>> {
+    pub fn get_callers(&self, symbol_name: &str) -> Vec<CallerInfo> {
         self.edges.get(symbol_name).cloned().unwrap_or_default()
     }
 
     /// Get all callers of symbols matching a pattern.
-    pub fn get_callers_matching(&self, pattern: &Regex) -> Vec<(&str, &[CallerInfo<'static>])> {
+    pub fn get_callers_matching(&self, pattern: &Regex) -> Vec<(&str, &[CallerInfo])> {
         self.edges
             .iter()
             .filter(|(name, _)| pattern.is_match(name))

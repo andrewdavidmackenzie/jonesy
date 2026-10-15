@@ -8,7 +8,7 @@ use crate::heuristics::detect_panic_cause;
 use crate::heuristics::is_panic_triggering_function;
 use crate::panic_cause::PanicCause;
 use crate::project_context::ProjectContext;
-use crate::string_tables::{FILE_NONE, FilePathInterner};
+use crate::string_tables::{FILE_NONE, FilePathInterner, NAME_NONE, NameInterner};
 use crate::sym::CallGraph;
 use dashmap::{DashMap, DashSet};
 use rayon::prelude::*;
@@ -49,8 +49,9 @@ use std::sync::Arc;
 /// A node in the call tree representing a function that can lead to the target symbol
 #[derive(Debug)]
 pub struct CallTreeNode {
-    /// Symbol/function name
-    pub name: String,
+    /// Symbol/function name index into a shared name interner (`NameInterner`).
+    /// `NAME_NONE` means no name is known.
+    pub name: u32,
     /// Source file index into a shared `FilePathInterner`.
     /// `FILE_NONE` means no file path is known.
     pub file: u16,
@@ -64,7 +65,7 @@ pub struct CallTreeNode {
 
 impl CallTreeNode {
     /// Create a new root node for a call tree
-    pub fn new_root(name: String) -> Self {
+    pub fn new_root(name: u32) -> Self {
         CallTreeNode {
             name,
             file: FILE_NONE,
@@ -82,7 +83,7 @@ impl CallTreeNode {
 /// Build a call tree with early filtering during construction.
 /// Nodes that would be pruned (not in crate and no crate children) are never created.
 pub fn build_call_tree_parallel_filtered(
-    call_graph: &CallGraph<'_>,
+    call_graph: &CallGraph,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
     project_context: &ProjectContext,
@@ -125,7 +126,7 @@ pub fn build_call_tree_parallel_filtered(
             }
 
             Some(CallTreeNode {
-                name: caller_info.caller_name.clone().into_owned(),
+                name: caller_info.caller_name,
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -137,7 +138,7 @@ pub fn build_call_tree_parallel_filtered(
 
 /// Sequential version with early filtering during construction.
 fn build_call_tree_sequential_filtered(
-    call_graph: &CallGraph<'_>,
+    call_graph: &CallGraph,
     target_addr: u64,
     visited: &Arc<DashSet<u64>>,
     project_context: &ProjectContext,
@@ -180,7 +181,7 @@ fn build_call_tree_sequential_filtered(
             }
 
             Some(CallTreeNode {
-                name: caller_info.caller_name.clone().into_owned(),
+                name: caller_info.caller_name,
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -193,7 +194,7 @@ fn build_call_tree_sequential_filtered(
 /// Build shallow caller nodes with filtering.
 /// Only creates nodes that are in the crate (leaves are filtered).
 fn build_shallow_callers_filtered(
-    call_graph: &CallGraph<'_>,
+    call_graph: &CallGraph,
     target_addr: u64,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
@@ -214,7 +215,7 @@ fn build_shallow_callers_filtered(
             }
 
             Some(CallTreeNode {
-                name: caller_info.caller_name.clone().into_owned(),
+                name: caller_info.caller_name,
                 file,
                 line: caller_info.line,
                 column: caller_info.column,
@@ -229,7 +230,9 @@ fn build_shallow_callers_filtered(
 /// Use `resolve_file()` from `string_tables` to get the actual path string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateCodePoint {
-    pub name: String,
+    /// Function name index into a shared name interner (`NameInterner`).
+    /// `NAME_NONE` means no name is known.
+    pub name: u32,
     /// File path index into a shared `FilePathInterner`.
     /// `FILE_NONE` means no file path is known.
     pub file: u16,
@@ -243,18 +246,18 @@ pub struct CrateCodePoint {
     /// Whether this code point directly calls a panic-triggering function (e.g., unwrap, expect)
     /// vs calling another function that eventually panics
     pub is_direct_panic: bool,
-    /// Name of the function called at this code point (for indirect panics)
-    /// Used to show "This calls `foo` which may panic" in help messages
-    pub called_function: Option<String>,
+    /// Name of the function called at this code point (for indirect panics).
+    /// `NAME_NONE` means no called function (e.g., direct panics).
+    pub called_function: u32,
 }
 
-/// Info stored for each code point: (function name, set of causes, set of child keys, is_direct_panic, called_function)
+/// Info stored for each code point: (function name index, set of causes, set of child keys, is_direct_panic, called_function index)
 pub type CodePointInfo = (
-    String,
+    u32,
     HashSet<PanicCause>,
     HashSet<CodePointKey>,
-    bool,           // is_direct_panic
-    Option<String>, // called_function (for indirect panics)
+    bool, // is_direct_panic
+    u32,  // called_function (NAME_NONE for direct panics / no called function)
 );
 
 /// Map of code points: key -> info
@@ -310,10 +313,12 @@ fn extract_qualified_function_name(full_name: &str) -> String {
 /// Collect crate code points with hierarchy.
 /// Returns a list of "root" code points (entry points) with their children.
 /// The `file_interner` is the shared interner used for all file path indices.
+/// The `name_interner` is the shared interner used for all function name indices.
 pub fn collect_crate_code_points_hierarchical(
     node: &CallTreeNode,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Vec<CrateCodePoint> {
     let points: DashMap<CodePointKey, CodePointInfo> = DashMap::new();
     let workspace_root = Some(std::path::Path::new(project_context.project_root()));
@@ -323,6 +328,7 @@ pub fn collect_crate_code_points_hierarchical(
         node,
         &points,
         file_interner,
+        name_interner,
         None,
         None,
         None,
@@ -359,14 +365,14 @@ pub fn collect_crate_code_points_hierarchical(
         // The full subtree is available at its first occurrence.
         if let Some(cached) = cache.get(key) {
             return Some(CrateCodePoint {
-                name: cached.name.clone(),
+                name: cached.name,
                 file: cached.file,
                 line: cached.line,
                 column: cached.column,
                 causes: cached.causes.clone(),
                 children: vec![], // Don't clone children - they're at first occurrence
                 is_direct_panic: cached.is_direct_panic,
-                called_function: cached.called_function.clone(),
+                called_function: cached.called_function,
             });
         }
 
@@ -384,18 +390,32 @@ pub fn collect_crate_code_points_hierarchical(
         path.remove(key);
 
         let point = CrateCodePoint {
-            name: name.clone(),
+            name: *name,
             file: key.0,
             line: key.1,
             column: key.2,
             causes: causes.clone(),
             children,
             is_direct_panic: *is_direct_panic,
-            called_function: called_function.clone(),
+            called_function: *called_function,
         };
 
-        // Cache for reuse by other parents
-        cache.insert(*key, point.clone());
+        // Cache a shallow copy (without children) for reuse by other parents.
+        // The cache-hit path at line 361 always returns children: vec![],
+        // so storing children in the cache is wasted memory and cloning cost.
+        cache.insert(
+            *key,
+            CrateCodePoint {
+                name: point.name,
+                file: point.file,
+                line: point.line,
+                column: point.column,
+                causes: point.causes.clone(),
+                children: vec![],
+                is_direct_panic: point.is_direct_panic,
+                called_function: point.called_function,
+            },
+        );
         Some(point)
     }
 
@@ -420,6 +440,7 @@ fn collect_crate_relationships_parallel(
     node: &CallTreeNode,
     points: &DashMap<CodePointKey, CodePointInfo>,
     interner: &FilePathInterner,
+    name_interner: &NameInterner,
     child_crate_key: Option<CodePointKey>,
     current_cause: Option<PanicCause>,
     immediate_callee: Option<&str>,
@@ -428,7 +449,8 @@ fn collect_crate_relationships_parallel(
     source_cache: &crate::inline_allows::ConcurrentSourceFileCache,
 ) {
     // Try to detect panic cause from this node's function name
-    let detected_cause = detect_panic_cause(&node.name).or(current_cause);
+    let node_name = name_interner.resolve(node.name).unwrap_or_default();
+    let detected_cause = detect_panic_cause(&node_name).or(current_cause);
 
     // Check if file matches any of the patterns
     let file_path = interner.resolve(node.file);
@@ -447,31 +469,36 @@ fn collect_crate_relationships_parallel(
             .map(is_panic_triggering_function)
             .unwrap_or(false);
 
-        let called_fn = if !is_direct {
-            immediate_callee.map(extract_qualified_function_name)
+        let called_fn_idx = if !is_direct {
+            immediate_callee
+                .map(|callee| {
+                    let qualified = extract_qualified_function_name(callee);
+                    name_interner.intern_owned(qualified)
+                })
+                .unwrap_or(NAME_NONE)
         } else {
-            None
+            NAME_NONE
         };
 
         let mut entry = points.entry(*key).or_insert_with(|| {
             (
-                node.name.clone(),
+                node.name,
                 HashSet::new(),
                 HashSet::new(),
                 is_direct,
-                called_fn.clone(),
+                called_fn_idx,
             )
         });
 
         if is_direct {
             entry.3 = true;
-            entry.4 = None;
-        } else if entry.4.is_none() && called_fn.is_some() {
-            entry.4 = called_fn;
+            entry.4 = NAME_NONE;
+        } else if entry.4 == NAME_NONE && called_fn_idx != NAME_NONE {
+            entry.4 = called_fn_idx;
         }
 
         if let Some(cause) = &detected_cause {
-            entry.1.insert(cause.clone());
+            entry.1.insert(*cause);
         }
 
         if let Some(child_key) = &child_crate_key {
@@ -493,10 +520,10 @@ fn collect_crate_relationships_parallel(
         {
             None
         } else {
-            detected_cause.clone()
+            detected_cause
         }
     } else {
-        detected_cause.clone()
+        detected_cause
     };
 
     let next_child = node_key.or(child_crate_key);
@@ -507,9 +534,10 @@ fn collect_crate_relationships_parallel(
                 caller,
                 points,
                 interner,
+                name_interner,
                 next_child,
-                propagated_cause.clone(),
-                Some(&node.name),
+                propagated_cause,
+                Some(node_name.as_str()),
                 project_context,
                 workspace_root,
                 source_cache,
@@ -521,9 +549,10 @@ fn collect_crate_relationships_parallel(
                 caller,
                 points,
                 interner,
+                name_interner,
                 next_child,
-                propagated_cause.clone(),
-                Some(&node.name),
+                propagated_cause,
+                Some(node_name.as_str()),
                 project_context,
                 workspace_root,
                 source_cache,
@@ -541,8 +570,10 @@ pub fn collect_crate_code_points(
     config: &Config,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> (Vec<CrateCodePoint>, AnalysisSummary) {
-    let mut roots = collect_crate_code_points_hierarchical(node, project_context, file_interner);
+    let mut roots =
+        collect_crate_code_points_hierarchical(node, project_context, file_interner, name_interner);
 
     assign_unknown_causes(&mut roots);
 
@@ -553,7 +584,13 @@ pub fn collect_crate_code_points(
         &mut PRE_FILTER_LOCATIONS.lock().unwrap(),
     );
 
-    filter_allowed_causes(&mut roots, config, project_context, file_interner);
+    filter_allowed_causes(
+        &mut roots,
+        config,
+        project_context,
+        file_interner,
+        name_interner,
+    );
 
     // Deduplicate roots by (file, line, column)
     dedupe_crate_points(&mut roots);
@@ -598,9 +635,17 @@ pub fn filter_allowed_causes(
     config: &Config,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) {
     let mut cache = crate::inline_allows::SourceFileCache::new();
-    filter_allowed_causes_cached(points, config, project_context, file_interner, &mut cache);
+    filter_allowed_causes_cached(
+        points,
+        config,
+        project_context,
+        file_interner,
+        name_interner,
+        &mut cache,
+    );
 }
 
 /// Inner implementation of `filter_allowed_causes` that threads a source file cache
@@ -610,6 +655,7 @@ fn filter_allowed_causes_cached(
     config: &Config,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
     cache: &mut crate::inline_allows::SourceFileCache,
 ) {
     use crate::inline_allows::check_inline_allow;
@@ -618,6 +664,7 @@ fn filter_allowed_causes_cached(
 
     points.retain_mut(|point| {
         let file_path = file_interner.resolve(point.file).unwrap_or_default();
+        let point_name = name_interner.resolve(point.name).unwrap_or_default();
 
         point.causes.retain(|cause| {
             let cause_id = cause.id();
@@ -657,12 +704,15 @@ fn filter_allowed_causes_cached(
                 }
             }
 
-            if !config.is_denied_at(cause, Some(&file_path), Some(&point.name)) {
+            if !config.is_denied_at(cause, Some(&file_path), Some(&point_name)) {
                 return false;
             }
 
-            if let Some(ref called_fn) = point.called_function {
-                if !config.is_denied_at(cause, Some(&file_path), Some(called_fn)) {
+            if point.called_function != NAME_NONE {
+                let called_fn = name_interner
+                    .resolve(point.called_function)
+                    .unwrap_or_default();
+                if !config.is_denied_at(cause, Some(&file_path), Some(&called_fn)) {
                     return false;
                 }
             }
@@ -678,6 +728,7 @@ fn filter_allowed_causes_cached(
                 config,
                 project_context,
                 file_interner,
+                name_interner,
                 cache,
             );
         }
@@ -689,7 +740,9 @@ fn filter_allowed_causes_cached(
 /// Complete analysis results ready for output rendering.
 /// This is the shared structure used by all output formats (text, JSON, HTML).
 /// Contains a `file_paths` table for resolving `u16` file indices in
-/// `CrateCodePoint.file` back to path strings at the output boundary.
+/// `CrateCodePoint.file` back to path strings at the output boundary,
+/// and a `name_paths` table for resolving `u16` name indices in
+/// `CrateCodePoint.name` and `CrateCodePoint.called_function`.
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
     /// Name of the project/crate
@@ -701,6 +754,9 @@ pub struct AnalysisResult {
     /// Resolved file path table for `CrateCodePoint.file` index resolution.
     /// Index `i` maps to the file path string for `CrateCodePoint.file == i`.
     pub file_paths: Vec<String>,
+    /// Resolved name table for `CrateCodePoint.name` and `called_function` index resolution.
+    /// Index `i` maps to the function name string for name index `i`.
+    pub name_paths: Vec<String>,
 }
 
 impl AnalysisResult {
@@ -710,12 +766,14 @@ impl AnalysisResult {
         project_root: impl Into<String>,
         code_points: Vec<CrateCodePoint>,
         file_paths: Vec<String>,
+        name_paths: Vec<String>,
     ) -> Self {
         Self {
             project_name: project_name.into(),
             project_root: project_root.into(),
             code_points,
             file_paths,
+            name_paths,
         }
     }
 
@@ -726,6 +784,19 @@ impl AnalysisResult {
             ""
         } else {
             self.file_paths
+                .get(idx as usize)
+                .map(|s| s.as_str())
+                .unwrap_or("")
+        }
+    }
+
+    /// Resolve a name index to a function name string.
+    /// Returns an empty string for `NAME_NONE` or out-of-bounds indices.
+    pub fn resolve_name(&self, idx: u32) -> &str {
+        if idx == NAME_NONE {
+            ""
+        } else {
+            self.name_paths
                 .get(idx as usize)
                 .map(|s| s.as_str())
                 .unwrap_or("")
@@ -924,21 +995,24 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let main_rs = interner.intern("src/main.rs");
+        let name_interner = NameInterner::new();
+        let name_app_run = name_interner.intern("app::run");
+        let name_called = name_interner.intern("my_crate::time::TimeStamp::now");
 
         // Code point in "app::run" that calls "my_crate::time::TimeStamp::now" which may unwrap
         let mut points = vec![CrateCodePoint {
-            name: "app::run".to_string(),
+            name: name_app_run,
             file: main_rs,
             line: 42,
             column: 5,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: Some("my_crate::time::TimeStamp::now".to_string()),
+            called_function: name_called,
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx, &interner);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner, &name_interner);
 
         // The point should be filtered out because the rule allows unwrap on that function
         assert!(
@@ -963,21 +1037,24 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let device_rs = interner.intern("src/device.rs");
+        let name_interner = NameInterner::new();
+        let name_hash = name_interner.intern("meshchat::device::DeviceIdentifier::hash");
+        let name_called = name_interner.intern("core::hash::Hash::hash");
 
         // Code point with only CapacityOverflow cause
         let mut points = vec![CrateCodePoint {
-            name: "meshchat::device::DeviceIdentifier::hash".to_string(),
+            name: name_hash,
             file: device_rs,
             line: 74,
             column: 22,
             causes: vec![PanicCause::CapacityOverflow].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: Some("core::hash::Hash::hash".to_string()),
+            called_function: name_called,
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx, &interner);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner, &name_interner);
 
         // The point should be filtered out because capacity is globally allowed
         assert!(
@@ -1002,11 +1079,14 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let device_rs = interner.intern("src/device.rs");
+        let name_interner = NameInterner::new();
+        let name_hash = name_interner.intern("meshchat::device::DeviceIdentifier::hash");
+        let name_called = name_interner.intern("core::hash::Hash::hash");
 
         // Code point with BOTH CapacityOverflow and Unknown causes
         // (simulates multiple panic paths through the same code point)
         let mut points = vec![CrateCodePoint {
-            name: "meshchat::device::DeviceIdentifier::hash".to_string(),
+            name: name_hash,
             file: device_rs,
             line: 74,
             column: 22,
@@ -1015,11 +1095,11 @@ mod tests {
                 .collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: Some("core::hash::Hash::hash".to_string()),
+            called_function: name_called,
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx, &interner);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner, &name_interner);
 
         // The point should remain because Unknown is NOT allowed
         assert_eq!(
@@ -1058,21 +1138,24 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let main_rs = interner.intern("src/main.rs");
+        let name_interner = NameInterner::new();
+        let name_app_run = name_interner.intern("app::run");
+        let name_called = name_interner.intern("other_crate::Config::parse");
 
         // Code point calling a DIFFERENT function - should NOT be filtered
         let mut points = vec![CrateCodePoint {
-            name: "app::run".to_string(),
+            name: name_app_run,
             file: main_rs,
             line: 42,
             column: 5,
             causes: vec![PanicCause::Unwrap].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: Some("other_crate::Config::parse".to_string()),
+            called_function: name_called,
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx, &interner);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner, &name_interner);
 
         // The point should be kept because the rule doesn't match Config::parse
         assert_eq!(
@@ -1085,23 +1168,23 @@ mod tests {
     #[test]
     fn test_assign_unknown_causes_non_leaf() {
         let mut points = vec![CrateCodePoint {
-            name: "app::run".to_string(),
+            name: 0u32,
             file: 0,
             line: 10,
             column: 1,
             causes: HashSet::new(),
             children: vec![CrateCodePoint {
-                name: "app::helper".to_string(),
+                name: 1u32,
                 file: 0,
                 line: 20,
                 column: 1,
                 causes: HashSet::new(),
                 children: vec![],
                 is_direct_panic: false,
-                called_function: None,
+                called_function: NAME_NONE,
             }],
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         }];
 
         assign_unknown_causes(&mut points);
@@ -1131,20 +1214,22 @@ mod tests {
 
         let interner = FilePathInterner::new();
         let main_rs = interner.intern("src/main.rs");
+        let name_interner = NameInterner::new();
+        let name_app_run = name_interner.intern("app::run");
 
         let mut points = vec![CrateCodePoint {
-            name: "app::run".to_string(),
+            name: name_app_run,
             file: main_rs,
             line: 42,
             column: 5,
             causes: vec![PanicCause::Unknown].into_iter().collect(),
             children: vec![],
             is_direct_panic: false,
-            called_function: None,
+            called_function: NAME_NONE,
         }];
 
         let ctx = ProjectContext::default();
-        filter_allowed_causes(&mut points, &config, &ctx, &interner);
+        filter_allowed_causes(&mut points, &config, &ctx, &interner, &name_interner);
 
         assert!(
             points.is_empty(),
@@ -1159,6 +1244,7 @@ mod tests {
             "/project",
             Vec::new(),
             vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+            Vec::new(),
         );
         assert_eq!(result.resolve_file(0), "src/main.rs");
         assert_eq!(result.resolve_file(1), "src/lib.rs");
@@ -1171,43 +1257,48 @@ mod tests {
         let interner = FilePathInterner::new();
         let file_a = interner.intern("src/a.rs");
         let file_b = interner.intern("src/b.rs");
+        let name_interner = NameInterner::new();
+        let name_fn_a = name_interner.intern("fn_a");
+        let name_fn_b = name_interner.intern("fn_b");
+        let name_fn_a2 = name_interner.intern("fn_a2");
 
         let result = AnalysisResult::new(
             "test",
             "/project",
             vec![
                 CrateCodePoint {
-                    name: "fn_a".to_string(),
+                    name: name_fn_a,
                     file: file_a,
                     line: 10,
                     column: 5,
                     causes: vec![PanicCause::Unwrap].into_iter().collect(),
                     children: vec![],
                     is_direct_panic: true,
-                    called_function: None,
+                    called_function: NAME_NONE,
                 },
                 CrateCodePoint {
-                    name: "fn_b".to_string(),
+                    name: name_fn_b,
                     file: file_b,
                     line: 20,
                     column: 3,
                     causes: vec![PanicCause::Expect].into_iter().collect(),
                     children: vec![],
                     is_direct_panic: true,
-                    called_function: None,
+                    called_function: NAME_NONE,
                 },
                 CrateCodePoint {
-                    name: "fn_a2".to_string(),
+                    name: name_fn_a2,
                     file: file_a,
                     line: 15,
                     column: 1,
                     causes: vec![PanicCause::ExplicitPanic].into_iter().collect(),
                     children: vec![],
                     is_direct_panic: true,
-                    called_function: None,
+                    called_function: NAME_NONE,
                 },
             ],
             interner.into_vec(),
+            name_interner.into_vec(),
         );
 
         let summary = result.summary();
@@ -1219,30 +1310,34 @@ mod tests {
     fn test_analysis_result_summary_with_children() {
         let interner = FilePathInterner::new();
         let file_idx = interner.intern("src/main.rs");
+        let name_interner = NameInterner::new();
+        let name_parent = name_interner.intern("parent");
+        let name_child = name_interner.intern("child");
 
         let result = AnalysisResult::new(
             "test",
             "/project",
             vec![CrateCodePoint {
-                name: "parent".to_string(),
+                name: name_parent,
                 file: file_idx,
                 line: 10,
                 column: 0,
                 causes: vec![PanicCause::Unknown].into_iter().collect(),
                 children: vec![CrateCodePoint {
-                    name: "child".to_string(),
+                    name: name_child,
                     file: file_idx,
                     line: 20,
                     column: 0,
                     causes: vec![PanicCause::Unwrap].into_iter().collect(),
                     children: vec![],
                     is_direct_panic: true,
-                    called_function: None,
+                    called_function: NAME_NONE,
                 }],
                 is_direct_panic: false,
-                called_function: None,
+                called_function: NAME_NONE,
             }],
             interner.into_vec(),
+            name_interner.into_vec(),
         );
 
         let summary = result.summary();
@@ -1257,24 +1352,24 @@ mod tests {
 
         let mut points = vec![
             CrateCodePoint {
-                name: "fn1".to_string(),
+                name: 0u32,
                 file: file_idx,
                 line: 10,
                 column: 5,
                 causes: vec![PanicCause::Unwrap].into_iter().collect(),
                 children: vec![],
                 is_direct_panic: true,
-                called_function: None,
+                called_function: NAME_NONE,
             },
             CrateCodePoint {
-                name: "fn1".to_string(),
+                name: 0u32,
                 file: file_idx,
                 line: 10,
                 column: 5,
                 causes: vec![PanicCause::Expect].into_iter().collect(),
                 children: vec![],
                 is_direct_panic: true,
-                called_function: None,
+                called_function: NAME_NONE,
             },
         ];
 

@@ -13,7 +13,7 @@ use crate::call_tree::{
 use crate::config::Config;
 use crate::heuristics::{find_entry_points, is_library_panic_symbol};
 use crate::project_context::ProjectContext;
-use crate::string_tables::FilePathInterner;
+use crate::string_tables::{FilePathInterner, NameInterner};
 use crate::sym::{
     CallGraph, DebugInfo, LibraryCallGraph, SymbolIndex, SymbolTable, load_debug_info,
 };
@@ -57,6 +57,8 @@ pub struct BinaryAnalysisResult {
     pub code_points: Vec<CrateCodePoint>,
     /// Resolved file path table for `CrateCodePoint.file` index resolution.
     pub file_paths: Vec<String>,
+    /// Resolved name table for `CrateCodePoint.name` and `called_function` index resolution.
+    pub name_paths: Vec<String>,
 }
 
 impl BinaryAnalysisResult {
@@ -140,6 +142,7 @@ pub fn analyze_binary_target(
     output: &OutputFormat,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Result<BinaryAnalysisResult, String> {
     // Construct BinaryRef from the SymbolTable
     let binary_ref = match symbols {
@@ -147,6 +150,11 @@ pub fn analyze_binary_target(
         SymbolTable::Elf(elf) => BinaryRef::Elf(elf),
         _ => return Err("Expected MachO or ELF binary".to_string()),
     };
+
+    // Pre-size interners based on binary size heuristics (+10% headroom).
+    // ~1 unique function name per 700 bytes, ~1 unique file per 200KB.
+    name_interner.hint_capacity(buffer.len() / 700 * 11 / 10);
+    file_interner.hint_capacity((buffer.len() / 200_000 * 11 / 10).max(16));
 
     let show_progress = output.show_progress();
     let total_start = show_timings.then(Instant::now);
@@ -203,10 +211,11 @@ pub fn analyze_binary_target(
                 symbol_index.as_ref(),
                 project_context,
                 file_interner,
+                name_interner,
             )
             .or_else(|e| {
                 eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref())
+                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref(), name_interner)
             })
             .unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
@@ -225,24 +234,25 @@ pub fn analyze_binary_target(
                     symbol_index.as_ref(),
                     project_context,
                     file_interner,
+                    name_interner,
                 )
                 .or_else(|e| {
                     eprintln!("Warning: debug-enriched call graph failed: {e}. Falling back to symbol-only graph.");
-                    CallGraph::build(&binary_ref, buffer, symbol_index.as_ref())
+                    CallGraph::build(&binary_ref, buffer, symbol_index.as_ref(), name_interner)
                 })
                 .unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             } else {
-                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
+                CallGraph::build(&binary_ref, buffer, symbol_index.as_ref(), name_interner).unwrap_or_else(|e| {
                     eprintln!("Error: call graph build failed: {e}");
                     CallGraph::empty()
                 })
             }
         }),
         DebugInfo::DebugMap(_) | DebugInfo::None => {
-            CallGraph::build(&binary_ref, buffer, symbol_index.as_ref()).unwrap_or_else(|e| {
+            CallGraph::build(&binary_ref, buffer, symbol_index.as_ref(), name_interner).unwrap_or_else(|e| {
                 eprintln!("Error: call graph build failed: {e}");
                 CallGraph::empty()
             })
@@ -269,7 +279,7 @@ pub fn analyze_binary_target(
         }
 
         // Create root node for this entry point
-        let mut root = CallTreeNode::new_root(demangled.clone());
+        let mut root = CallTreeNode::new_root(name_interner.intern(demangled));
 
         // Build the call tree for this entry point
         root.callers = build_call_tree_parallel_filtered(
@@ -282,7 +292,7 @@ pub fn analyze_binary_target(
 
         // Collect code points from this tree and accumulate
         let (code_points, _summary) =
-            collect_crate_code_points(&root, config, project_context, file_interner);
+            collect_crate_code_points(&root, config, project_context, file_interner, name_interner);
         all_code_points.extend(code_points);
     }
 
@@ -321,6 +331,7 @@ pub fn analyze_binary_target(
         summary: AnalysisSummary::from_points(summary_points, summary_files),
         code_points: deduped,
         file_paths: Vec::new(),
+        name_paths: Vec::new(),
     };
 
     let total_nodes = visited.len();
@@ -355,6 +366,7 @@ pub fn analyze_archive(
     output: &OutputFormat,
     project_context: &ProjectContext,
     file_interner: &FilePathInterner,
+    name_interner: &NameInterner,
 ) -> Result<BinaryAnalysisResult, String> {
     // Helper to check if a file path is within the crate/workspace scope
     let show_progress = output.show_progress();
@@ -475,6 +487,7 @@ pub fn analyze_archive(
                         member_data.as_slice(),
                         project_context,
                         file_interner,
+                        name_interner,
                     )
                     .map_err(|e| {
                         if show_progress {
@@ -493,6 +506,7 @@ pub fn analyze_archive(
                         member_data.as_slice(),
                         project_context,
                         file_interner,
+                        name_interner,
                     )
                     .map_err(|e| {
                         if show_progress {
@@ -597,7 +611,9 @@ pub fn analyze_archive(
             {
                 panic_callers.insert(PanicCaller {
                     file,
-                    name: caller_info.caller_name.to_string(),
+                    name: name_interner
+                        .resolve(caller_info.caller_name)
+                        .unwrap_or_default(),
                     line: caller_info.line,
                     column: caller_info.column,
                     target: target_sym.to_string(),
@@ -637,14 +653,14 @@ pub fn analyze_archive(
                 causes.insert(cause);
             }
             CrateCodePoint {
-                name: caller.name,
+                name: name_interner.intern_owned(caller.name),
                 file: file_interner.intern(&caller.file),
                 line: caller.line,
                 column: caller.column,
                 causes,
                 children: Vec::new(),  // Archives don't have call tree hierarchy
                 is_direct_panic: true, // Archive analysis detects direct panic calls
-                called_function: None, // Direct panics don't need called function name
+                called_function: crate::string_tables::NAME_NONE, // Direct panics don't need called function name
             }
         })
         .collect();
@@ -658,7 +674,13 @@ pub fn analyze_archive(
 
     // Filter out allowed causes using the same logic as binary analysis,
     // including inline allow comments (e.g., `// jonesy:allow(overflow)`)
-    filter_allowed_causes(&mut code_points, config, project_context, file_interner);
+    filter_allowed_causes(
+        &mut code_points,
+        config,
+        project_context,
+        file_interner,
+        name_interner,
+    );
 
     // Deduplicate by (file_idx, line, column) -- file is already a u16 index
     let mut seen: std::collections::HashMap<CodePointKey, usize> = std::collections::HashMap::new();
@@ -691,6 +713,7 @@ pub fn analyze_archive(
         summary: AnalysisSummary::from_points(points, files_affected),
         code_points: deduped,
         file_paths: Vec::new(), // Caller resolves from the shared interner
+        name_paths: Vec::new(), // Caller resolves from the shared interner
     })
 }
 
@@ -712,17 +735,18 @@ mod tests {
     }
 
     fn make_code_point(file_idx: u16, line: u16, cause: PanicCause) -> CrateCodePoint {
+        use crate::string_tables::NAME_NONE;
         let mut causes = HashSet::new();
         causes.insert(cause);
         CrateCodePoint {
-            name: "test_func".to_string(),
+            name: 0u32, // test name index
             file: file_idx,
             line,
             column: 0,
             causes,
             children: Vec::new(),
             is_direct_panic: true,
-            called_function: None,
+            called_function: NAME_NONE,
         }
     }
 
@@ -740,12 +764,14 @@ mod tests {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(1, 20, PanicCause::Unwrap)],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         result1.merge(result2);
@@ -761,12 +787,14 @@ mod tests {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Expect)],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         result1.merge(result2);
@@ -785,6 +813,7 @@ mod tests {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(2, 100, PanicCause::Unwrap)],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         let result2 = BinaryAnalysisResult {
@@ -794,6 +823,7 @@ mod tests {
                 make_code_point(0, 5, PanicCause::ExplicitPanic),
             ],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         result1.merge(result2);
@@ -814,6 +844,7 @@ mod tests {
             summary: AnalysisSummary::default(),
             code_points: vec![make_code_point(0, 10, PanicCause::Unwrap)],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         let result2 = BinaryAnalysisResult::new();
@@ -836,11 +867,13 @@ mod tests {
             summary: AnalysisSummary::default(),
             code_points: vec![point_a],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
         let result2 = BinaryAnalysisResult {
             summary: AnalysisSummary::default(),
             code_points: vec![point_b],
             file_paths: test_file_paths(),
+            name_paths: vec![],
         };
 
         result1.merge(result2);

@@ -325,6 +325,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
         c.bench_function("call_graph_build_jonesy", |b| {
             b.iter(|| {
                 let file_interner = jonesy::string_tables::FilePathInterner::new();
+                let name_interner = jonesy::string_tables::NameInterner::new();
                 let graph = CallGraph::build_with_debug_info(
                     &binary_ref,
                     &buffer,
@@ -334,6 +335,7 @@ fn bench_call_graph_build(c: &mut Criterion) {
                     symbol_index.as_ref(),
                     &project_context,
                     &file_interner,
+                    &name_interner,
                 );
                 black_box(graph)
             })
@@ -358,6 +360,9 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
         .map(|i| interner.intern(&format!("src/file_{}.rs", i)))
         .collect();
 
+    // Create a name interner for function names
+    let name_interner = jonesy::string_tables::NameInterner::new();
+
     // Create sample code points
     let sample_points: Vec<CrateCodePoint> = (0..100)
         .map(|i| {
@@ -367,14 +372,14 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
                 causes.insert(PanicCause::Expect);
             }
             CrateCodePoint {
-                name: format!("function_{}", i),
+                name: name_interner.intern(&format!("function_{}", i)),
                 file: file_indices[i % 10],
                 line: (i * 10 + 1) as u16,
                 column: 5,
                 causes,
                 children: Vec::new(),
                 is_direct_panic: i % 3 == 0,
-                called_function: None,
+                called_function: jonesy::string_tables::NAME_NONE,
             }
         })
         .collect();
@@ -383,7 +388,7 @@ fn bench_filter_allowed_causes(c: &mut Criterion) {
     c.bench_function("filter_allowed_causes", |b| {
         b.iter(|| {
             let mut points = sample_points.clone();
-            filter_allowed_causes(&mut points, &config, &ctx, &interner);
+            filter_allowed_causes(&mut points, &config, &ctx, &interner, &name_interner);
             black_box(points)
         })
     });
@@ -506,6 +511,7 @@ fn bench_analyze_binary_target(c: &mut Criterion) {
             let symbols = SymbolTable::from(&buffer).expect("Failed to read symbols");
             if let SymbolTable::MachO(Binary(_)) = &symbols {
                 let file_interner = jonesy::string_tables::FilePathInterner::new();
+                let name_interner = jonesy::string_tables::NameInterner::new();
                 let result = analyze_binary_target(
                     &symbols,
                     &buffer,
@@ -515,6 +521,7 @@ fn bench_analyze_binary_target(c: &mut Criterion) {
                     &output,
                     &project_context,
                     &file_interner,
+                    &name_interner,
                 );
                 black_box(result.ok());
             }

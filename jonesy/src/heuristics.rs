@@ -403,7 +403,7 @@ pub fn detect_panic_cause(func_name: &str) -> Option<PanicCause> {
             }
         };
         if matched {
-            return Some(cause.clone());
+            return Some(*cause);
         }
     }
     None

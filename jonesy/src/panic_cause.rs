@@ -29,8 +29,13 @@
 //! - [Behavior Considered Undefined](https://doc.rust-lang.org/reference/behavior-considered-undefined.html) -
 //!   Confirms safe Rust never has UB
 
-/// Known panic causes with explanations and suggestions
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Known panic causes with explanations and suggestions.
+///
+/// Derives `Copy` because all variants are stack-only (`&'static str` fields
+/// or unit variants) — no heap allocation on copy. This eliminates the need
+/// for `.clone()` at ~10 call sites where `PanicCause` or `Option<PanicCause>`
+/// is passed by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanicCause {
     /// Explicit panic!() macro
     ExplicitPanic,
