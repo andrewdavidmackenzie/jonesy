@@ -19,11 +19,22 @@ use jonesy::output::json::{
     WorkspaceMemberResult, WorkspaceResult, generate_json_output, generate_workspace_json_output,
 };
 use jonesy::output::text::generate_text_output;
+use memmap2::Mmap;
 use rayon::prelude::*;
 use std::error::Error;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+
+/// Memory-map a file for reading. Falls back to `fs::read` if mmap fails.
+/// Uses mmap to avoid copying the entire binary into heap memory — the OS
+/// pages in only the sections that are actually accessed (text, symbols, DWARF).
+fn mmap_file(path: &Path) -> io::Result<Mmap> {
+    let file = fs::File::open(path)?;
+    // SAFETY: the file is opened read-only and not modified while mapped.
+    // The Mmap is used as a read-only &[u8] slice throughout the analysis.
+    unsafe { Mmap::map(&file) }
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -126,7 +137,7 @@ fn analyze_package(parsed_args: &Args) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let binary_buffer = fs::read(&binary_path)?;
+        let binary_buffer = mmap_file(&binary_path)?;
         let symbols = SymbolTable::from(&binary_buffer)?;
 
         // Capture project info from the first binary processed
@@ -322,7 +333,7 @@ fn analyze_workspace(members: &[WorkspaceMember], args: &Args) -> Result<(), Box
                 let binary_path = binary_path
                     .canonicalize()
                     .unwrap_or_else(|_| binary_path.clone());
-                let binary_buffer = fs::read(&binary_path).ok()?;
+                let binary_buffer = mmap_file(&binary_path).ok()?;
                 let symbols = SymbolTable::from(&binary_buffer).ok()?;
 
                 let result = analyze_binary(
