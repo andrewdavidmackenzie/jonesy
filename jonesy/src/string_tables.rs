@@ -562,4 +562,42 @@ mod tests {
         assert_eq!(resolve_file(&file_paths, 0), None);
         assert_eq!(resolve_file_owned(&file_paths, 0), "");
     }
+
+    #[test]
+    fn test_file_path_interner_with_capacity() {
+        let interner = FilePathInterner::with_capacity(100);
+        let idx1 = interner.intern("src/main.rs");
+        let idx2 = interner.intern("src/lib.rs");
+        assert_ne!(idx1, idx2);
+        assert_eq!(interner.resolve(idx1), Some("src/main.rs".to_string()));
+        assert_eq!(interner.resolve(idx2), Some("src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_interner_hint_capacity() {
+        let interner = FilePathInterner::new();
+        // hint_capacity on empty interner should not panic
+        interner.hint_capacity(1000);
+        // Should still work normally after hint
+        let idx = interner.intern("test.rs");
+        assert_eq!(interner.resolve(idx), Some("test.rs".to_string()));
+    }
+
+    #[test]
+    fn test_file_path_interner_hint_capacity_noop_when_nonempty() {
+        let interner = FilePathInterner::new();
+        interner.intern("already.rs");
+        // hint_capacity should be a no-op when interner already has entries
+        interner.hint_capacity(1000);
+        assert_eq!(interner.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_name_function() {
+        let name_paths = vec!["main".to_string(), "my_module::process".to_string()];
+        assert_eq!(resolve_name(&name_paths, 0), Some("main"));
+        assert_eq!(resolve_name(&name_paths, 1), Some("my_module::process"));
+        assert_eq!(resolve_name(&name_paths, 2), None); // out of bounds
+        assert_eq!(resolve_name(&name_paths, NAME_NONE), None); // sentinel
+    }
 }
