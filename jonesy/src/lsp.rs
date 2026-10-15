@@ -494,8 +494,9 @@ impl JonesyLspServer {
         // Track all diagnostics by file URI (accumulates across targets)
         let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
         let mut seen: std::collections::HashSet<CodePointKey> = std::collections::HashSet::new();
-        let mut all_file_paths: Vec<String> = Vec::new();
-        let mut all_name_paths: Vec<String> = Vec::new();
+        // Shared interners across all targets — ensures indices are consistent
+        let shared_file_interner = Arc::new(crate::string_tables::FilePathInterner::new());
+        let shared_name_interner = Arc::new(crate::string_tables::NameInterner::new());
         let mut total_points = 0usize;
 
         // Analyze each target and publish diagnostics incrementally
@@ -525,34 +526,18 @@ impl JonesyLspServer {
             let analysis_result = {
                 let target = target.clone();
                 let project_context = Arc::clone(&project_context);
+                let file_interner = Arc::clone(&shared_file_interner);
+                let name_interner = Arc::clone(&shared_name_interner);
                 tokio::task::spawn_blocking(move || {
-                    analyze_single_target(&target, &project_context)
+                    analyze_single_target(&target, &project_context, &file_interner, &name_interner)
                 })
                 .await
             };
 
             match analysis_result {
                 Ok(Ok(analysis)) => {
-                    let file_paths = &analysis.file_paths;
-                    // Merge file_paths into the accumulated table
-                    if all_file_paths.len() < file_paths.len() {
-                        all_file_paths.resize(file_paths.len(), String::new());
-                    }
-                    for (i, fp) in file_paths.iter().enumerate() {
-                        if !fp.is_empty() {
-                            all_file_paths[i] = fp.clone();
-                        }
-                    }
-                    // Merge name_paths into the accumulated table
-                    let name_paths = &analysis.name_paths;
-                    if all_name_paths.len() < name_paths.len() {
-                        all_name_paths.resize(name_paths.len(), String::new());
-                    }
-                    for (i, np) in name_paths.iter().enumerate() {
-                        if !np.is_empty() {
-                            all_name_paths[i] = np.clone();
-                        }
-                    }
+                    // No per-target path merging needed — shared interners ensure
+                    // all targets use the same index namespace.
 
                     // Filter to new points only (dedup across targets)
                     // CrateCodePoint.file is already a u16 index
@@ -580,11 +565,9 @@ impl JonesyLspServer {
                         std::collections::HashSet::new();
 
                     for point in new_points {
-                        // Resolve file index to path string
-                        let resolved_file = file_paths
-                            .get(point.file as usize)
-                            .cloned()
-                            .unwrap_or_default();
+                        // Resolve file index from the shared interner
+                        let resolved_file =
+                            shared_file_interner.resolve(point.file).unwrap_or_default();
 
                         // Skip files in target/ directory
                         if resolved_file.starts_with(&target_dir) {
@@ -604,7 +587,11 @@ impl JonesyLspServer {
                         }
                     }
 
-                    // Publish updated diagnostics for files that changed
+                    // Publish updated diagnostics for files that changed.
+                    // Snapshot the shared interners for name/file resolution.
+                    let file_paths_snapshot = shared_file_interner.reverse_snapshot();
+                    let name_paths_snapshot = shared_name_interner.reverse_snapshot();
+
                     for uri in files_updated {
                         if let Some(points) = points_by_file.get(&uri) {
                             let diagnostics: Vec<Diagnostic> = points
@@ -612,8 +599,8 @@ impl JonesyLspServer {
                                 .map(|p| {
                                     Self::code_point_to_diagnostic(
                                         p,
-                                        &all_file_paths,
-                                        &all_name_paths,
+                                        &file_paths_snapshot,
+                                        &name_paths_snapshot,
                                     )
                                 })
                                 .collect();
@@ -642,6 +629,16 @@ impl JonesyLspServer {
                 }
             }
         }
+
+        // Resolve shared interners to vecs for state storage
+        // Try to unwrap the Arc (succeeds if this is the only reference);
+        // fall back to snapshot if spawn_blocking tasks still hold refs.
+        let all_file_paths = Arc::try_unwrap(shared_file_interner)
+            .map(|i| i.into_vec())
+            .unwrap_or_else(|arc| arc.reverse_snapshot());
+        let all_name_paths = Arc::try_unwrap(shared_name_interner)
+            .map(|i| i.into_vec())
+            .unwrap_or_else(|arc| arc.reverse_snapshot());
 
         // Update state with final results
         let mut state = self.state.write().await;
@@ -1738,8 +1735,9 @@ async fn run_analysis_task(
     // Track diagnostics
     let mut points_by_file: HashMap<Url, Vec<CrateCodePoint>> = HashMap::new();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
-    let mut all_file_paths: Vec<String> = Vec::new();
-    let mut all_name_paths: Vec<String> = Vec::new();
+    // Shared interners across all targets — ensures indices are consistent
+    let shared_file_interner = Arc::new(crate::string_tables::FilePathInterner::new());
+    let shared_name_interner = Arc::new(crate::string_tables::NameInterner::new());
     let mut analyzed_count = 0usize;
     let mut skipped_count = 0usize;
 
@@ -1759,34 +1757,16 @@ async fn run_analysis_task(
         let analysis_result = {
             let target = target.clone();
             let project_context = Arc::clone(&project_context);
-            tokio::task::spawn_blocking(move || analyze_single_target(&target, &project_context))
-                .await
+            let file_interner = Arc::clone(&shared_file_interner);
+            let name_interner = Arc::clone(&shared_name_interner);
+            tokio::task::spawn_blocking(move || {
+                analyze_single_target(&target, &project_context, &file_interner, &name_interner)
+            })
+            .await
         };
 
         if let Ok(Ok(analysis)) = analysis_result {
-            let file_paths = &analysis.file_paths;
-            // Merge file_paths into the accumulated table
-            if all_file_paths.len() < file_paths.len() {
-                all_file_paths.resize(file_paths.len(), String::new());
-            }
-            for (i, fp) in file_paths.iter().enumerate() {
-                if !fp.is_empty() {
-                    all_file_paths[i] = fp.clone();
-                }
-            }
-            // Merge name_paths into the accumulated table
-            let name_paths = &analysis.name_paths;
-            if all_name_paths.len() < name_paths.len() {
-                all_name_paths.resize(name_paths.len(), String::new());
-            }
-            for (i, np) in name_paths.iter().enumerate() {
-                if !np.is_empty() {
-                    all_name_paths[i] = np.clone();
-                }
-            }
-
             let point_count = analysis.code_points.len();
-            // CrateCodePoint.file is already a u16 index
             let new_points: Vec<_> = analysis
                 .code_points
                 .into_iter()
@@ -1801,11 +1781,8 @@ async fn run_analysis_task(
 
             // Group by file
             for point in new_points {
-                // Resolve file index to path string
-                let resolved_file = file_paths
-                    .get(point.file as usize)
-                    .cloned()
-                    .unwrap_or_default();
+                // Resolve file index from the shared interner
+                let resolved_file = shared_file_interner.resolve(point.file).unwrap_or_default();
 
                 if resolved_file.starts_with(&target_dir) {
                     continue;
@@ -1859,6 +1836,14 @@ async fn run_analysis_task(
             .await;
     }
 
+    // Resolve shared interners to vecs for state storage and diagnostics
+    let all_file_paths = Arc::try_unwrap(shared_file_interner)
+        .map(|i| i.into_vec())
+        .unwrap_or_else(|arc| arc.reverse_snapshot());
+    let all_name_paths = Arc::try_unwrap(shared_name_interner)
+        .map(|i| i.into_vec())
+        .unwrap_or_else(|arc| arc.reverse_snapshot());
+
     // Update state and publish diagnostics
     // When some targets were skipped, merge with existing state to preserve their diagnostics
     let old_files: HashSet<_>;
@@ -1869,34 +1854,17 @@ async fn run_analysis_task(
         old_files = state.panic_points.keys().cloned().collect();
 
         if skipped_count > 0 {
-            // Merge: update analyzed files, keep diagnostics from skipped targets
+            // Merge: update analysed files, keep diagnostics from skipped targets
             for (uri, points) in points_by_file.clone() {
                 state.panic_points.insert(uri, points);
-            }
-            // Merge file_paths: extend if new table is larger
-            if all_file_paths.len() > state.file_paths.len() {
-                state.file_paths.resize(all_file_paths.len(), String::new());
-            }
-            for (i, fp) in all_file_paths.iter().enumerate() {
-                if !fp.is_empty() {
-                    state.file_paths[i] = fp.clone();
-                }
-            }
-            // Merge name_paths: extend if new table is larger
-            if all_name_paths.len() > state.name_paths.len() {
-                state.name_paths.resize(all_name_paths.len(), String::new());
-            }
-            for (i, np) in all_name_paths.iter().enumerate() {
-                if !np.is_empty() {
-                    state.name_paths[i] = np.clone();
-                }
             }
         } else {
             // Full analysis: replace entirely
             state.panic_points = points_by_file.clone();
-            state.file_paths = all_file_paths.clone();
-            state.name_paths = all_name_paths.clone();
         }
+        // Always update path tables from the shared interners (consistent namespace)
+        state.file_paths = all_file_paths.clone();
+        state.name_paths = all_name_paths.clone();
     }
 
     // Publish diagnostics for files with panic points
@@ -2062,28 +2030,17 @@ fn analyze_workspace_targets(
 ) -> AnalysisResult {
     let mut result = AnalysisResult::default();
     let mut seen: HashSet<CodePointKey> = HashSet::new();
+    let file_interner = crate::string_tables::FilePathInterner::new();
+    let name_interner = crate::string_tables::NameInterner::new();
 
     for target in targets {
-        match analyze_single_target(target, project_context) {
+        match analyze_single_target(target, project_context, &file_interner, &name_interner) {
             Ok(analysis) => {
                 result.analyzed_count += 1;
                 let point_count = analysis.code_points.len();
                 result.total_count += point_count;
 
-                // Merge file_paths
-                if result.file_paths.len() < analysis.file_paths.len() {
-                    result
-                        .file_paths
-                        .resize(analysis.file_paths.len(), String::new());
-                }
-                for (i, fp) in analysis.file_paths.iter().enumerate() {
-                    if !fp.is_empty() {
-                        result.file_paths[i] = fp.clone();
-                    }
-                }
-
-                // Filter to new points only (dedup across targets)
-                // CrateCodePoint.file is already a u16 index
+                // No per-target path merging — shared interners handle it
                 let new_points: Vec<_> = analysis
                     .code_points
                     .into_iter()
@@ -2100,6 +2057,9 @@ fn analyze_workspace_targets(
             }
         }
     }
+
+    // Resolve shared interners to vecs for the result
+    result.file_paths = file_interner.into_vec();
 
     result
 }
@@ -2149,6 +2109,8 @@ fn discover_workspace(workspace_root: &Path) -> Option<WorkspaceInfo> {
 fn analyze_single_target(
     target_path: &Path,
     project_context: &ProjectContext,
+    file_interner: &crate::string_tables::FilePathInterner,
+    name_interner: &crate::string_tables::NameInterner,
 ) -> std::result::Result<BinaryAnalysisResult, String> {
     use crate::analysis::{analyze_archive, analyze_binary_target};
     use crate::args::OutputFormat;
@@ -2170,11 +2132,7 @@ fn analyze_single_target(
     // Use quiet output format (no progress display in LSP)
     let output = OutputFormat::quiet();
 
-    // Each target gets its own file path interner and name interner
-    let interner = crate::string_tables::FilePathInterner::new();
-    let name_interner = crate::string_tables::NameInterner::new();
-
-    let mut result = match &symbols {
+    let result = match &symbols {
         SymbolTable::MachO(Binary(_)) => analyze_binary_target(
             &symbols,
             &binary_buffer,
@@ -2183,8 +2141,8 @@ fn analyze_single_target(
             &config,
             &output,
             project_context,
-            &interner,
-            &name_interner,
+            file_interner,
+            name_interner,
         ),
         SymbolTable::MachO(Fat(fat)) => {
             // Fat binary - find native architecture slice and analyze it
@@ -2226,8 +2184,8 @@ fn analyze_single_target(
                         &config,
                         &output,
                         project_context,
-                        &interner,
-                        &name_interner,
+                        file_interner,
+                        name_interner,
                     )
                 }
                 None => Err("Fat binary contains no analyzable MachO slices".to_string()),
@@ -2241,8 +2199,8 @@ fn analyze_single_target(
             &config,
             &output,
             project_context,
-            &interner,
-            &name_interner,
+            file_interner,
+            name_interner,
         ),
         SymbolTable::Archive(archive) => analyze_archive(
             archive,
@@ -2252,14 +2210,12 @@ fn analyze_single_target(
             &config,
             &output,
             project_context,
-            &interner,
-            &name_interner,
+            file_interner,
+            name_interner,
         ),
     }?;
 
-    // Resolve the interners to path tables for downstream use
-    result.file_paths = interner.into_vec();
-    result.name_paths = name_interner.into_vec();
+    // file_paths and name_paths are populated by the caller from the shared interners
     Ok(result)
 }
 
@@ -2640,14 +2596,19 @@ mod tests {
             .expect("Should build project context");
 
         let mut lsp_points: HashSet<(String, u16)> = HashSet::new();
+        let file_interner = crate::string_tables::FilePathInterner::new();
+        let name_interner = crate::string_tables::NameInterner::new();
 
         for target in &targets {
-            let result = analyze_single_target(target, &project_context);
+            let result =
+                analyze_single_target(target, &project_context, &file_interner, &name_interner);
             if let Ok(analysis) = result {
+                // Resolve file paths from the shared interner (not analysis.file_paths
+                // which is empty since the interner is external)
+                let file_paths_snapshot = file_interner.reverse_snapshot();
                 for point in &analysis.code_points {
-                    // Resolve file index to path string using this analysis's file_paths
                     let resolved_file =
-                        crate::string_tables::resolve_file_owned(&analysis.file_paths, point.file);
+                        crate::string_tables::resolve_file_owned(&file_paths_snapshot, point.file);
                     // Normalize path
                     let file = resolved_file
                         .rsplit("workspace_test/")

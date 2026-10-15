@@ -332,6 +332,12 @@ impl FilePathInterner {
         result
     }
 
+    /// Snapshot the reverse index without consuming the interner.
+    /// Used when the interner is still shared (via Arc) but a Vec is needed.
+    pub fn reverse_snapshot(&self) -> Vec<String> {
+        self.reverse.read().unwrap().clone()
+    }
+
     /// Get the number of interned paths.
     #[cfg(test)]
     fn len(&self) -> usize {
@@ -462,6 +468,11 @@ impl NameInterner {
             }
         }
         result
+    }
+
+    /// Snapshot the reverse index without consuming the interner.
+    pub fn reverse_snapshot(&self) -> Vec<String> {
+        self.reverse.read().unwrap().clone()
     }
 }
 
