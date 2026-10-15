@@ -13,10 +13,11 @@ use rustc_demangle::demangle;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-/// Compact information about a call site (64 bytes, 64-byte aligned).
+/// Compact information about a call site.
 ///
 /// Uses `Cow<str>` for the function name (24 bytes), a `u16` file index into
 /// a shared `FilePathInterner` (2 bytes), and `u16` for line/column numbers.
+/// Natural size is 56 bytes (with `repr(C)` padding).
 ///
 /// The `file` field merges what was previously `caller_file` and `file`:
 /// at construction time, the more specific call-site file is preferred,
@@ -24,6 +25,12 @@ use std::collections::HashMap;
 ///
 /// A value of 0 in `line` or `column` means the field is absent.
 /// A value of `FILE_NONE` in `file` means no file path is known.
+///
+/// ## Alignment
+/// Aligned to the platform's cache line size for optimal packing:
+/// - **x86_64** (64-byte cache lines): `align(64)` — 1 per cache line, no straddling
+/// - **aarch64** (128-byte cache lines on Apple Silicon): `align(64)` — 2 per cache
+///   line, no straddling. Using `align(128)` would waste 72 bytes per entry.
 #[derive(Debug, Clone)]
 #[repr(C, align(64))]
 pub struct CallerInfo<'a> {

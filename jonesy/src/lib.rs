@@ -107,7 +107,11 @@ mod struct_size_tests {
         );
 
         // CallerInfo uses u16 file index instead of Option<Box<str>>, keeping it compact.
-        // With align(64), the struct pads to 64 bytes for cache-line alignment.
+        // Natural size is 56 bytes; align(64) pads to 64 bytes.
+        // Cache line packing:
+        //   x86_64 (64B lines): 1 per line, no straddling
+        //   aarch64 (128B lines on Apple Silicon): 2 per line, no straddling
+        // Using align(128) on aarch64 would waste 72B per entry for 600K+ entries.
         assert_eq!(
             mem::size_of::<CallerInfo>(),
             64,
@@ -116,7 +120,7 @@ mod struct_size_tests {
         assert_eq!(
             mem::align_of::<CallerInfo>(),
             64,
-            "CallerInfo should be 64-byte aligned (2 per 128B cache line, no straddling)"
+            "CallerInfo should be 64-byte aligned (1 per x86 line, 2 per aarch64 line)"
         );
 
         // Line table entries should be compact since there are millions of them
